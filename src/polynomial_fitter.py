@@ -201,13 +201,13 @@ class PolynomialFitter:
         
         # Determine number of curves based on complexity
         if significant_changes < 3:
-            return 3  # Simple letter like I, L
+            return 30  # Simple letter like I, L
         elif significant_changes < 8:
-            return 5  # Medium complexity like A, P
+            return 50  # Medium complexity like A, P
         elif significant_changes < 15:
-            return 8  # Complex letters like B, R
+            return 80  # Complex letters like B, R
         else:
-            return 12  # Very complex letters like @, &
+            return 120  # Very complex letters like @, &
 
     def generate_smart_sample_points(self, contour, num_points=10):
         """
