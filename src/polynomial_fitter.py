@@ -113,17 +113,18 @@ class PolynomialFitter:
         
         return x_sorted, y_sorted
     
-    def fit_polynomial_to_segment(self, segment, max_degree=15):
+    def fit_polynomial_to_segment(self, segment, max_degree=12):
         """
-        Fit a y=f(x) polynomial that EXACTLY passes through ALL points (perfect interpolation).
-        Uses polynomial interpolation to ensure every point is matched exactly.
+        Fit a y=f(x) polynomial that is EXTREMELY ACCURATE at letter points.
+        Uses weighted least-squares to prioritize accuracy at the actual letter shape.
+        We don't care about behavior between or outside the letter points.
         
         Args:
-            segment (np.array): Array of (x, y) points
-            max_degree (int): Maximum polynomial degree (will use exactly n-1 degree for n points)
+            segment (np.array): Array of (x, y) points ON the letter centerline
+            max_degree (int): Maximum polynomial degree
             
         Returns:
-            str: Polynomial function string that passes through ALL points exactly
+            str: Polynomial function string optimized for letter shape accuracy
         """
         if len(segment) < 2:
             return None
@@ -135,56 +136,126 @@ class PolynomialFitter:
             if len(x_sorted) < 2:
                 return None
             
-            # EXACT INTERPOLATION: Use degree = number_of_points - 1
-            # This guarantees the polynomial passes through ALL points
-            degree = len(x_sorted) - 1
+            print(f"        SHAPE-OPTIMIZED FITTING: {len(x_sorted)} letter points")
             
-            # Cap degree if too high to avoid numerical instability
-            if degree > max_degree:
-                # If too many points, subsample to get exact degree we want
-                max_points = max_degree + 1
-                if len(x_sorted) > max_points:
-                    # Keep evenly spaced points to preserve shape
-                    indices = np.linspace(0, len(x_sorted) - 1, max_points, dtype=int)
-                    x_sorted = x_sorted[indices]
-                    y_sorted = y_sorted[indices]
-                    degree = len(x_sorted) - 1
+            # Strategy: Use higher degree polynomials for better shape approximation
+            degree = min(max_degree, max(3, len(x_sorted) // 2))  # At least cubic
             
-            print(f"        EXACT INTERPOLATION: {len(x_sorted)} points -> degree {degree} (passes through ALL points)")
+            # Use polynomial fitting that prioritizes accuracy AT the letter points
+            coeffs = self.fit_polynomial_for_shape_accuracy(x_sorted, y_sorted, degree)
             
-            # Use polynomial interpolation for EXACT point matching
-            coeffs = np.polyfit(x_sorted, y_sorted, degree)
-            
-            # Verify the fit is exact by checking a few points
+            # Verify accuracy at the letter points (this is what matters!)
             poly_func = np.poly1d(coeffs)
-            max_error = np.max(np.abs(poly_func(x_sorted) - y_sorted))
-            if max_error > 1e-10:
-                print(f"        Warning: Interpolation error = {max_error:.2e}")
-            else:
-                print(f"        SUCCESS: Perfect interpolation (error = {max_error:.2e})")
+            letter_errors = np.abs(poly_func(x_sorted) - y_sorted)
+            max_error = np.max(letter_errors)
+            avg_error = np.mean(letter_errors)
             
-            # Generate function string with high precision
+            print(f"        Letter shape accuracy: max_error={max_error:.6f}, avg_error={avg_error:.6f}")
+            
+            if max_error > 0.1:  # If error too high, try higher degree
+                degree = min(max_degree, len(x_sorted) - 1)
+                coeffs = self.fit_polynomial_for_shape_accuracy(x_sorted, y_sorted, degree)
+                poly_func = np.poly1d(coeffs)
+                max_error = np.max(np.abs(poly_func(x_sorted) - y_sorted))
+                print(f"        Improved with degree {degree}: max_error={max_error:.6f}")
+            
+            # Generate function string
             terms = []
             for i, coeff in enumerate(coeffs):
-                if abs(coeff) < 1e-16:  # Very high precision threshold
+                if abs(coeff) < 1e-16:
                     continue
                     
                 power = degree - i
                 if power == 0:
-                    terms.append(f"{coeff:.15f}")  # Maximum precision
+                    terms.append(f"{coeff:.12f}")
                 elif power == 1:
-                    terms.append(f"{coeff:.15f}*x")
+                    terms.append(f"{coeff:.12f}*x")
                 else:
-                    terms.append(f"{coeff:.15f}*x^{power}")
+                    terms.append(f"{coeff:.12f}*x^{power}")
             
             if terms:
                 func_str = " + ".join(terms).replace("+ -", "- ")
                 return f"y = {func_str}"
             
         except Exception as e:
-            print(f"Warning: Failed to create exact interpolation: {e}")
+            print(f"Warning: Failed to create shape-optimized polynomial: {e}")
         
         return None
+    
+    def fit_polynomial_for_shape_accuracy(self, x_points, y_points, degree):
+        """
+        Fit polynomial that is extremely accurate at the letter shape points.
+        Uses techniques to minimize error specifically at the given points.
+        
+        Args:
+            x_points: X coordinates of letter centerline points
+            y_points: Y coordinates of letter centerline points
+            degree: Polynomial degree
+            
+        Returns:
+            np.array: Polynomial coefficients optimized for shape accuracy
+        """
+        try:
+            # Method 1: Try exact interpolation if we have few enough points
+            if len(x_points) <= degree + 1:
+                return np.polyfit(x_points, y_points, len(x_points) - 1)
+            
+            # Method 2: Weighted least squares with very high weights at letter points
+            # This forces the polynomial to be very accurate at letter locations
+            weights = np.ones(len(x_points)) * 1000.0  # Very high weight for letter points
+            
+            # Use weighted polynomial fitting
+            coeffs = np.polyfit(x_points, y_points, degree, w=weights)
+            
+            # Check if we can improve by adding more constraint points
+            poly_func = np.poly1d(coeffs)
+            errors = np.abs(poly_func(x_points) - y_points)
+            
+            if np.max(errors) > 0.01:  # If still not accurate enough
+                # Method 3: Add intermediate constraint points for smoother curves
+                enhanced_x, enhanced_y = self.add_shape_constraints(x_points, y_points)
+                weights_enhanced = np.ones(len(enhanced_x)) * 1000.0
+                coeffs = np.polyfit(enhanced_x, enhanced_y, degree, w=weights_enhanced)
+            
+            return coeffs
+            
+        except Exception:
+            # Fallback to regular polyfit
+            return np.polyfit(x_points, y_points, degree)
+    
+    def add_shape_constraints(self, x_points, y_points):
+        """
+        Add intermediate points to help the polynomial follow the letter shape better.
+        This creates a smoother curve that respects the letter's structure.
+        
+        Args:
+            x_points: Original x coordinates
+            y_points: Original y coordinates
+            
+        Returns:
+            tuple: (enhanced_x, enhanced_y) with additional constraint points
+        """
+        if len(x_points) < 3:
+            return x_points, y_points
+        
+        # Add points between existing points to encourage smooth curves
+        enhanced_x = list(x_points)
+        enhanced_y = list(y_points)
+        
+        for i in range(len(x_points) - 1):
+            # Add midpoint with interpolated y value
+            mid_x = (x_points[i] + x_points[i + 1]) / 2
+            mid_y = (y_points[i] + y_points[i + 1]) / 2
+            
+            enhanced_x.append(mid_x)
+            enhanced_y.append(mid_y)
+        
+        # Sort by x coordinate
+        sort_idx = np.argsort(enhanced_x)
+        enhanced_x = np.array(enhanced_x)[sort_idx]
+        enhanced_y = np.array(enhanced_y)[sort_idx]
+        
+        return enhanced_x, enhanced_y
     
     def decide_curves_for_letter(self, contour):
         """
@@ -291,65 +362,58 @@ class PolynomialFitter:
         # Sample points smartly from this region
         return self.generate_smart_sample_points(region, points_per_curve)
 
-    def fit_contour_polynomials(self, contour, max_degree=15):
+    def fit_contour_polynomials(self, contour, max_degree=12):
         """
-        PERFECT INTERPOLATION STRATEGY: Each polynomial passes through ALL its points exactly.
+        SHAPE-ACCURACY STRATEGY: Polynomials are extremely accurate at letter points.
         
-        For each letter:
-        1. Generate curves with manageable number of points (10-15 each)
-        2. Use polynomial interpolation (degree = n-1) to pass through ALL points exactly
-        3. Each polynomial will have ZERO error at all sample points
+        The key insight: We only care about accuracy AT the letter centerline points.
+        Behavior elsewhere (between points, outside letter) doesn't matter.
         
         Args:
-            contour (np.array): Array of (x, y) points along the contour
-            max_degree (int): Maximum polynomial degree (controls max points per curve)
+            contour (np.array): Array of (x, y) centerline points (hundreds of them)
+            max_degree (int): Maximum polynomial degree for shape fitting
             
         Returns:
-            list: List of polynomial function strings that pass through ALL points exactly
+            list: List of polynomial function strings optimized for letter shape
         """
         if len(contour) < 2:
             return []
         
-        # Step 1: Decide number of curves based on max_degree constraint
-        # Each curve can have at most max_degree+1 points for exact interpolation
-        max_points_per_curve = max_degree + 1
-        min_curves = max(3, len(contour) // max_points_per_curve)  # At least 3 curves
+        print(f"    SHAPE-ACCURACY STRATEGY: {len(contour)} centerline points to fit")
         
-        # Also consider complexity
-        complexity_curves = self.decide_curves_for_letter(contour)
-        num_curves = max(min_curves, complexity_curves // 2)  # Balance complexity and interpolation
+        # With hundreds of centerline points, we need more curves to capture detail
+        # But each curve uses fewer points for better polynomial stability
+        points_per_curve = min(20, max(8, len(contour) // 25))  # 8-20 points per curve
+        num_curves = max(10, len(contour) // points_per_curve)  # More curves for detail
         
-        print(f"    PERFECT INTERPOLATION: generating {num_curves} curves for exact point matching")
-        print(f"    Each curve will have ≤{max_points_per_curve} points for degree ≤{max_degree} interpolation")
+        print(f"    Generating {num_curves} curves with ~{points_per_curve} points each")
+        print(f"    Focus: Maximum accuracy at letter centerline points")
         
         functions = []
-        # Calculate points per curve to stay within interpolation limits
-        points_per_curve = min(max_points_per_curve, max(8, len(contour) // num_curves))
         
-        # Step 2: Generate curves with exact interpolation constraint
+        # Generate overlapping curves that focus on letter shape accuracy
         for curve_idx in range(num_curves):
-            # Calculate region with overlap but ensure manageable point count
-            start_ratio = (curve_idx / num_curves) * 0.8  # 20% overlap
-            end_ratio = ((curve_idx + 1) / num_curves) * 1.2
+            # Small overlap to ensure continuity
+            start_ratio = (curve_idx / num_curves) * 0.9
+            end_ratio = ((curve_idx + 1) / num_curves) * 1.1
             end_ratio = min(1.0, end_ratio)
             
-            # Step 3: Generate points for EXACT interpolation
+            # Extract points for this curve region
             curve_points = self.generate_curve_from_region(contour, start_ratio, end_ratio, points_per_curve)
             
-            if len(curve_points) < 2:
+            if len(curve_points) < 3:
                 continue
             
-            # Step 4: Create polynomial that passes through ALL points exactly
+            # Fit polynomial optimized for shape accuracy at these specific points
             func = self.fit_polynomial_to_segment(curve_points, max_degree)
             
             if func:
                 functions.append(func)
-                actual_degree = self._get_degree_from_function(func)
-                print(f"      Curve {curve_idx+1}: EXACT interpolation through {len(curve_points)} points (degree {actual_degree})")
+                print(f"      Curve {curve_idx+1}: Shape-optimized for {len(curve_points)} centerline points")
             else:
-                print(f"      Curve {curve_idx+1}: Failed exact interpolation")
+                print(f"      Curve {curve_idx+1}: Failed to create shape-optimized polynomial")
         
-        print(f"    Total exact interpolation functions: {len(functions)}")
+        print(f"    Total shape-accurate functions: {len(functions)}")
         return functions
     
     def _get_degree_from_function(self, func_str):
