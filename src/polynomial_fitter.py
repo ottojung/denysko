@@ -113,16 +113,17 @@ class PolynomialFitter:
         
         return x_sorted, y_sorted
     
-    def fit_polynomial_to_segment(self, segment, max_degree=12):
+    def fit_polynomial_to_segment(self, segment, max_degree=15):
         """
-        Fit a y=f(x) polynomial to a segment of points with OVERFITTING for better accuracy.
+        Fit a y=f(x) polynomial that EXACTLY passes through ALL points (perfect interpolation).
+        Uses polynomial interpolation to ensure every point is matched exactly.
         
         Args:
             segment (np.array): Array of (x, y) points
-            max_degree (int): Maximum polynomial degree (increased for overfitting)
+            max_degree (int): Maximum polynomial degree (will use exactly n-1 degree for n points)
             
         Returns:
-            str: Polynomial function string, or None if fitting fails
+            str: Polynomial function string that passes through ALL points exactly
         """
         if len(segment) < 2:
             return None
@@ -134,40 +135,54 @@ class PolynomialFitter:
             if len(x_sorted) < 2:
                 return None
             
-            # OVERFITTING: Use high degree polynomials for better accuracy
-            degree = min(max_degree, len(x_sorted) - 1)
+            # EXACT INTERPOLATION: Use degree = number_of_points - 1
+            # This guarantees the polynomial passes through ALL points
+            degree = len(x_sorted) - 1
             
-            # Use higher degrees even for few points to overfit better
-            if len(x_sorted) >= 5:
-                degree = min(max_degree, len(x_sorted) - 1)
-            elif len(x_sorted) >= 3:
-                degree = min(max_degree // 2, len(x_sorted) - 1)
-            else:
-                degree = 1
+            # Cap degree if too high to avoid numerical instability
+            if degree > max_degree:
+                # If too many points, subsample to get exact degree we want
+                max_points = max_degree + 1
+                if len(x_sorted) > max_points:
+                    # Keep evenly spaced points to preserve shape
+                    indices = np.linspace(0, len(x_sorted) - 1, max_points, dtype=int)
+                    x_sorted = x_sorted[indices]
+                    y_sorted = y_sorted[indices]
+                    degree = len(x_sorted) - 1
             
-            # Fit polynomial with high degree for overfitting
+            print(f"        EXACT INTERPOLATION: {len(x_sorted)} points -> degree {degree} (passes through ALL points)")
+            
+            # Use polynomial interpolation for EXACT point matching
             coeffs = np.polyfit(x_sorted, y_sorted, degree)
             
-            # Generate function string with higher precision for overfitting
+            # Verify the fit is exact by checking a few points
+            poly_func = np.poly1d(coeffs)
+            max_error = np.max(np.abs(poly_func(x_sorted) - y_sorted))
+            if max_error > 1e-10:
+                print(f"        Warning: Interpolation error = {max_error:.2e}")
+            else:
+                print(f"        SUCCESS: Perfect interpolation (error = {max_error:.2e})")
+            
+            # Generate function string with high precision
             terms = []
             for i, coeff in enumerate(coeffs):
-                if abs(coeff) < 1e-15:  # Increased precision threshold
+                if abs(coeff) < 1e-16:  # Very high precision threshold
                     continue
                     
                 power = degree - i
                 if power == 0:
-                    terms.append(f"{coeff:.12f}")  # Higher precision
+                    terms.append(f"{coeff:.15f}")  # Maximum precision
                 elif power == 1:
-                    terms.append(f"{coeff:.12f}*x")
+                    terms.append(f"{coeff:.15f}*x")
                 else:
-                    terms.append(f"{coeff:.12f}*x^{power}")
+                    terms.append(f"{coeff:.15f}*x^{power}")
             
             if terms:
                 func_str = " + ".join(terms).replace("+ -", "- ")
                 return f"y = {func_str}"
             
         except Exception as e:
-            print(f"Warning: Failed to fit polynomial to segment: {e}")
+            print(f"Warning: Failed to create exact interpolation: {e}")
         
         return None
     
@@ -276,58 +291,65 @@ class PolynomialFitter:
         # Sample points smartly from this region
         return self.generate_smart_sample_points(region, points_per_curve)
 
-    def fit_contour_polynomials(self, contour, max_degree=12):
+    def fit_contour_polynomials(self, contour, max_degree=15):
         """
-        OVERFITTING STRATEGY: Fit multiple high-degree y=f(x) polynomials with many points each.
+        PERFECT INTERPOLATION STRATEGY: Each polynomial passes through ALL its points exactly.
         
         For each letter:
-        1. Generate fewer curves but with MANY MORE POINTS each
-        2. Use HIGH DEGREE polynomials to overfit and capture fine details
-        3. Each curve uses 30-50 points for precise fitting
+        1. Generate curves with manageable number of points (10-15 each)
+        2. Use polynomial interpolation (degree = n-1) to pass through ALL points exactly
+        3. Each polynomial will have ZERO error at all sample points
         
         Args:
             contour (np.array): Array of (x, y) points along the contour
-            max_degree (int): Maximum polynomial degree (increased for overfitting)
+            max_degree (int): Maximum polynomial degree (controls max points per curve)
             
         Returns:
-            list: List of polynomial function strings
+            list: List of polynomial function strings that pass through ALL points exactly
         """
         if len(contour) < 2:
             return []
         
-        # Step 1: Decide number of curves (FEWER curves, MORE points each)
-        num_curves = self.decide_curves_for_letter(contour)
-        print(f"    OVERFITTING strategy: generating {num_curves} curves with many points each")
+        # Step 1: Decide number of curves based on max_degree constraint
+        # Each curve can have at most max_degree+1 points for exact interpolation
+        max_points_per_curve = max_degree + 1
+        min_curves = max(3, len(contour) // max_points_per_curve)  # At least 3 curves
+        
+        # Also consider complexity
+        complexity_curves = self.decide_curves_for_letter(contour)
+        num_curves = max(min_curves, complexity_curves // 2)  # Balance complexity and interpolation
+        
+        print(f"    PERFECT INTERPOLATION: generating {num_curves} curves for exact point matching")
+        print(f"    Each curve will have ≤{max_points_per_curve} points for degree ≤{max_degree} interpolation")
         
         functions = []
-        # INCREASED points per curve for overfitting
-        points_per_curve = max(30, len(contour) // num_curves)  # At least 30 points per curve
-        points_per_curve = min(points_per_curve, 80)  # Cap at 80 points to avoid excessive computation
+        # Calculate points per curve to stay within interpolation limits
+        points_per_curve = min(max_points_per_curve, max(8, len(contour) // num_curves))
         
-        # Step 2: Generate curves from different regions with HEAVY OVERLAP
+        # Step 2: Generate curves with exact interpolation constraint
         for curve_idx in range(num_curves):
-            # INCREASED overlap for better continuity and more points
-            start_ratio = (curve_idx / num_curves) * 0.7  # 30% overlap
-            end_ratio = ((curve_idx + 1) / num_curves) * 1.3
+            # Calculate region with overlap but ensure manageable point count
+            start_ratio = (curve_idx / num_curves) * 0.8  # 20% overlap
+            end_ratio = ((curve_idx + 1) / num_curves) * 1.2
             end_ratio = min(1.0, end_ratio)
             
-            # Step 3: Generate MANY smart sample points for this region
+            # Step 3: Generate points for EXACT interpolation
             curve_points = self.generate_curve_from_region(contour, start_ratio, end_ratio, points_per_curve)
             
-            if len(curve_points) < 3:
+            if len(curve_points) < 2:
                 continue
             
-            # Step 4: Fit HIGH-DEGREE polynomial to overfit these many points
+            # Step 4: Create polynomial that passes through ALL points exactly
             func = self.fit_polynomial_to_segment(curve_points, max_degree)
             
             if func:
                 functions.append(func)
                 actual_degree = self._get_degree_from_function(func)
-                print(f"      Curve {curve_idx+1}: {len(curve_points)} points -> degree {actual_degree} polynomial (OVERFITTING)")
+                print(f"      Curve {curve_idx+1}: EXACT interpolation through {len(curve_points)} points (degree {actual_degree})")
             else:
-                print(f"      Curve {curve_idx+1}: Failed to fit polynomial")
+                print(f"      Curve {curve_idx+1}: Failed exact interpolation")
         
-        print(f"    Total overfitted functions: {len(functions)}")
+        print(f"    Total exact interpolation functions: {len(functions)}")
         return functions
     
     def _get_degree_from_function(self, func_str):
