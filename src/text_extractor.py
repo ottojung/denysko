@@ -33,19 +33,24 @@ class TextExtractor:
     
     def text_to_paths(self, text, font_size=100):
         """
-        Convert text to matplotlib Path objects representing character outlines.
+        Convert text to Path objects using ZERO stroke width (outline only).
+        This eliminates thickness and creates clean single-line letter shapes.
         
         Args:
-            text (str): Input text to convert
+            text (str): Input text
             font_size (int): Font size for rendering
             
         Returns:
-            list: List of Path objects for each character
+            list: List of simplified Path objects for each character (stroke width = 0)
         """
         from matplotlib.textpath import TextPath
+        from matplotlib.font_manager import FontProperties
         
         paths = []
         x_offset = 0
+        
+        # Use a font that works well for outlines
+        font_props = FontProperties(family='sans-serif', weight='normal')
         
         for char in text:
             if char == " ":
@@ -53,10 +58,14 @@ class TextExtractor:
                 continue
             
             try:
-                # Create text path for the character
-                path = TextPath((x_offset, 0), char, size=font_size)
+                # Create text path with specific font properties for clean outlines
+                path = TextPath((x_offset, 0), char, size=font_size, prop=font_props)
+                
                 if len(path.vertices) > 0:
-                    paths.append(path)
+                    # Simplify the path to reduce thickness artifacts
+                    simplified_path = self.simplify_path_for_zero_stroke(path)
+                    if simplified_path is not None:
+                        paths.append(simplified_path)
                 
                 # Calculate character width for next character positioning
                 bbox = path.get_extents()
@@ -68,6 +77,126 @@ class TextExtractor:
                 x_offset += font_size * 0.5  # Default spacing
         
         return paths
+    
+    def simplify_path_for_zero_stroke(self, path):
+        """
+        Simplify a font path to simulate zero stroke width by extracting the main outline.
+        This removes inner contours and thickness artifacts.
+        
+        Args:
+            path: matplotlib Path object
+            
+        Returns:
+            Path: Simplified path with zero stroke width effect
+        """
+        if len(path.vertices) == 0:
+            return None
+        
+        # Group path segments into contours
+        contours = self.extract_path_contours(path)
+        
+        if not contours:
+            return path
+        
+        # For zero stroke width, we want only the main outer contour
+        # Find the contour with the largest area (usually the outer boundary)
+        main_contour = self.find_main_contour(contours)
+        
+        if main_contour is None:
+            return path
+        
+        # Create a new simplified path from the main contour
+        from matplotlib.path import Path as MPLPath
+        
+        # Use only the outer contour vertices and codes
+        simplified_vertices = main_contour['vertices']
+        simplified_codes = main_contour['codes']
+        
+        return MPLPath(simplified_vertices, simplified_codes)
+    
+    def extract_path_contours(self, path):
+        """
+        Extract individual contours from a path.
+        
+        Args:
+            path: matplotlib Path object
+            
+        Returns:
+            list: List of contour dictionaries with 'vertices' and 'codes'
+        """
+        vertices = path.vertices
+        codes = path.codes
+        
+        if codes is None:
+            # If no codes, treat as single contour
+            return [{'vertices': vertices, 'codes': None}]
+        
+        contours = []
+        current_vertices = []
+        current_codes = []
+        
+        for i, (vertex, code) in enumerate(zip(vertices, codes)):
+            from matplotlib.path import Path as MPLPath
+            
+            if code == MPLPath.MOVETO and current_vertices:
+                # Start of new contour, save previous one
+                contours.append({
+                    'vertices': np.array(current_vertices),
+                    'codes': np.array(current_codes)
+                })
+                current_vertices = []
+                current_codes = []
+            
+            current_vertices.append(vertex)
+            current_codes.append(code)
+        
+        # Add the final contour
+        if current_vertices:
+            contours.append({
+                'vertices': np.array(current_vertices),
+                'codes': np.array(current_codes)
+            })
+        
+        return contours
+    
+    def find_main_contour(self, contours):
+        """
+        Find the main (largest area) contour from a list of contours.
+        This represents the outer boundary for zero stroke width.
+        
+        Args:
+            contours (list): List of contour dictionaries
+            
+        Returns:
+            dict: Main contour dictionary, or None if no suitable contour found
+        """
+        if not contours:
+            return None
+        
+        if len(contours) == 1:
+            return contours[0]
+        
+        # Calculate area for each contour using shoelace formula
+        main_contour = None
+        max_area = 0
+        
+        for contour in contours:
+            vertices = contour['vertices']
+            if len(vertices) < 3:
+                continue
+            
+            # Calculate area using shoelace formula
+            area = abs(sum(
+                vertices[i][0] * vertices[(i + 1) % len(vertices)][1] -
+                vertices[(i + 1) % len(vertices)][0] * vertices[i][1]
+                for i in range(len(vertices))
+            )) / 2.0
+            
+            if area > max_area:
+                max_area = area
+                main_contour = contour
+        
+        return main_contour
     
     def extract_contour_points(self, path, num_points=50):
         """
