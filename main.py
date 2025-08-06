@@ -155,175 +155,307 @@ class TextToDesmos:
 
     def fit_polynomial_contour_tracing(self, contour, max_degree=12):
         """
-        Fit polynomials that actually trace the letter contour paths.
-
-        This method creates polynomials that follow the actual shape of letters
-        by using careful contour analysis and high-degree polynomial fitting.
-
+        Fit polynomials that actually trace the letter contour paths using structural analysis.
+        
+        This method identifies the natural structural components of letters (like the legs
+        and crossbar of an 'A') and fits appropriate polynomials to each component.
+        
         Args:
             contour (np.array): Array of (x, y) points along the letter contour
             max_degree (int): Maximum polynomial degree (can be high for accuracy)
-
+            
         Returns:
             list: List of polynomial functions that trace the letter shape
         """
         if len(contour) < 4:
             return []
-
+        
         functions = []
-
+        
         # Ensure contour is a closed loop by connecting end to start if needed
         if np.linalg.norm(contour[0] - contour[-1]) > 1e-3:
             contour = np.vstack([contour, contour[0]])
 
         x_data = contour[:, 0]
         y_data = contour[:, 1]
-
-        # Method 1: Direct polynomial fitting where possible
+        
+        print(f"      Analyzing contour with {len(contour)} points")
+        print(f"      X range: {np.min(x_data):.2f} to {np.max(x_data):.2f}")
+        print(f"      Y range: {np.min(y_data):.2f} to {np.max(y_data):.2f}")
+        
+        # New Approach: Structural Component Analysis
+        # Instead of trying to fit the whole contour, identify structural components
+        
         try:
-            # Approach 1a: Try to fit y = f(x) where it makes sense
-            if self._has_function_property(x_data, y_data):
-                # Sort by x and fit y = f(x) directly
-                sort_idx = np.argsort(x_data)
-                x_sorted = x_data[sort_idx]
-                y_sorted = y_data[sort_idx]
-
-                # Remove duplicate x values by averaging y values
-                x_unique, indices = np.unique(x_sorted, return_inverse=True)
-                y_averaged = np.array(
-                    [np.mean(y_sorted[indices == i]) for i in range(len(x_unique))]
-                )
-
-                if len(x_unique) >= 3:
-                    degree = min(max_degree, len(x_unique) - 1)
-                    y_coeffs_direct = np.polyfit(x_unique, y_averaged, degree)
-
-                    # Create function string
-                    terms = []
-                    for i, coeff in enumerate(y_coeffs_direct):
-                        if abs(coeff) < 1e-12:
-                            continue
-                        power = degree - i
-                        if power == 0:
-                            terms.append(f"{coeff:.8f}")
-                        elif power == 1:
-                            terms.append(f"{coeff:.8f}*x")
-                        else:
-                            terms.append(f"{coeff:.8f}*x^{power}")
-
-                    if terms:
-                        func_str = " + ".join(terms).replace("+ -", "- ")
-                        functions.append(f"y = {func_str}")
-
-            # Approach 1b: Try x = f(y) where appropriate
-            if self._has_function_property(y_data, x_data):
-                sort_idx = np.argsort(y_data)
-                y_sorted = y_data[sort_idx]
-                x_sorted = x_data[sort_idx]
-
-                # Remove duplicate y values
-                y_unique, indices = np.unique(y_sorted, return_inverse=True)
-                x_averaged = np.array(
-                    [np.mean(x_sorted[indices == i]) for i in range(len(y_unique))]
-                )
-
-                if len(y_unique) >= 3:
-                    degree = min(max_degree, len(y_unique) - 1)
-                    x_coeffs_direct = np.polyfit(y_unique, x_averaged, degree)
-
-                    # Create function string
-                    terms = []
-                    for i, coeff in enumerate(x_coeffs_direct):
-                        if abs(coeff) < 1e-12:
-                            continue
-                        power = degree - i
-                        if power == 0:
-                            terms.append(f"{coeff:.8f}")
-                        elif power == 1:
-                            terms.append(f"{coeff:.8f}*y")
-                        else:
-                            terms.append(f"{coeff:.8f}*y^{power}")
-
-                    if terms:
-                        func_str = " + ".join(terms).replace("+ -", "- ")
-                        functions.append(f"x = {func_str}")
-
-        except Exception as e:
-            print(f"Warning: Failed to fit direct polynomials: {e}")
-
-        # Method 2: Piecewise polynomial approach for complex shapes
-        # Split contour into segments that can be represented as functions
-        try:
-            segments = self._split_contour_into_functional_segments(contour)
-
-            for segment in segments:
-                if len(segment) < 3:
+            # Method 1: Identify straight line segments using edge detection
+            line_segments = self._identify_line_segments(contour)
+            print(f"      Identified {len(line_segments)} line segments")
+            
+            for i, segment in enumerate(line_segments):
+                if len(segment) < 2:
                     continue
-
+                    
                 x_seg = segment[:, 0]
                 y_seg = segment[:, 1]
-
-                # Determine if this segment is better as y=f(x) or x=f(y)
-                x_range = np.max(x_seg) - np.min(x_seg)
-                y_range = np.max(y_seg) - np.min(y_seg)
-
-                if x_range >= y_range and x_range > 1e-6:
-                    # Fit y = f(x)
-                    sort_idx = np.argsort(x_seg)
-                    x_sorted = x_seg[sort_idx]
-                    y_sorted = y_seg[sort_idx]
-
-                    degree = min(max_degree, len(x_sorted) - 1)
+                
+                # Fit linear or low-degree polynomial to each line segment
+                try:
+                    # For line segments, use lower degree (1-3) for better line representation
+                    degree = min(3, len(segment) - 1, max_degree)
                     if degree >= 1:
-                        coeffs = np.polyfit(x_sorted, y_sorted, degree)
-
-                        terms = []
-                        for i, coeff in enumerate(coeffs):
-                            if abs(coeff) < 1e-12:
-                                continue
-                            power = degree - i
-                            if power == 0:
-                                terms.append(f"{coeff:.8f}")
-                            elif power == 1:
-                                terms.append(f"{coeff:.8f}*x")
-                            else:
-                                terms.append(f"{coeff:.8f}*x^{power}")
-
-                        if terms:
-                            func_str = " + ".join(terms).replace("+ -", "- ")
-                            functions.append(f"y = {func_str}")
-
-                elif y_range > 1e-6:
-                    # Fit x = f(y)
-                    sort_idx = np.argsort(y_seg)
-                    y_sorted = y_seg[sort_idx]
-                    x_sorted = x_seg[sort_idx]
-
-                    degree = min(max_degree, len(y_sorted) - 1)
-                    if degree >= 1:
-                        coeffs = np.polyfit(y_sorted, x_sorted, degree)
-
-                        terms = []
-                        for i, coeff in enumerate(coeffs):
-                            if abs(coeff) < 1e-12:
-                                continue
-                            power = degree - i
-                            if power == 0:
-                                terms.append(f"{coeff:.8f}")
-                            elif power == 1:
-                                terms.append(f"{coeff:.8f}*y")
-                            else:
-                                terms.append(f"{coeff:.8f}*y^{power}")
-
-                        if terms:
-                            func_str = " + ".join(terms).replace("+ -", "- ")
-                            functions.append(f"x = {func_str}")
-
+                        # Determine orientation and fit accordingly
+                        x_range = np.max(x_seg) - np.min(x_seg)
+                        y_range = np.max(y_seg) - np.min(y_seg)
+                        
+                        if x_range >= y_range and x_range > 1e-6:
+                            # Fit y = f(x) for more horizontal segments
+                            coeffs = np.polyfit(x_seg, y_seg, degree)
+                            func_str = self._create_polynomial_string(coeffs, 'x')
+                            if func_str:
+                                functions.append(f"y = {func_str}")
+                                print(f"         Segment {i+1}: y = {func_str}")
+                        
+                        elif y_range > 1e-6:
+                            # Fit x = f(y) for more vertical segments
+                            coeffs = np.polyfit(y_seg, x_seg, degree)
+                            func_str = self._create_polynomial_string(coeffs, 'y')
+                            if func_str:
+                                functions.append(f"x = {func_str}")
+                                print(f"         Segment {i+1}: x = {func_str}")
+                
+                except Exception as e:
+                    print(f"         Failed to fit segment {i+1}: {e}")
+                    continue
+        
         except Exception as e:
-            print(f"Warning: Failed to fit piecewise polynomials: {e}")
-
+            print(f"      Line segment identification failed: {e}")
+        
+        # Method 2: Fallback to curvature-based segmentation if line detection fails
+        if len(functions) < 2:  # Need at least a few functions to represent a letter
+            try:
+                print(f"      Using fallback curvature-based segmentation")
+                curve_segments = self._split_by_curvature(contour, max_segments=8)
+                print(f"      Created {len(curve_segments)} curve segments")
+                
+                for i, segment in enumerate(curve_segments):
+                    if len(segment) < 3:
+                        continue
+                    
+                    x_seg = segment[:, 0]
+                    y_seg = segment[:, 1]
+                    
+                    # Use moderate degree for curve segments
+                    degree = min(6, len(segment) - 1, max_degree)
+                    
+                    x_range = np.max(x_seg) - np.min(x_seg)
+                    y_range = np.max(y_seg) - np.min(y_seg)
+                    
+                    try:
+                        if x_range >= y_range and x_range > 1e-6:
+                            coeffs = np.polyfit(x_seg, y_seg, degree)
+                            func_str = self._create_polynomial_string(coeffs, 'x')
+                            if func_str:
+                                functions.append(f"y = {func_str}")
+                        
+                        elif y_range > 1e-6:
+                            coeffs = np.polyfit(y_seg, x_seg, degree)
+                            func_str = self._create_polynomial_string(coeffs, 'y')
+                            if func_str:
+                                functions.append(f"x = {func_str}")
+                    
+                    except Exception as e:
+                        print(f"         Failed to fit curve segment {i+1}: {e}")
+                        continue
+                        
+            except Exception as e:
+                print(f"      Curvature-based segmentation failed: {e}")
+        
+        # Method 3: Final fallback - simple segmentation
+        if len(functions) == 0:
+            print(f"      Using simple fallback segmentation")
+            try:
+                # Just split the contour into a few overlapping segments
+                n_segments = min(6, len(contour) // 8)
+                for i in range(n_segments):
+                    start_idx = i * len(contour) // n_segments
+                    end_idx = min((i + 2) * len(contour) // n_segments, len(contour))
+                    
+                    segment = contour[start_idx:end_idx]
+                    if len(segment) < 3:
+                        continue
+                    
+                    x_seg = segment[:, 0]
+                    y_seg = segment[:, 1]
+                    
+                    degree = min(4, len(segment) - 1)
+                    
+                    x_range = np.max(x_seg) - np.min(x_seg)
+                    y_range = np.max(y_seg) - np.min(y_seg)
+                    
+                    try:
+                        if x_range >= y_range and x_range > 1e-6:
+                            coeffs = np.polyfit(x_seg, y_seg, degree)
+                            func_str = self._create_polynomial_string(coeffs, 'x')
+                            if func_str:
+                                functions.append(f"y = {func_str}")
+                        
+                        elif y_range > 1e-6:
+                            coeffs = np.polyfit(y_seg, x_seg, degree)
+                            func_str = self._create_polynomial_string(coeffs, 'y')
+                            if func_str:
+                                functions.append(f"x = {func_str}")
+                    
+                    except Exception:
+                        continue
+            
+            except Exception as e:
+                print(f"      Simple fallback failed: {e}")
+        
+        print(f"      Generated {len(functions)} functions for this contour")
         return functions
-
+    
+    def _create_polynomial_string(self, coeffs, var):
+        """Create a polynomial string from coefficients."""
+        terms = []
+        degree = len(coeffs) - 1
+        
+        for i, coeff in enumerate(coeffs):
+            if abs(coeff) < 1e-12:
+                continue
+                
+            power = degree - i
+            coeff_str = f"{coeff:.6f}"
+            
+            if power == 0:
+                terms.append(coeff_str)
+            elif power == 1:
+                terms.append(f"{coeff_str}*{var}")
+            else:
+                terms.append(f"{coeff_str}*{var}^{power}")
+        
+        if not terms:
+            return None
+            
+        func_str = " + ".join(terms).replace("+ -", "- ")
+        return func_str
+    
+    def _identify_line_segments(self, contour):
+        """
+        Identify straight line segments in a contour using direction analysis.
+        This helps identify structural components like the legs of an 'A'.
+        """
+        if len(contour) < 6:
+            return [contour]
+        
+        segments = []
+        
+        # Calculate direction vectors between consecutive points
+        directions = np.diff(contour, axis=0)
+        direction_magnitudes = np.linalg.norm(directions, axis=1)
+        
+        # Avoid division by zero
+        valid_dirs = direction_magnitudes > 1e-6
+        normalized_directions = np.zeros_like(directions)
+        normalized_directions[valid_dirs] = directions[valid_dirs] / direction_magnitudes[valid_dirs][:, np.newaxis]
+        
+        # Find points where direction changes significantly
+        direction_changes = []
+        for i in range(1, len(normalized_directions)):
+            if valid_dirs[i-1] and valid_dirs[i]:
+                # Calculate angle between consecutive direction vectors
+                dot_product = np.dot(normalized_directions[i-1], normalized_directions[i])
+                dot_product = np.clip(dot_product, -1, 1)  # Handle numerical errors
+                angle_change = np.arccos(dot_product)
+                
+                # If direction changes by more than 30 degrees, mark as corner
+                if angle_change > np.pi / 6:  # 30 degrees
+                    direction_changes.append(i)
+        
+        # Split contour at direction changes
+        if len(direction_changes) == 0:
+            return [contour]
+        
+        # Add start and end points
+        split_points = [0] + direction_changes + [len(contour)]
+        
+        for i in range(len(split_points) - 1):
+            start = split_points[i]
+            end = split_points[i + 1]
+            segment = contour[start:end+1]  # Include endpoint
+            
+            if len(segment) >= 3:  # Only keep segments with enough points
+                segments.append(segment)
+        
+        return segments
+    
+    def _split_by_curvature(self, contour, max_segments=8):
+        """
+        Split contour based on curvature analysis.
+        Areas of high curvature indicate corners/bends where we should split.
+        """
+        if len(contour) < 10:
+            return [contour]
+        
+        # Calculate curvature at each point
+        curvatures = []
+        
+        for i in range(1, len(contour) - 1):
+            p1 = contour[i-1]
+            p2 = contour[i]
+            p3 = contour[i+1]
+            
+            # Calculate curvature using the three-point method
+            v1 = p2 - p1
+            v2 = p3 - p2
+            
+            # Cross product magnitude gives curvature
+            cross = v1[0] * v2[1] - v1[1] * v2[0]
+            norm_v1 = np.linalg.norm(v1)
+            norm_v2 = np.linalg.norm(v2)
+            
+            if norm_v1 > 1e-6 and norm_v2 > 1e-6:
+                curvature = abs(cross) / (norm_v1 * norm_v2)
+                curvatures.append(curvature)
+            else:
+                curvatures.append(0)
+        
+        if len(curvatures) == 0:
+            return [contour]
+        
+        # Find high curvature points
+        mean_curvature = np.mean(curvatures)
+        std_curvature = np.std(curvatures)
+        threshold = mean_curvature + 0.5 * std_curvature
+        
+        high_curvature_indices = []
+        for i, curv in enumerate(curvatures):
+            if curv > threshold:
+                high_curvature_indices.append(i + 1)  # Adjust for offset
+        
+        # Limit number of segments
+        if len(high_curvature_indices) > max_segments - 1:
+            # Keep only the highest curvature points
+            sorted_indices = sorted(enumerate(curvatures), key=lambda x: x[1], reverse=True)
+            top_indices = [i + 1 for i, _ in sorted_indices[:max_segments-1]]
+            high_curvature_indices = sorted(top_indices)
+        
+        # Split at high curvature points
+        if len(high_curvature_indices) == 0:
+            return [contour]
+        
+        split_points = [0] + high_curvature_indices + [len(contour)]
+        segments = []
+        
+        for i in range(len(split_points) - 1):
+            start = split_points[i]
+            end = split_points[i + 1]
+            segment = contour[start:end+1]
+            
+            if len(segment) >= 3:
+                segments.append(segment)
+        
+        return segments
+    
     def _has_function_property(self, x_data, y_data):
         """Check if data can be represented as a function (no repeated x values)."""
         x_unique = np.unique(x_data)
@@ -524,6 +656,36 @@ class TextToDesmos:
         print(f"Functions saved to {filename}")
 
 
+def test_letter_A_generation():
+    """Test function to generate letter A without user input."""
+    print("=== TESTING LETTER A GENERATION ===")
+    
+    try:
+        # Create converter with default settings
+        converter = TextToDesmos(origin=(0, 0), scale=1.0)
+        
+        # Generate functions for letter A
+        print("Generating functions for letter 'A'...")
+        functions = converter.text_to_desmos_functions("A", max_degree=6)  # Lower degree for testing
+        
+        print(f"\nGenerated {len(functions)} functions:")
+        for i, func in enumerate(functions, 1):
+            print(f"{i}. {func}")
+        
+        if len(functions) == 0:
+            print("ERROR: No functions generated!")
+        else:
+            print(f"\nSuccess! Generated {len(functions)} functions that should trace letter A.")
+            
+        return functions
+        
+    except Exception as e:
+        print(f"Test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+
 def main():
     """Main function demonstrating the text to Desmos converter."""
     print("Text to Desmos Polynomial Converter")
@@ -587,4 +749,10 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "test":
+        # Run test mode
+        test_letter_A_generation()
+    else:
+        # Run normal interactive mode
+        main()
