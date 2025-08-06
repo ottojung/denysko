@@ -20,11 +20,8 @@ warnings.filterwarnings("ignore")
 class TextToDesmos:
     def __init__(self, origin=(0, 0), scale=1.0):
         """
-        Initialize the text to Desmos conv            # Fit polynomials that actually trace each contour shape
-            for j, contour in enumerate(contours):
-                functions = self.fit_polynomial_contour_tracing(contour, max_degree)
-                all_functions.extend(functions)
-                print(f"    Contour {j+1}: {len(functions)} polynomial functions tracing the shape")
+        Initialize the text to Desmos converter.
+
         Args:
             origin (tuple): Origin point (x, y) for positioning the text
             scale (float): Scale factor for the text size
@@ -174,12 +171,10 @@ class TextToDesmos:
             return []
         
         functions = []
-        n_points = len(contour)
         
         # Ensure contour is a closed loop by connecting end to start if needed
         if np.linalg.norm(contour[0] - contour[-1]) > 1e-3:
             contour = np.vstack([contour, contour[0]])
-            n_points = len(contour)
         
         x_data = contour[:, 0]
         y_data = contour[:, 1]
@@ -377,156 +372,6 @@ class TextToDesmos:
             segments.append(np.array(current_segment))
         
         return segments
-        """
-        Fit multiple polynomial functions to a contour to highlight the letter shape.
-
-        Args:
-            contour (np.array): Array of (x, y) points
-            max_degree (int): Maximum polynomial degree
-            num_functions_per_contour (int): Number of different functions to fit per contour
-
-        Returns:
-            list: List of polynomial functions as strings (without domain constraints)
-        """
-        if len(contour) < 3:
-            return []
-
-        functions = []
-        n_points = len(contour)
-
-        # Create multiple polynomial fits with different approaches to highlight the shape
-
-        # Approach 1: Fit y = f(x) if x has sufficient variation
-        x_data = contour[:, 0]
-        y_data = contour[:, 1]
-        x_range = np.max(x_data) - np.min(x_data)
-        y_range = np.max(y_data) - np.min(y_data)
-
-        if x_range > 1e-3:  # If x has reasonable variation
-            # Sort by x
-            sort_idx = np.argsort(x_data)
-            x_sorted = x_data[sort_idx]
-            y_sorted = y_data[sort_idx]
-
-            # Create multiple functions with different degrees
-            for degree in range(2, min(max_degree + 1, len(x_sorted))):
-                try:
-                    coeffs = np.polyfit(x_sorted, y_sorted, degree)
-
-                    # Generate function string without domain constraints
-                    terms = []
-                    for i, coeff in enumerate(coeffs):
-                        if abs(coeff) < 1e-12:
-                            continue
-                        power = degree - i
-                        if power == 0:
-                            terms.append(f"{coeff:.6f}")
-                        elif power == 1:
-                            terms.append(f"{coeff:.6f}*x")
-                        else:
-                            terms.append(f"{coeff:.6f}*x^{power}")
-
-                    if terms:
-                        func_str = " + ".join(terms).replace("+ -", "- ")
-                        final_func = f"y = {func_str}"
-                        functions.append(final_func)
-
-                        # Only add a few different degrees to avoid too many functions
-                        if len(functions) >= num_functions_per_contour // 2:
-                            break
-
-                except Exception as e:
-                    print(
-                        f"Warning: Failed to fit y=f(x) polynomial degree {degree}: {e}"
-                    )
-                    continue
-
-        # Approach 2: Fit x = f(y) if y has sufficient variation
-        if y_range > 1e-3:  # If y has reasonable variation
-            # Sort by y
-            sort_idx = np.argsort(y_data)
-            y_sorted = y_data[sort_idx]
-            x_sorted = x_data[sort_idx]
-
-            # Create functions with different degrees
-            for degree in range(2, min(max_degree + 1, len(y_sorted))):
-                try:
-                    coeffs = np.polyfit(y_sorted, x_sorted, degree)
-
-                    # Generate function string without domain constraints
-                    terms = []
-                    for i, coeff in enumerate(coeffs):
-                        if abs(coeff) < 1e-12:
-                            continue
-                        power = degree - i
-                        if power == 0:
-                            terms.append(f"{coeff:.6f}")
-                        elif power == 1:
-                            terms.append(f"{coeff:.6f}*y")
-                        else:
-                            terms.append(f"{coeff:.6f}*y^{power}")
-
-                    if terms:
-                        func_str = " + ".join(terms).replace("+ -", "- ")
-                        final_func = f"x = {func_str}"
-                        functions.append(final_func)
-
-                        # Limit number of functions
-                        if (
-                            len([f for f in functions if f.startswith("x =")])
-                            >= num_functions_per_contour // 2
-                        ):
-                            break
-
-                except Exception as e:
-                    print(
-                        f"Warning: Failed to fit x=f(y) polynomial degree {degree}: {e}"
-                    )
-                    continue
-
-        # Approach 3: If we have very few functions, try parametric approach
-        if len(functions) < 2 and n_points > 5:
-            try:
-                # Fit x(t) and y(t) separately for parametric representation
-                degree = min(4, n_points - 1)
-
-                # Create parametric functions (approximation by eliminating parameter)
-                # This is a simplification - in practice, parametric curves are more complex
-                # But we'll create a simple approximation
-                if degree >= 2:
-                    # Simple approach: create a relationship between x and y
-                    t_vals = np.linspace(0, 1, len(x_data))
-
-                    # Fit real and imaginary parts
-                    real_coeffs = np.polyfit(t_vals, x_data, min(3, len(t_vals) - 1))
-                    imag_coeffs = np.polyfit(t_vals, y_data, min(3, len(t_vals) - 1))
-
-                    # Create implicit function (simplified)
-                    # This is a rough approximation
-                    if len(real_coeffs) >= 2 and len(imag_coeffs) >= 2:
-                        # Create a simple implicit relationship
-                        a, b, c = (
-                            real_coeffs[-3:]
-                            if len(real_coeffs) >= 3
-                            else [*real_coeffs, 0, 0][:3]
-                        )
-                        d, e_coeff, f = (
-                            imag_coeffs[-3:]
-                            if len(imag_coeffs) >= 3
-                            else [*imag_coeffs, 0, 0][:3]
-                        )
-
-                        # Simple implicit form: ax^2 + by^2 + cxy + dx + ey + f = 0
-                        # Convert to explicit form when possible
-                        if abs(b) > 1e-6:
-                            # Create implicit equation representation
-                            implicit_func = f"({a:.6f})*x^2 + ({c:.6f})*x*y + ({d:.6f})*x + ({b:.6f})*y^2 + ({e_coeff:.6f})*y + ({f:.6f}) = 0"
-                            functions.append(implicit_func)
-
-            except Exception as e:
-                print(f"Warning: Failed to create parametric approximation: {e}")
-
-        return functions
 
     def apply_transform(self, functions):
         """
@@ -562,26 +407,21 @@ class TextToDesmos:
         text,
         font_size=100,
         points_per_char=50,
-        max_degree=6,
-        functions_per_contour=3,
+        max_degree=12,
     ):
         """
-        Convert text to Desmos-compatible polynomial functions without domain constraints.
+        Convert text to Desmos-compatible polynomial functions that trace letter shapes.
 
         Args:
             text (str): Input text
             font_size (int): Font size for rendering
             points_per_char (int): Number of points to extract per character
             max_degree (int): Maximum polynomial degree
-            functions_per_contour (int): Number of functions to generate per contour
 
         Returns:
-            list: List of Desmos function strings (without domain constraints)
+            list: List of Desmos function strings that trace the actual letter shapes
         """
-        print(f"Converting text '{text}' to Desmos functions...")
-        print(
-            "Note: Functions will have no domain constraints - curves may extend beyond letter boundaries"
-        )
+        print(f"Converting text '{text}' to polynomial functions that trace letter shapes...")
 
         # Convert text to paths
         paths = self.text_to_paths(text, font_size)
@@ -597,47 +437,17 @@ class TextToDesmos:
             contours = self.extract_contour_points(path, points_per_char)
             print(f"  Found {len(contours)} contours")
 
-            # Fit multiple polynomials to each contour to highlight the shape
+            # Fit polynomials that actually trace each contour shape
             for j, contour in enumerate(contours):
-                functions = self.fit_polynomial_segments(
-                    contour, max_degree, functions_per_contour
-                )
+                functions = self.fit_polynomial_contour_tracing(contour, max_degree)
                 all_functions.extend(functions)
-                print(f"    Contour {j + 1}: {len(functions)} polynomial functions")
+                print(f"    Contour {j+1}: {len(functions)} polynomial functions tracing the shape")
 
         # Apply transformations
         transformed_functions = self.apply_transform(all_functions)
 
         print(f"\nGenerated {len(transformed_functions)} total functions")
-        print(
-            "Each contour has multiple overlapping polynomial approximations to highlight the letter shape"
-        )
-        return transformed_functions
-
-        # Convert text to paths
-        paths = self.text_to_paths(text, font_size)
-        print(f"Generated {len(paths)} character paths")
-
-        all_functions = []
-
-        # Process each character path
-        for i, path in enumerate(paths):
-            print(f"Processing character {i + 1}/{len(paths)}...")
-
-            # Extract contour points
-            contours = self.extract_contour_points(path, points_per_char)
-            print(f"  Found {len(contours)} contours")
-
-            # Fit polynomials to each contour
-            for j, contour in enumerate(contours):
-                functions = self.fit_polynomial_segments(contour, max_degree)
-                all_functions.extend(functions)
-                print(f"    Contour {j + 1}: {len(functions)} polynomial segments")
-
-        # Apply transformations
-        transformed_functions = self.apply_transform(all_functions)
-
-        print(f"\nGenerated {len(transformed_functions)} total functions")
+        print("Functions trace the actual letter shapes using high-degree polynomials")
         return transformed_functions
 
     def visualize_preview(self, text, functions=None):
