@@ -568,6 +568,7 @@ def main():
     for i, func in enumerate(functions, 1):
         print(f" {func} ")
 
+    print()
     # Save to file
     converter.save_functions(functions)
 
