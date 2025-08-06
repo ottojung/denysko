@@ -113,13 +113,13 @@ class PolynomialFitter:
         
         return x_sorted, y_sorted
     
-    def fit_polynomial_to_segment(self, segment, max_degree=8):
+    def fit_polynomial_to_segment(self, segment, max_degree=12):
         """
-        Fit a y=f(x) polynomial to a segment of points.
+        Fit a y=f(x) polynomial to a segment of points with OVERFITTING for better accuracy.
         
         Args:
             segment (np.array): Array of (x, y) points
-            max_degree (int): Maximum polynomial degree
+            max_degree (int): Maximum polynomial degree (increased for overfitting)
             
         Returns:
             str: Polynomial function string, or None if fitting fails
@@ -134,31 +134,33 @@ class PolynomialFitter:
             if len(x_sorted) < 2:
                 return None
             
-            # Choose degree based on number of points
+            # OVERFITTING: Use high degree polynomials for better accuracy
             degree = min(max_degree, len(x_sorted) - 1)
             
-            # For very few points, use linear
-            if len(x_sorted) <= 2:
+            # Use higher degrees even for few points to overfit better
+            if len(x_sorted) >= 5:
+                degree = min(max_degree, len(x_sorted) - 1)
+            elif len(x_sorted) >= 3:
+                degree = min(max_degree // 2, len(x_sorted) - 1)
+            else:
                 degree = 1
-            elif len(x_sorted) <= 4:
-                degree = min(2, degree)
             
-            # Fit polynomial
+            # Fit polynomial with high degree for overfitting
             coeffs = np.polyfit(x_sorted, y_sorted, degree)
             
-            # Generate function string
+            # Generate function string with higher precision for overfitting
             terms = []
             for i, coeff in enumerate(coeffs):
-                if abs(coeff) < 1e-12:
+                if abs(coeff) < 1e-15:  # Increased precision threshold
                     continue
                     
                 power = degree - i
                 if power == 0:
-                    terms.append(f"{coeff:.8f}")
+                    terms.append(f"{coeff:.12f}")  # Higher precision
                 elif power == 1:
-                    terms.append(f"{coeff:.8f}*x")
+                    terms.append(f"{coeff:.12f}*x")
                 else:
-                    terms.append(f"{coeff:.8f}*x^{power}")
+                    terms.append(f"{coeff:.12f}*x^{power}")
             
             if terms:
                 func_str = " + ".join(terms).replace("+ -", "- ")
@@ -199,15 +201,15 @@ class PolynomialFitter:
         # Count significant direction changes
         significant_changes = sum(1 for angle in directions if angle > np.pi/6)  # 30 degrees
         
-        # Determine number of curves based on complexity
+        # Determine number of curves based on complexity (REDUCED for overfitting)
         if significant_changes < 3:
-            return 30  # Simple letter like I, L
+            return 8  # Simple letter - fewer curves, more points each
         elif significant_changes < 8:
-            return 50  # Medium complexity like A, P
+            return 12  # Medium complexity like A, P
         elif significant_changes < 15:
-            return 80  # Complex letters like B, R
+            return 18  # Complex letters like B, R
         else:
-            return 120  # Very complex letters like @, &
+            return 25  # Very complex letters
 
     def generate_smart_sample_points(self, contour, num_points=10):
         """
@@ -274,18 +276,18 @@ class PolynomialFitter:
         # Sample points smartly from this region
         return self.generate_smart_sample_points(region, points_per_curve)
 
-    def fit_contour_polynomials(self, contour, max_degree=6):
+    def fit_contour_polynomials(self, contour, max_degree=12):
         """
-        NEW STRATEGY: Fit multiple y=f(x) polynomials using intelligent curve sampling.
+        OVERFITTING STRATEGY: Fit multiple high-degree y=f(x) polynomials with many points each.
         
         For each letter:
-        1. Decide on number of curves based on complexity
-        2. For each curve: generate 10 smart sample points close together
-        3. Fit polynomial to each curve
+        1. Generate fewer curves but with MANY MORE POINTS each
+        2. Use HIGH DEGREE polynomials to overfit and capture fine details
+        3. Each curve uses 30-50 points for precise fitting
         
         Args:
             contour (np.array): Array of (x, y) points along the contour
-            max_degree (int): Maximum polynomial degree
+            max_degree (int): Maximum polynomial degree (increased for overfitting)
             
         Returns:
             list: List of polynomial function strings
@@ -293,35 +295,39 @@ class PolynomialFitter:
         if len(contour) < 2:
             return []
         
-        # Step 1: Decide number of curves for this letter
+        # Step 1: Decide number of curves (FEWER curves, MORE points each)
         num_curves = self.decide_curves_for_letter(contour)
-        print(f"    Letter complexity analysis: generating {num_curves} curves")
+        print(f"    OVERFITTING strategy: generating {num_curves} curves with many points each")
         
         functions = []
-        points_per_curve = 10
+        # INCREASED points per curve for overfitting
+        points_per_curve = max(30, len(contour) // num_curves)  # At least 30 points per curve
+        points_per_curve = min(points_per_curve, 80)  # Cap at 80 points to avoid excessive computation
         
-        # Step 2: Generate curves from different regions of the letter
+        # Step 2: Generate curves from different regions with HEAVY OVERLAP
         for curve_idx in range(num_curves):
-            # Calculate region for this curve with overlap
-            start_ratio = (curve_idx / num_curves) * 0.9  # 10% overlap
-            end_ratio = ((curve_idx + 1) / num_curves) * 1.1
+            # INCREASED overlap for better continuity and more points
+            start_ratio = (curve_idx / num_curves) * 0.7  # 30% overlap
+            end_ratio = ((curve_idx + 1) / num_curves) * 1.3
             end_ratio = min(1.0, end_ratio)
             
-            # Step 3: Generate smart sample points for this region
+            # Step 3: Generate MANY smart sample points for this region
             curve_points = self.generate_curve_from_region(contour, start_ratio, end_ratio, points_per_curve)
             
-            if len(curve_points) < 2:
+            if len(curve_points) < 3:
                 continue
             
-            # Step 4: Fit polynomial to these close points
+            # Step 4: Fit HIGH-DEGREE polynomial to overfit these many points
             func = self.fit_polynomial_to_segment(curve_points, max_degree)
             
             if func:
                 functions.append(func)
-                print(f"      Curve {curve_idx+1}: {len(curve_points)} points -> polynomial degree {self._get_degree_from_function(func)}")
+                actual_degree = self._get_degree_from_function(func)
+                print(f"      Curve {curve_idx+1}: {len(curve_points)} points -> degree {actual_degree} polynomial (OVERFITTING)")
             else:
                 print(f"      Curve {curve_idx+1}: Failed to fit polynomial")
         
+        print(f"    Total overfitted functions: {len(functions)}")
         return functions
     
     def _get_degree_from_function(self, func_str):
