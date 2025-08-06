@@ -4,7 +4,11 @@ Main entry point for the text to Desmos converter.
 Only generates y = f(x) functions.
 """
 
-from .text_to_desmos import TextToDesmos
+import sys
+import os
+sys.path.append(os.path.dirname(__file__))
+
+from text_to_desmos import TextToDesmos
 
 
 def main():

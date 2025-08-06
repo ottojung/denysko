@@ -159,7 +159,8 @@ class PolynomialFitter:
                 max_error = np.max(np.abs(poly_func(x_sorted) - y_sorted))
                 print(f"        Improved with degree {degree}: max_error={max_error:.6f}")
             
-            # Generate function string
+            # Generate function string WITH DOMAIN CONSTRAINTS
+            # This prevents curves from extending beyond their intended region
             terms = []
             for i, coeff in enumerate(coeffs):
                 if abs(coeff) < 1e-16:
@@ -175,7 +176,17 @@ class PolynomialFitter:
             
             if terms:
                 func_str = " + ".join(terms).replace("+ -", "- ")
-                return f"y = {func_str}"
+                
+                # Add domain constraints to prevent curve from extending beyond its region
+                x_min = np.min(x_sorted)
+                x_max = np.max(x_sorted)
+                
+                # Use Desmos conditional syntax to restrict domain
+                # This ensures the polynomial only appears in its intended x-range
+                constrained_func = f"y = ({func_str}) \\{{\\{x_min:.6f} \\leq x \\leq {x_max:.6f}\\}}"
+                
+                print(f"        Domain constrained: x ∈ [{x_min:.3f}, {x_max:.3f}]")
+                return constrained_func
             
         except Exception as e:
             print(f"Warning: Failed to create shape-optimized polynomial: {e}")
@@ -387,16 +398,25 @@ class PolynomialFitter:
         num_curves = max(10, len(contour) // points_per_curve)  # More curves for detail
         
         print(f"    Generating {num_curves} curves with ~{points_per_curve} points each")
-        print(f"    Focus: Maximum accuracy at letter centerline points")
+        print("    Focus: Maximum accuracy at letter centerline points")
         
         functions = []
         
-        # Generate overlapping curves that focus on letter shape accuracy
+        # Generate NON-OVERLAPPING curves to minimize visual clutter
+        # Each curve will be restricted to its own domain
         for curve_idx in range(num_curves):
-            # Small overlap to ensure continuity
-            start_ratio = (curve_idx / num_curves) * 0.9
-            end_ratio = ((curve_idx + 1) / num_curves) * 1.1
-            end_ratio = min(1.0, end_ratio)
+            # Minimal or no overlap to prevent curves crossing each other
+            start_ratio = curve_idx / num_curves
+            end_ratio = (curve_idx + 1) / num_curves
+            
+            # Add tiny overlap only for curve continuity (1% of curve length)
+            if curve_idx > 0:
+                overlap = 0.01 / num_curves
+                start_ratio = max(0.0, start_ratio - overlap)
+            
+            if curve_idx < num_curves - 1:
+                overlap = 0.01 / num_curves  
+                end_ratio = min(1.0, end_ratio + overlap)
             
             # Extract points for this curve region
             curve_points = self.generate_curve_from_region(contour, start_ratio, end_ratio, points_per_curve)
@@ -429,7 +449,7 @@ class PolynomialFitter:
             try:
                 degree = int(part.split()[0].split('*')[0].split('+')[0].split('-')[0])
                 max_degree = max(max_degree, degree)
-            except:
+            except Exception:
                 pass
         
         return max_degree

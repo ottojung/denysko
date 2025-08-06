@@ -4,9 +4,9 @@ Main TextToDesmos class that coordinates all modules.
 Only generates y = f(x) functions - no x = f(y) functions.
 """
 
-from .text_extractor import TextExtractor
-from .polynomial_fitter import PolynomialFitter
-from .function_transformer import FunctionTransformer
+from text_extractor import TextExtractor
+from polynomial_fitter import PolynomialFitter
+from function_transformer import FunctionTransformer
 
 
 class TextToDesmos:
