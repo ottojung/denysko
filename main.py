@@ -566,7 +566,7 @@ def main():
     print()
 
     for i, func in enumerate(functions, 1):
-        print(f"{i}. {func}")
+        print(f" {func} ")
 
     # Save to file
     converter.save_functions(functions)
