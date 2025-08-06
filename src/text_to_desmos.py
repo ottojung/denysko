@@ -20,19 +20,21 @@ class TextToDesmos:
         self.fitter = PolynomialFitter(max_degree=max_degree)
         self.transformer = FunctionTransformer(origin=origin, scale=scale)
     
-    def text_to_desmos_functions(self, text, font_size=100, points_per_char=50):
+    def text_to_desmos_functions(self, text, font_size=100, points_per_char=500):
         """
         Convert text to Desmos-compatible y = f(x) polynomial functions ONLY.
+        Uses HUNDREDS of centerline points for precise letter tracing.
         
         Args:
             text (str): Input text
             font_size (int): Font size for rendering
-            points_per_char (int): Number of points to sample per character
+            points_per_char (int): Number of centerline points to sample per character (default: 500)
             
         Returns:
             list: List of Desmos function strings (y = f(x) ONLY)
         """
         print(f"Converting text '{text}' to y = f(x) polynomial functions...")
+        print(f"Using {points_per_char} centerline points per character for high precision")
         print("Note: Only generating y = f(x) functions, no x = f(y)")
         
         # Step 1: Extract character paths
@@ -45,16 +47,17 @@ class TextToDesmos:
         
         all_functions = []
         
-        # Step 2: Process each character
+        # Step 2: Process each character with HUNDREDS of points
         for i, path in enumerate(paths):
             print(f"Processing character {i + 1}/{len(paths)}...")
             
-            # Extract contour points
+            # Extract centerline points (hundreds of points)
             contours = self.extractor.extract_contour_points(path, points_per_char)
             print(f"  Found {len(contours)} contours")
             
             # Fit polynomials to each contour - ONLY y = f(x)
             for j, contour in enumerate(contours):
+                print(f"  Processing contour {j + 1} with {len(contour)} centerline points...")
                 functions = self.fitter.fit_contour_polynomials(contour, self.fitter.max_degree)
                 
                 # Ensure all functions are y = f(x)
