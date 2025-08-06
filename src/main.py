@@ -30,7 +30,7 @@ def main():
     y_functions = [f for f in functions if f.startswith("y =")]
     x_functions = [f for f in functions if f.startswith("x =")]
 
-    print(f"\nVerification:")
+    print("\nVerification:")
     print(f"y = f(x) functions: {len(y_functions)}")
     print(f"x = f(y) functions: {len(x_functions)} (should be 0)")
 
