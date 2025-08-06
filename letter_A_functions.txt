@@ -1,0 +1,11 @@
+# Desmos Functions Generated from Text
+# ALL functions are in the form y = f(x)
+# NO x = f(y) functions are generated
+# Copy and paste these functions into Desmos graphing calculator
+
+# Function 1
+y = - 0.00000635*x^6 + 0.00130285*x^5 - 0.10910323*x^4 + 4.76782819*x^3 - 114.68497758*x^2 + 1442.79573125*x - 7408.30848948
+
+# Function 2
+y = 0.00000000*x^6 - 0.00000077*x^5 + 0.00010206*x^4 - 0.00790659*x^3 + 0.23689525*x^2 - 0.56814951*x + 4.14915105
+

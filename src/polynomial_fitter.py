@@ -9,9 +9,13 @@ import numpy as np
 class PolynomialFitter:
     """Fits y=f(x) polynomials to coordinate point data."""
     
-    def __init__(self):
-        """Initialize the polynomial fitter."""
-        pass
+    def __init__(self, max_degree=8):
+        """Initialize the polynomial fitter.
+        
+        Args:
+            max_degree (int): Maximum polynomial degree to use for fitting
+        """
+        self.max_degree = max_degree
     
     def split_contour_into_x_monotonic_segments(self, contour):
         """
