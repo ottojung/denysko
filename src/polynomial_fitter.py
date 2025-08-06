@@ -21,6 +21,7 @@ class PolynomialFitter:
         """
         Split a contour into segments where x is monotonic (always increasing or decreasing).
         This ensures each segment can be represented as y=f(x).
+        Uses a more sophisticated approach to preserve letter shape.
         
         Args:
             contour (np.array): Array of (x, y) points along the contour
@@ -31,35 +32,56 @@ class PolynomialFitter:
         if len(contour) < 3:
             return [contour]
         
+        # Remove duplicate points first
+        unique_points = []
+        for point in contour:
+            if len(unique_points) == 0 or not np.allclose(point, unique_points[-1], atol=1e-6):
+                unique_points.append(point)
+        
+        if len(unique_points) < 3:
+            return [np.array(unique_points)]
+        
+        contour = np.array(unique_points)
+        
+        # Find natural breakpoints where x direction changes significantly
         segments = []
         current_segment = [contour[0]]
         
         for i in range(1, len(contour)):
-            current_point = contour[i]
-            current_segment.append(current_point)
+            current_segment.append(contour[i])
             
-            # Check if we should start a new segment
-            if len(current_segment) >= 3:
-                # Check if x direction has changed significantly
-                x_values = np.array([p[0] for p in current_segment])
+            # Look ahead to see if we need to break the segment
+            if len(current_segment) >= 5 and i < len(contour) - 2:
+                # Get x coordinates of recent points
+                recent_x = np.array([p[0] for p in current_segment[-5:]])
                 
-                # Calculate x differences to determine direction changes
-                x_diffs = np.diff(x_values)
+                # Check if x is becoming non-monotonic
+                x_diffs = np.diff(recent_x)
                 
-                # Count direction changes (sign changes in differences)
-                sign_changes = np.sum(np.diff(np.sign(x_diffs)) != 0)
+                # Count sign changes in x differences
+                signs = np.sign(x_diffs)
+                sign_changes = np.sum(np.abs(np.diff(signs)) > 1)
                 
-                # If too many direction changes, start a new segment
-                if sign_changes > 2:  # Allow some noise but detect major turns
-                    # Start new segment with overlap for continuity
-                    segments.append(np.array(current_segment[:-2]))
-                    current_segment = current_segment[-2:]  # Keep last 2 points
+                # If we have multiple direction changes, break the segment
+                if sign_changes >= 2:
+                    # End current segment with some overlap for continuity
+                    segments.append(np.array(current_segment[:-1]))
+                    current_segment = current_segment[-2:]  # Keep overlap
         
         # Add the final segment
         if len(current_segment) >= 2:
             segments.append(np.array(current_segment))
         
-        return segments
+        # Post-process: merge very short segments with neighbors
+        filtered_segments = []
+        for segment in segments:
+            if len(segment) >= 3:
+                filtered_segments.append(segment)
+            elif len(filtered_segments) > 0:
+                # Merge short segment with previous
+                filtered_segments[-1] = np.vstack([filtered_segments[-1], segment])
+        
+        return filtered_segments if filtered_segments else [contour]
     
     def sort_segment_by_x(self, segment):
         """
@@ -147,9 +169,119 @@ class PolynomialFitter:
         
         return None
     
-    def fit_contour_polynomials(self, contour, max_degree=8):
+    def decide_curves_for_letter(self, contour):
         """
-        Fit multiple y=f(x) polynomials to a contour.
+        Decide how many curves to fit for this letter based on its complexity.
+        
+        Args:
+            contour (np.array): Array of (x, y) points along the contour
+            
+        Returns:
+            int: Number of curves to generate for this letter
+        """
+        # Calculate contour complexity based on curvature changes
+        if len(contour) < 10:
+            return 2  # Simple shape, use 2 curves
+        
+        # Calculate approximate curvature by looking at direction changes
+        directions = []
+        for i in range(len(contour) - 2):
+            v1 = contour[i+1] - contour[i]
+            v2 = contour[i+2] - contour[i+1]
+            
+            # Calculate angle between vectors
+            if np.linalg.norm(v1) > 0 and np.linalg.norm(v2) > 0:
+                dot_product = np.dot(v1, v2) / (np.linalg.norm(v1) * np.linalg.norm(v2))
+                dot_product = np.clip(dot_product, -1, 1)  # Handle numerical errors
+                angle = np.arccos(dot_product)
+                directions.append(angle)
+        
+        # Count significant direction changes
+        significant_changes = sum(1 for angle in directions if angle > np.pi/6)  # 30 degrees
+        
+        # Determine number of curves based on complexity
+        if significant_changes < 3:
+            return 3  # Simple letter like I, L
+        elif significant_changes < 8:
+            return 5  # Medium complexity like A, P
+        elif significant_changes < 15:
+            return 8  # Complex letters like B, R
+        else:
+            return 12  # Very complex letters like @, &
+
+    def generate_smart_sample_points(self, contour, num_points=10):
+        """
+        Generate smart sample points that are close enough for good polynomial fitting.
+        
+        Args:
+            contour (np.array): Array of (x, y) points along the contour
+            num_points (int): Number of points to sample
+            
+        Returns:
+            np.array: Array of sampled (x, y) points
+        """
+        if len(contour) <= num_points:
+            return contour
+        
+        # Calculate cumulative distance along the contour
+        distances = np.cumsum(
+            np.sqrt(np.sum(np.diff(contour, axis=0) ** 2, axis=1))
+        )
+        distances = np.insert(distances, 0, 0)  # Add starting point
+        total_length = distances[-1]
+        
+        if total_length == 0:
+            return contour[:num_points]
+        
+        # Generate evenly spaced points along the curve
+        target_distances = np.linspace(0, total_length, num_points)
+        sampled_points = []
+        
+        for target_dist in target_distances:
+            # Find the closest point on the contour
+            closest_idx = np.argmin(np.abs(distances - target_dist))
+            sampled_points.append(contour[closest_idx])
+        
+        return np.array(sampled_points)
+
+    def generate_curve_from_region(self, contour, start_ratio, end_ratio, points_per_curve=10):
+        """
+        Generate a curve from a specific region of the contour.
+        
+        Args:
+            contour (np.array): Full contour points
+            start_ratio (float): Starting position as ratio (0.0 to 1.0)
+            end_ratio (float): Ending position as ratio (0.0 to 1.0)
+            points_per_curve (int): Number of points to sample for this curve
+            
+        Returns:
+            np.array: Points for this curve region
+        """
+        # Calculate region boundaries
+        start_idx = int(start_ratio * len(contour))
+        end_idx = int(end_ratio * len(contour))
+        
+        # Handle wraparound
+        if start_idx >= end_idx:
+            end_idx = len(contour)
+        
+        # Extract region
+        region = contour[start_idx:end_idx]
+        
+        if len(region) < 2:
+            return contour[start_idx:start_idx+2] if start_idx+2 <= len(contour) else contour[-2:]
+        
+        # Sample points smartly from this region
+        return self.generate_smart_sample_points(region, points_per_curve)
+
+    def fit_contour_polynomials(self, contour, max_degree=6):
+        """
+        NEW STRATEGY: Fit multiple y=f(x) polynomials using intelligent curve sampling.
+        
+        For each letter:
+        1. Decide on number of curves based on complexity
+        2. For each curve: generate 10 smart sample points close together
+        3. Fit polynomial to each curve
         
         Args:
             contour (np.array): Array of (x, y) points along the contour
@@ -161,24 +293,34 @@ class PolynomialFitter:
         if len(contour) < 2:
             return []
         
-        # Split contour into x-monotonic segments
-        segments = self.split_contour_into_x_monotonic_segments(contour)
-        print(f"    Split into {len(segments)} x-monotonic segments")
+        # Step 1: Decide number of curves for this letter
+        num_curves = self.decide_curves_for_letter(contour)
+        print(f"    Letter complexity analysis: generating {num_curves} curves")
         
         functions = []
+        points_per_curve = 10
         
-        for i, segment in enumerate(segments):
-            if len(segment) < 2:
+        # Step 2: Generate curves from different regions of the letter
+        for curve_idx in range(num_curves):
+            # Calculate region for this curve with overlap
+            start_ratio = (curve_idx / num_curves) * 0.9  # 10% overlap
+            end_ratio = ((curve_idx + 1) / num_curves) * 1.1
+            end_ratio = min(1.0, end_ratio)
+            
+            # Step 3: Generate smart sample points for this region
+            curve_points = self.generate_curve_from_region(contour, start_ratio, end_ratio, points_per_curve)
+            
+            if len(curve_points) < 2:
                 continue
-                
-            # Fit polynomial to this segment
-            func = self.fit_polynomial_to_segment(segment, max_degree)
+            
+            # Step 4: Fit polynomial to these close points
+            func = self.fit_polynomial_to_segment(curve_points, max_degree)
             
             if func:
                 functions.append(func)
-                print(f"      Segment {i+1}: {len(segment)} points -> polynomial degree {self._get_degree_from_function(func)}")
+                print(f"      Curve {curve_idx+1}: {len(curve_points)} points -> polynomial degree {self._get_degree_from_function(func)}")
             else:
-                print(f"      Segment {i+1}: Failed to fit polynomial")
+                print(f"      Curve {curve_idx+1}: Failed to fit polynomial")
         
         return functions
     
