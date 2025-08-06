@@ -156,29 +156,29 @@ class TextToDesmos:
     def fit_polynomial_contour_tracing(self, contour, max_degree=12):
         """
         Fit polynomials that actually trace the letter contour paths.
-        
+
         This method creates polynomials that follow the actual shape of letters
         by using careful contour analysis and high-degree polynomial fitting.
-        
+
         Args:
             contour (np.array): Array of (x, y) points along the letter contour
             max_degree (int): Maximum polynomial degree (can be high for accuracy)
-            
+
         Returns:
             list: List of polynomial functions that trace the letter shape
         """
         if len(contour) < 4:
             return []
-        
+
         functions = []
-        
+
         # Ensure contour is a closed loop by connecting end to start if needed
         if np.linalg.norm(contour[0] - contour[-1]) > 1e-3:
             contour = np.vstack([contour, contour[0]])
-        
+
         x_data = contour[:, 0]
         y_data = contour[:, 1]
-        
+
         # Method 1: Direct polynomial fitting where possible
         try:
             # Approach 1a: Try to fit y = f(x) where it makes sense
@@ -187,15 +187,17 @@ class TextToDesmos:
                 sort_idx = np.argsort(x_data)
                 x_sorted = x_data[sort_idx]
                 y_sorted = y_data[sort_idx]
-                
+
                 # Remove duplicate x values by averaging y values
                 x_unique, indices = np.unique(x_sorted, return_inverse=True)
-                y_averaged = np.array([np.mean(y_sorted[indices == i]) for i in range(len(x_unique))])
-                
+                y_averaged = np.array(
+                    [np.mean(y_sorted[indices == i]) for i in range(len(x_unique))]
+                )
+
                 if len(x_unique) >= 3:
                     degree = min(max_degree, len(x_unique) - 1)
                     y_coeffs_direct = np.polyfit(x_unique, y_averaged, degree)
-                    
+
                     # Create function string
                     terms = []
                     for i, coeff in enumerate(y_coeffs_direct):
@@ -208,25 +210,27 @@ class TextToDesmos:
                             terms.append(f"{coeff:.8f}*x")
                         else:
                             terms.append(f"{coeff:.8f}*x^{power}")
-                    
+
                     if terms:
                         func_str = " + ".join(terms).replace("+ -", "- ")
                         functions.append(f"y = {func_str}")
-            
+
             # Approach 1b: Try x = f(y) where appropriate
             if self._has_function_property(y_data, x_data):
                 sort_idx = np.argsort(y_data)
                 y_sorted = y_data[sort_idx]
                 x_sorted = x_data[sort_idx]
-                
+
                 # Remove duplicate y values
                 y_unique, indices = np.unique(y_sorted, return_inverse=True)
-                x_averaged = np.array([np.mean(x_sorted[indices == i]) for i in range(len(y_unique))])
-                
+                x_averaged = np.array(
+                    [np.mean(x_sorted[indices == i]) for i in range(len(y_unique))]
+                )
+
                 if len(y_unique) >= 3:
                     degree = min(max_degree, len(y_unique) - 1)
                     x_coeffs_direct = np.polyfit(y_unique, x_averaged, degree)
-                    
+
                     # Create function string
                     terms = []
                     for i, coeff in enumerate(x_coeffs_direct):
@@ -239,40 +243,40 @@ class TextToDesmos:
                             terms.append(f"{coeff:.8f}*y")
                         else:
                             terms.append(f"{coeff:.8f}*y^{power}")
-                    
+
                     if terms:
                         func_str = " + ".join(terms).replace("+ -", "- ")
                         functions.append(f"x = {func_str}")
-        
+
         except Exception as e:
             print(f"Warning: Failed to fit direct polynomials: {e}")
-        
+
         # Method 2: Piecewise polynomial approach for complex shapes
         # Split contour into segments that can be represented as functions
         try:
             segments = self._split_contour_into_functional_segments(contour)
-            
+
             for segment in segments:
                 if len(segment) < 3:
                     continue
-                
+
                 x_seg = segment[:, 0]
                 y_seg = segment[:, 1]
-                
+
                 # Determine if this segment is better as y=f(x) or x=f(y)
                 x_range = np.max(x_seg) - np.min(x_seg)
                 y_range = np.max(y_seg) - np.min(y_seg)
-                
+
                 if x_range >= y_range and x_range > 1e-6:
                     # Fit y = f(x)
                     sort_idx = np.argsort(x_seg)
                     x_sorted = x_seg[sort_idx]
                     y_sorted = y_seg[sort_idx]
-                    
+
                     degree = min(max_degree, len(x_sorted) - 1)
                     if degree >= 1:
                         coeffs = np.polyfit(x_sorted, y_sorted, degree)
-                        
+
                         terms = []
                         for i, coeff in enumerate(coeffs):
                             if abs(coeff) < 1e-12:
@@ -284,21 +288,21 @@ class TextToDesmos:
                                 terms.append(f"{coeff:.8f}*x")
                             else:
                                 terms.append(f"{coeff:.8f}*x^{power}")
-                        
+
                         if terms:
                             func_str = " + ".join(terms).replace("+ -", "- ")
                             functions.append(f"y = {func_str}")
-                
+
                 elif y_range > 1e-6:
                     # Fit x = f(y)
                     sort_idx = np.argsort(y_seg)
                     y_sorted = y_seg[sort_idx]
                     x_sorted = x_seg[sort_idx]
-                    
+
                     degree = min(max_degree, len(y_sorted) - 1)
                     if degree >= 1:
                         coeffs = np.polyfit(y_sorted, x_sorted, degree)
-                        
+
                         terms = []
                         for i, coeff in enumerate(coeffs):
                             if abs(coeff) < 1e-12:
@@ -310,67 +314,69 @@ class TextToDesmos:
                                 terms.append(f"{coeff:.8f}*y")
                             else:
                                 terms.append(f"{coeff:.8f}*y^{power}")
-                        
+
                         if terms:
                             func_str = " + ".join(terms).replace("+ -", "- ")
                             functions.append(f"x = {func_str}")
-                            
+
         except Exception as e:
             print(f"Warning: Failed to fit piecewise polynomials: {e}")
-        
+
         return functions
-    
+
     def _has_function_property(self, x_data, y_data):
         """Check if data can be represented as a function (no repeated x values)."""
         x_unique = np.unique(x_data)
         return len(x_unique) > 0.7 * len(x_data)  # Allow some repeated values
-    
+
     def _split_contour_into_functional_segments(self, contour):
         """
         Split a contour into segments that can be represented as functions.
-        
+
         This finds natural break points where the contour changes direction
         significantly or where it would fail the vertical/horizontal line test.
         """
         if len(contour) < 6:
             return [contour]
-        
+
         segments = []
         current_segment = [contour[0]]
-        
+
         for i in range(1, len(contour)):
             current_point = contour[i]
             current_segment.append(current_point)
-            
+
             # Check if we should start a new segment
             if len(current_segment) >= 8:  # Minimum segment size
                 # Look for direction changes or function property violations
                 segment_array = np.array(current_segment)
                 x_data = segment_array[:, 0]
                 y_data = segment_array[:, 1]
-                
+
                 # Check if segment violates function property badly
                 x_range = np.max(x_data) - np.min(x_data)
                 y_range = np.max(y_data) - np.min(y_data)
-                
+
                 if x_range > y_range:
                     # Check for y=f(x) violations
                     x_unique = np.unique(x_data)
                     if len(x_unique) < 0.5 * len(x_data):  # Too many repeated x values
                         # Start new segment
-                        segments.append(np.array(current_segment[:-3]))  # Overlap for continuity
+                        segments.append(
+                            np.array(current_segment[:-3])
+                        )  # Overlap for continuity
                         current_segment = current_segment[-3:]  # Keep last few points
                 else:
-                    # Check for x=f(y) violations  
+                    # Check for x=f(y) violations
                     y_unique = np.unique(y_data)
                     if len(y_unique) < 0.5 * len(y_data):  # Too many repeated y values
                         segments.append(np.array(current_segment[:-3]))
                         current_segment = current_segment[-3:]
-        
+
         # Add the final segment
         if len(current_segment) >= 3:
             segments.append(np.array(current_segment))
-        
+
         return segments
 
     def apply_transform(self, functions):
@@ -421,7 +427,9 @@ class TextToDesmos:
         Returns:
             list: List of Desmos function strings that trace the actual letter shapes
         """
-        print(f"Converting text '{text}' to polynomial functions that trace letter shapes...")
+        print(
+            f"Converting text '{text}' to polynomial functions that trace letter shapes..."
+        )
 
         # Convert text to paths
         paths = self.text_to_paths(text, font_size)
@@ -441,7 +449,9 @@ class TextToDesmos:
             for j, contour in enumerate(contours):
                 functions = self.fit_polynomial_contour_tracing(contour, max_degree)
                 all_functions.extend(functions)
-                print(f"    Contour {j+1}: {len(functions)} polynomial functions tracing the shape")
+                print(
+                    f"    Contour {j + 1}: {len(functions)} polynomial functions tracing the shape"
+                )
 
         # Apply transformations
         transformed_functions = self.apply_transform(all_functions)
