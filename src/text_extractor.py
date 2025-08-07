@@ -6,6 +6,7 @@ Text extraction module - handles font path extraction and contour point sampling
 import numpy as np
 from matplotlib import font_manager
 from matplotlib.path import Path
+import matplotlib.pyplot as plt
 
 
 class TextExtractor:
@@ -632,3 +633,256 @@ class TextExtractor:
         local_ratio = (target_distance - seg_start) / (seg_end - seg_start)
 
         return segment[idx - 1] + local_ratio * (segment[idx] - segment[idx - 1])
+    
+    def preview_extracted_points(self, text, font_size=100, num_points=500, save_path=None):
+        """
+        Preview how the extracted centerline points look on the plane.
+        Shows both the original outline and the extracted skeleton points.
+        
+        Args:
+            text (str): Text to extract and preview
+            font_size (int): Font size for rendering
+            num_points (int): Number of centerline points to extract
+            save_path (str, optional): Path to save the preview image
+            
+        Returns:
+            None: Displays the preview plot
+        """
+        print(f"Generating preview for text: '{text}'")
+        
+        # Extract paths for the text
+        paths = self.text_to_paths(text, font_size)
+        
+        if not paths:
+            print("No paths generated for preview")
+            return
+        
+        # Create figure with subplots for each character
+        num_chars = len(paths)
+        fig, axes = plt.subplots(1, max(1, num_chars), figsize=(4*num_chars, 6))
+        
+        if num_chars == 1:
+            axes = [axes]  # Make it a list for consistency
+        
+        for i, path in enumerate(paths):
+            ax = axes[i] if num_chars > 1 else axes[0]
+            
+            # Plot original outline
+            self.plot_path_outline(ax, path, color='lightgray', label='Original Outline')
+            
+            # Extract and plot centerline points
+            contours = self.extract_contour_points(path, num_points)
+            
+            for j, contour in enumerate(contours):
+                if len(contour) > 0:
+                    # Plot centerline points as connected line
+                    ax.plot(contour[:, 0], contour[:, 1], 'ro-', 
+                           markersize=2, linewidth=1, 
+                           label=f'Centerline {j+1}' if j == 0 else '')
+                    
+                    # Plot first and last points differently
+                    if len(contour) > 1:
+                        ax.plot(contour[0, 0], contour[0, 1], 'go', 
+                               markersize=6, label='Start' if j == 0 else '')
+                        ax.plot(contour[-1, 0], contour[-1, 1], 'bo', 
+                               markersize=6, label='End' if j == 0 else '')
+            
+            # Customize subplot
+            ax.set_aspect('equal')
+            ax.grid(True, alpha=0.3)
+            ax.set_title(f'Character {i+1}: Centerline Extraction\n({num_points} points)')
+            if i == 0:  # Only show legend on first subplot
+                ax.legend()
+            
+            # Invert y-axis to match typical text orientation
+            ax.invert_yaxis()
+        
+        plt.tight_layout()
+        plt.suptitle(f"Centerline Preview: '{text}' (Zero-Width Skeleton)", fontsize=14, y=1.02)
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Preview saved to: {save_path}")
+        
+        plt.show()
+        
+    def plot_path_outline(self, ax, path, color='blue', alpha=0.5, label='Outline'):
+        """
+        Plot the outline of a matplotlib Path object.
+        
+        Args:
+            ax: Matplotlib axes object
+            path: matplotlib Path object
+            color: Color for the outline
+            alpha: Transparency level
+            label: Label for the plot
+        """
+        vertices = path.vertices
+        codes = path.codes
+        
+        if codes is None:
+            # Simple line plot if no codes
+            ax.plot(vertices[:, 0], vertices[:, 1], color=color, alpha=alpha, label=label)
+            return
+        
+        # Plot path segments according to codes
+        from matplotlib.path import Path as MPLPath
+        
+        current_pos = None
+        for i, (vertex, code) in enumerate(zip(vertices, codes)):
+            if code == MPLPath.MOVETO:
+                current_pos = vertex
+            elif code == MPLPath.LINETO:
+                if current_pos is not None:
+                    ax.plot([current_pos[0], vertex[0]], [current_pos[1], vertex[1]], 
+                           color=color, alpha=alpha, linewidth=1)
+                current_pos = vertex
+            elif code == MPLPath.CLOSEPOLY:
+                # Close the path back to the start of current segment
+                if current_pos is not None and i > 0:
+                    # Find the most recent MOVETO
+                    start_vertex = None
+                    for j in range(i-1, -1, -1):
+                        if codes[j] == MPLPath.MOVETO:
+                            start_vertex = vertices[j]
+                            break
+                    if start_vertex is not None:
+                        ax.plot([current_pos[0], start_vertex[0]], [current_pos[1], start_vertex[1]], 
+                               color=color, alpha=alpha, linewidth=1)
+    
+    def preview_skeleton_extraction_steps(self, text, font_size=100, save_path=None):
+        """
+        Preview the skeleton extraction process step by step.
+        Shows outline, intersection grid, and final skeleton.
+        
+        Args:
+            text (str): Text to process
+            font_size (int): Font size for rendering  
+            save_path (str, optional): Path to save the preview
+        """
+        print(f"Generating detailed skeleton preview for: '{text}'")
+        
+        paths = self.text_to_paths(text, font_size)
+        
+        if not paths:
+            print("No paths generated for skeleton preview")
+            return
+        
+        fig, axes = plt.subplots(2, len(paths), figsize=(6*len(paths), 12))
+        
+        if len(paths) == 1:
+            axes = axes.reshape(-1, 1)
+        
+        for i, path in enumerate(paths):
+            # Top subplot: Original outline + intersection grid
+            ax_top = axes[0, i] if len(paths) > 1 else axes[0]
+            
+            # Plot original outline
+            self.plot_path_outline(ax_top, path, color='black', alpha=0.8, label='Original Outline')
+            
+            # Show intersection grid
+            self.plot_intersection_grid(ax_top, path, alpha=0.3)
+            
+            ax_top.set_aspect('equal')
+            ax_top.grid(True, alpha=0.2)
+            ax_top.set_title('Step 1: Outline + Sampling Grid')
+            ax_top.legend()
+            ax_top.invert_yaxis()
+            
+            # Bottom subplot: Skeleton extraction result
+            ax_bottom = axes[1, i] if len(paths) > 1 else axes[1]
+            
+            # Plot faded outline for reference
+            self.plot_path_outline(ax_bottom, path, color='lightgray', alpha=0.5, label='Original (faded)')
+            
+            # Extract and plot skeleton
+            skeleton_points = self.extract_skeleton_from_path(path)
+            
+            if len(skeleton_points) > 0:
+                ax_bottom.plot(skeleton_points[:, 0], skeleton_points[:, 1], 'ro-',
+                              markersize=3, linewidth=1.5, label='Skeleton Points')
+                
+                # Show midpoint calculation examples
+                self.plot_midpoint_examples(ax_bottom, path, skeleton_points[:10])
+            
+            ax_bottom.set_aspect('equal')
+            ax_bottom.grid(True, alpha=0.2)
+            ax_bottom.set_title(f'Step 2: Extracted Skeleton\n({len(skeleton_points)} points)')
+            ax_bottom.legend()
+            ax_bottom.invert_yaxis()
+        
+        plt.tight_layout()
+        plt.suptitle(f"Skeleton Extraction Process: '{text}'", fontsize=16, y=1.02)
+        
+        if save_path:
+            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            print(f"Skeleton preview saved to: {save_path}")
+        
+        plt.show()
+        
+    def plot_intersection_grid(self, ax, path, resolution=20, alpha=0.3):
+        """
+        Plot the sampling grid used for intersection finding.
+        
+        Args:
+            ax: Matplotlib axes
+            path: matplotlib Path object
+            resolution: Grid resolution
+            alpha: Transparency for grid lines
+        """
+        vertices = path.vertices
+        min_x, min_y = np.min(vertices, axis=0)
+        max_x, max_y = np.max(vertices, axis=0)
+        
+        # Create sampling grid
+        x_samples = np.linspace(min_x, max_x, resolution)
+        y_samples = np.linspace(min_y, max_y, resolution)
+        
+        # Plot vertical grid lines
+        for x in x_samples[::3]:  # Show every 3rd line to avoid clutter
+            ax.axvline(x, color='blue', alpha=alpha, linewidth=0.5, linestyle='--')
+        
+        # Plot horizontal grid lines  
+        for y in y_samples[::3]:  # Show every 3rd line to avoid clutter
+            ax.axhline(y, color='red', alpha=alpha, linewidth=0.5, linestyle='--')
+    
+    def plot_midpoint_examples(self, ax, path, sample_skeleton_points, num_examples=3):
+        """
+        Plot examples showing how midpoints are calculated.
+        
+        Args:
+            ax: Matplotlib axes
+            path: Original path
+            sample_skeleton_points: Sample skeleton points to demonstrate
+            num_examples: Number of examples to show
+        """
+        if len(sample_skeleton_points) < num_examples:
+            return
+        
+        # Show a few example midpoint calculations
+        for i in range(min(num_examples, len(sample_skeleton_points))):
+            point = sample_skeleton_points[i]
+            x, y = point
+            
+            # Find intersections at this y-level
+            x_intersections = self.find_x_intersections_at_y(path, y)
+            
+            if len(x_intersections) >= 2:
+                x_intersections = sorted(x_intersections)
+                
+                # Find the pair that this midpoint belongs to
+                for j in range(0, len(x_intersections) - 1, 2):
+                    if j + 1 < len(x_intersections):
+                        left_x = x_intersections[j]
+                        right_x = x_intersections[j + 1]
+                        mid_x = (left_x + right_x) / 2
+                        
+                        # If this is close to our skeleton point, show the calculation
+                        if abs(mid_x - x) < 0.1:  # Tolerance for matching
+                            # Draw line between intersection points
+                            ax.plot([left_x, right_x], [y, y], 'g-', alpha=0.7, linewidth=2)
+                            # Mark intersection points
+                            ax.plot([left_x, right_x], [y, y], 'gs', markersize=4)
+                            # Mark midpoint
+                            ax.plot(mid_x, y, 'ro', markersize=5)
+                            break
