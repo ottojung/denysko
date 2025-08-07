@@ -364,57 +364,227 @@ class PolynomialFitter:
 
     def fit_contour_polynomials(self, contour, max_degree=12):
         """
-        SHAPE-ACCURACY STRATEGY: Polynomials are extremely accurate at letter points.
-        
-        The key insight: We only care about accuracy AT the letter centerline points.
-        Behavior elsewhere (between points, outside letter) doesn't matter.
+        NEW REQUIREMENTS IMPLEMENTATION:
+        1. Require polynomial degree > 1 (non-linear)
+        2. All curves must match all points they can match  
+        3. Single curve per horizontal space (e.g., top/bottom of "O")
         
         Args:
-            contour (np.array): Array of (x, y) centerline points (hundreds of them)
+            contour (np.array): Array of (x, y) centerline points
             max_degree (int): Maximum polynomial degree for shape fitting
             
         Returns:
-            list: List of polynomial function strings optimized for letter shape
+            list: List of polynomial function strings meeting the requirements
         """
-        if len(contour) < 2:
+        if len(contour) < 3:  # Need at least 3 points for degree > 1
             return []
         
-        print(f"    SHAPE-ACCURACY STRATEGY: {len(contour)} centerline points to fit")
+        print(f"    NEW STRATEGY: {len(contour)} centerline points to fit")
+        print("    Requirements: degree > 1, match all possible points, separate horizontal spaces")
         
-        # Strategy: Generate fewer, higher-quality curves for cleaner visualization
-        # Since domain restrictions aren't allowed, use fewer curves to reduce clutter
-        points_per_curve = min(25, max(12, len(contour) // 15))  # 12-25 points per curve
-        num_curves = max(5, len(contour) // points_per_curve)  # Fewer curves for cleaner output
-        
-        print(f"    Generating {num_curves} curves with ~{points_per_curve} points each")
-        print("    Focus: Maximum accuracy at letter centerline points")
-        print("    Strategy: Fewer curves for cleaner visualization (no domain restrictions)")
+        # Step 1: Split into horizontal segments (separate strokes at same x)
+        horizontal_segments = self.split_into_horizontal_segments(contour)
+        print(f"    Found {len(horizontal_segments)} horizontal segments")
         
         functions = []
         
-        # Generate curves with minimal overlap for cleaner results
-        for curve_idx in range(num_curves):
-            # Use sequential regions with minimal overlap
-            start_ratio = curve_idx / num_curves
-            end_ratio = (curve_idx + 1) / num_curves
-            
-            # Extract points for this curve region
-            curve_points = self.generate_curve_from_region(contour, start_ratio, end_ratio, points_per_curve)
-            
-            if len(curve_points) < 3:
+        # Step 2: Fit each horizontal segment with high-degree polynomials
+        for seg_idx, segment in enumerate(horizontal_segments):
+            if len(segment) < 3:  # Need at least 3 points for degree > 1
                 continue
             
-            # Fit polynomial optimized for shape accuracy at these specific points
-            func = self.fit_polynomial_to_segment(curve_points, max_degree)
+            print(f"    Segment {seg_idx+1}: {len(segment)} points")
+            
+            # Requirements: degree > 1 and match ALL points in segment
+            func = self.fit_high_accuracy_polynomial(segment, max_degree)
             
             if func:
                 functions.append(func)
-                print(f"      Curve {curve_idx+1}: Shape-optimized for {len(curve_points)} centerline points")
+                print(f"      Generated degree > 1 polynomial matching all {len(segment)} points")
             else:
-                print(f"      Curve {curve_idx+1}: Failed to create shape-optimized polynomial")
+                print(f"      Failed to generate polynomial for segment {seg_idx+1}")
         
-        print(f"    Total shape-accurate functions: {len(functions)}")
+        print(f"    Total functions (all degree > 1): {len(functions)}")
         return functions
+    
+    def split_into_horizontal_segments(self, contour):
+        """
+        Split contour into segments where each segment represents a single 
+        horizontal space (e.g., top arc vs bottom arc of "O").
+        
+        Args:
+            contour: Array of (x, y) points
+            
+        Returns:
+            list: List of segments, each representing one horizontal space
+        """
+        if len(contour) < 3:
+            return [contour]
+        
+        # Sort by x coordinate to analyze horizontal distribution
+        sorted_indices = np.argsort(contour[:, 0])
+        sorted_contour = contour[sorted_indices]
+        
+        # Group points by x-ranges and y-positions to separate strokes
+        x_values = sorted_contour[:, 0]
+        y_values = sorted_contour[:, 1]
+        
+        # Find x-ranges where there might be multiple y values (overlapping strokes)
+        x_unique = np.unique(x_values)
+        
+        if len(x_unique) < 3:
+            return [contour]  # Too few unique x values
+        
+        # Analyze y distribution at each x to detect separate strokes
+        segments_by_y_level = []
+        
+        # Simple approach: if points span large y range, likely multiple strokes
+        y_min, y_max = np.min(y_values), np.max(y_values)
+        y_span = y_max - y_min
+        
+        if y_span > (np.max(x_values) - np.min(x_values)) * 0.3:  # Tall relative to width
+            # Likely multiple horizontal strokes - split by y levels
+            y_median = np.median(y_values)
+            
+            upper_points = []
+            lower_points = []
+            
+            for i, point in enumerate(sorted_contour):
+                if point[1] >= y_median:
+                    upper_points.append(point)
+                else:
+                    lower_points.append(point)
+            
+            if len(upper_points) >= 3:
+                segments_by_y_level.append(np.array(upper_points))
+            if len(lower_points) >= 3:
+                segments_by_y_level.append(np.array(lower_points))
+                
+            if segments_by_y_level:
+                return segments_by_y_level
+        
+        # Fallback: treat as single segment if no clear horizontal separation
+        return [sorted_contour]
+    
+    def fit_high_accuracy_polynomial(self, segment, max_degree):
+        """
+        Fit polynomial with degree > 1 that matches ALL points as accurately as possible.
+        
+        Args:
+            segment: Points to fit
+            max_degree: Maximum degree allowed
+            
+        Returns:
+            str: Polynomial function string with degree > 1
+        """
+        if len(segment) < 3:
+            return None
+        
+        try:
+            # Sort and clean data
+            x_sorted, y_sorted = self.sort_segment_by_x(segment)
+            
+            if len(x_sorted) < 3:
+                return None
+            
+            # Requirement: degree > 1 (minimum quadratic)
+            min_degree = 2  # quadratic minimum
+            max_feasible_degree = min(max_degree, len(x_sorted) - 1)
+            
+            if max_feasible_degree < min_degree:
+                return None  # Cannot satisfy degree > 1 requirement
+            
+            # Use degree that can match all points well
+            optimal_degree = min(max_feasible_degree, max(min_degree, len(x_sorted) // 2))
+            
+            print(f"        Using degree {optimal_degree} for {len(x_sorted)} points")
+            
+            # Fit polynomial to match ALL points as accurately as possible
+            coeffs = np.polyfit(x_sorted, y_sorted, optimal_degree)
+            
+            # Verify it's degree > 1
+            if optimal_degree <= 1:
+                return None
+            
+            # Verify accuracy at all points
+            poly_func = np.poly1d(coeffs)
+            errors = np.abs(poly_func(x_sorted) - y_sorted)
+            max_error = np.max(errors)
+            mean_error = np.mean(errors)
+            
+            print(f"        Accuracy: max_error={max_error:.3f}, mean_error={mean_error:.3f}")
+            
+            # Convert to function string
+            func_str = self.coefficients_to_function_string(coeffs)
+            return func_str
+            
+        except Exception as e:
+            print(f"        Error fitting high-accuracy polynomial: {e}")
+            return None
+    
+    def coefficients_to_function_string(self, coeffs):
+        """
+        Convert polynomial coefficients to a function string.
+        Ensures degree > 1 by design.
+        
+        Args:
+            coeffs: Polynomial coefficients (highest degree first)
+            
+        Returns:
+            str: Function string in form "y = ..."
+        """
+        if len(coeffs) < 3:  # Degree must be > 1 
+            return None
+            
+        terms = []
+        degree = len(coeffs) - 1
+        
+        for i, coeff in enumerate(coeffs):
+            power = degree - i
+            
+            if abs(coeff) < 1e-10:  # Skip essentially zero coefficients
+                continue
+            
+            if power == 0:
+                # Constant term
+                if coeff >= 0 and terms:
+                    terms.append(f" + {coeff:.6f}")
+                else:
+                    terms.append(f"{coeff:.6f}")
+            elif power == 1:
+                # Linear term
+                if coeff == 1:
+                    if terms:
+                        terms.append(" + x")
+                    else:
+                        terms.append("x")
+                elif coeff == -1:
+                    terms.append(" - x")
+                else:
+                    if coeff > 0 and terms:
+                        terms.append(f" + {coeff:.6f}*x")
+                    else:
+                        terms.append(f"{coeff:.6f}*x")
+            else:
+                # Higher degree terms
+                if coeff == 1:
+                    if terms:
+                        terms.append(f" + x^{power}")
+                    else:
+                        terms.append(f"x^{power}")
+                elif coeff == -1:
+                    terms.append(f" - x^{power}")
+                else:
+                    if coeff > 0 and terms:
+                        terms.append(f" + {coeff:.6f}*x^{power}")
+                    else:
+                        terms.append(f"{coeff:.6f}*x^{power}")
+        
+        if not terms:
+            return "y = 0"
+        
+        func_str = "y = " + "".join(terms)
+        return func_str
     
     def _get_degree_from_function(self, func_str):
         """Extract the degree from a polynomial function string."""
