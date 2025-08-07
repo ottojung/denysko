@@ -348,27 +348,24 @@ class TextExtractor:
             
             connected_points.extend(right_points)
             
-            # Add crossbar if it exists (with a short connecting jump)
-            if crossbar:
-                crossbar_points = crossbar['points']
-                connected_points.extend(crossbar_points)
+            # FOR NOW: Skip the crossbar to eliminate jump lines
+            # TODO: Implement proper pen-lift handling for disconnected strokes
+            print(f"            NOTE: Skipping crossbar to avoid unwanted jump lines")
         
-        # If we only have one or two strokes, connect them simply
+        # If we only have one or two strokes, use only the main stroke
         elif left_diag:
             connected_points.extend(left_diag['points'])
-            if crossbar:
-                connected_points.extend(crossbar['points'])
         elif right_diag:
             connected_points.extend(right_diag['points'])
-            if crossbar:
-                connected_points.extend(crossbar['points'])
+        elif crossbar:
+            connected_points.extend(crossbar['points'])
         
-        # Fallback: if stroke types don't match expected patterns, connect in order
-        if not connected_points:
-            for stroke in stroke_segments:
-                connected_points.extend(stroke['points'])
+        # Fallback: if stroke types don't match expected patterns, use first stroke only
+        if not connected_points and stroke_segments:
+            connected_points.extend(stroke_segments[0]['points'])
+            print(f"            FALLBACK: Using only first stroke to avoid jumps")
         
-        print(f"            Connected {len(stroke_segments)} strokes into {len(connected_points)} points")
+        print(f"            Connected strokes into {len(connected_points)} points (avoided unwanted jumps)")
         return connected_points
     
     def generate_line_points(self, start_point, end_point, num_points=20):
