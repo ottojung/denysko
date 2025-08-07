@@ -132,25 +132,21 @@ class TextExtractor:
         if width <= 0 or height <= 0:
             return vertices
 
-        # Use a finer resolution for better stroke detection
-        resolution = 100  # Higher resolution for better accuracy
+        # Use high resolution for precise stroke detection
+        resolution = 200  # Very high resolution for precision
         
-        # First, identify points that are truly inside the shape
-        interior_points = self.find_interior_stroke_points(path, resolution)
+        # Extract true medial axis points using distance transform approach
+        skeleton_points = self.extract_medial_axis_points(path, resolution)
         
-        if len(interior_points) < 3:
+        if len(skeleton_points) < 3:
             # Fallback: use simplified outline approach
             return self.simplify_outline_to_centerline(vertices)
 
-        # Filter points to keep only those that represent stroke centerlines
-        stroke_centerline_points = self.filter_stroke_centerline_points(path, interior_points)
+        # Remove points that are too close together (thin the skeleton)
+        thinned_skeleton = self.thin_skeleton_points(skeleton_points)
         
-        if len(stroke_centerline_points) < 3:
-            # If stroke filtering fails, use interior points
-            stroke_centerline_points = interior_points
-
         # Connect the points to form continuous stroke paths
-        connected_skeleton = self.connect_stroke_segments(stroke_centerline_points)
+        connected_skeleton = self.connect_stroke_segments(thinned_skeleton)
 
         return connected_skeleton
 
@@ -181,6 +177,119 @@ class TextExtractor:
                 intersections.append(x_intersect)
 
         return intersections
+
+    def extract_medial_axis_points(self, path, resolution=200):
+        """
+        Extract true medial axis points using distance transform approach.
+        Only keeps points that are local maxima of the distance field - the true centerline.
+        
+        Args:
+            path: matplotlib Path object
+            resolution: Grid resolution for distance field computation
+            
+        Returns:
+            np.array: Medial axis points (true stroke centers)
+        """
+        vertices = path.vertices
+        min_x, min_y = np.min(vertices, axis=0)
+        max_x, max_y = np.max(vertices, axis=0)
+        
+        # Create high-resolution sampling grid
+        x_samples = np.linspace(min_x, max_x, resolution)
+        y_samples = np.linspace(min_y, max_y, resolution)
+        
+        # Compute distance field for all interior points
+        distance_field = {}
+        interior_points = []
+        
+        for i, x in enumerate(x_samples):
+            for j, y in enumerate(y_samples):
+                point = np.array([x, y])
+                
+                # Only process points inside the shape
+                if path.contains_point(point):
+                    dist = self.distance_to_boundary(point, path)
+                    if dist > 0.5:  # Minimum distance to avoid boundary noise
+                        distance_field[(i, j)] = dist
+                        interior_points.append((i, j, x, y, dist))
+        
+        if not interior_points:
+            return np.array([])
+        
+        # Find local maxima in the distance field (medial axis points)
+        medial_points = []
+        
+        for i, j, x, y, dist in interior_points:
+            # Check if this point is a local maximum in its neighborhood
+            if self.is_local_distance_maximum(i, j, dist, distance_field, radius=2):
+                medial_points.append([x, y])
+        
+        if not medial_points:
+            return np.array([])
+        
+        return np.array(medial_points)
+
+    def is_local_distance_maximum(self, i, j, dist, distance_field, radius=2):
+        """
+        Check if a point is a local maximum in the distance field.
+        This identifies points that are furthest from boundaries in their neighborhood.
+        
+        Args:
+            i, j: Grid coordinates
+            dist: Distance value at this point
+            distance_field: Dictionary of (i,j) -> distance
+            radius: Neighborhood radius to check
+            
+        Returns:
+            bool: True if point is local maximum (medial axis point)
+        """
+        # Check all neighbors within radius
+        for di in range(-radius, radius + 1):
+            for dj in range(-radius, radius + 1):
+                if di == 0 and dj == 0:
+                    continue
+                
+                neighbor_key = (i + di, j + dj)
+                if neighbor_key in distance_field:
+                    neighbor_dist = distance_field[neighbor_key]
+                    
+                    # If any neighbor has higher distance, this is not a maximum
+                    if neighbor_dist > dist + 0.1:  # Small tolerance for numerical precision
+                        return False
+        
+        return True
+
+    def thin_skeleton_points(self, skeleton_points, min_distance=1.0):
+        """
+        Thin skeleton points by removing points that are too close together.
+        This creates a truly single-pixel-width skeleton.
+        
+        Args:
+            skeleton_points: Array of skeleton points
+            min_distance: Minimum distance between skeleton points
+            
+        Returns:
+            np.array: Thinned skeleton points
+        """
+        if len(skeleton_points) <= 1:
+            return skeleton_points
+        
+        # Start with the first point
+        thinned_points = [skeleton_points[0]]
+        
+        for point in skeleton_points[1:]:
+            # Check distance to all existing thinned points
+            too_close = False
+            for existing in thinned_points:
+                if np.linalg.norm(point - existing) < min_distance:
+                    too_close = True
+                    break
+            
+            # Only add if far enough from existing points
+            if not too_close:
+                thinned_points.append(point)
+        
+        return np.array(thinned_points)
 
     def find_interior_stroke_points(self, path, resolution=100):
         """
@@ -232,6 +341,7 @@ class TextExtractor:
     def distance_to_boundary(self, point, path):
         """
         Calculate minimum distance from a point to the path boundary.
+        Uses a more accurate method for precise distance calculation.
         
         Args:
             point: [x, y] coordinates
@@ -241,15 +351,33 @@ class TextExtractor:
             float: Distance to nearest boundary point
         """
         vertices = path.vertices
+        
+        # Handle closed paths properly
+        if len(vertices) > 2 and np.allclose(vertices[0], vertices[-1]):
+            # Path is closed, check all edges including wrap-around
+            edges_to_check = len(vertices) - 1
+        else:
+            # Open path
+            edges_to_check = len(vertices) - 1
+        
         min_dist = float('inf')
         
         # Check distance to each edge of the path
-        for i in range(len(vertices) - 1):
+        for i in range(edges_to_check):
             edge_start = vertices[i]
-            edge_end = vertices[i + 1]
+            edge_end = vertices[(i + 1) % len(vertices)]
+            
+            # Skip degenerate edges
+            if np.allclose(edge_start, edge_end):
+                continue
             
             # Calculate distance from point to line segment
             dist = self.point_to_line_distance(point, edge_start, edge_end)
+            min_dist = min(min_dist, dist)
+        
+        # Also check distance to vertices themselves
+        for vertex in vertices:
+            dist = np.linalg.norm(point - vertex)
             min_dist = min(min_dist, dist)
         
         return min_dist
@@ -394,7 +522,7 @@ class TextExtractor:
     def connect_stroke_segments(self, stroke_points):
         """
         Connect stroke centerline points into continuous segments.
-        This creates connected paths that follow the letter strokes.
+        This creates connected paths that follow the letter strokes without filling holes.
         
         Args:
             stroke_points: Array of stroke center points
@@ -405,10 +533,75 @@ class TextExtractor:
         if len(stroke_points) <= 2:
             return stroke_points
         
-        # Use improved connectivity sorting that preserves stroke structure
-        connected_points = self.sort_points_by_stroke_connectivity(stroke_points)
+        # Identify separate stroke segments first
+        stroke_segments = self.identify_stroke_segments(stroke_points)
         
-        return connected_points
+        # Connect each segment separately and combine
+        all_connected_points = []
+        
+        for segment in stroke_segments:
+            if len(segment) > 1:
+                # Sort points within each segment by connectivity
+                connected_segment = self.sort_points_by_stroke_connectivity(segment)
+                all_connected_points.extend(connected_segment)
+        
+        if len(all_connected_points) == 0:
+            return stroke_points
+        
+        return np.array(all_connected_points)
+
+    def identify_stroke_segments(self, points, max_segment_gap=5.0):
+        """
+        Identify separate stroke segments by clustering nearby points.
+        This prevents connecting across holes or between separate strokes.
+        
+        Args:
+            points: Array of points
+            max_segment_gap: Maximum distance to consider points in same segment
+            
+        Returns:
+            list: List of point arrays, each representing a separate stroke segment
+        """
+        if len(points) <= 1:
+            return [points]
+        
+        # Use simple clustering based on distance
+        segments = []
+        unassigned = list(range(len(points)))
+        
+        while unassigned:
+            # Start new segment with first unassigned point
+            current_segment = [unassigned.pop(0)]
+            segment_points = [points[current_segment[0]]]
+            
+            # Keep adding nearby points to this segment
+            added_any = True
+            while added_any:
+                added_any = False
+                to_remove = []
+                
+                for idx in unassigned:
+                    point = points[idx]
+                    
+                    # Check if point is close to any point in current segment
+                    min_dist = min(np.linalg.norm(point - seg_point) for seg_point in segment_points)
+                    
+                    if min_dist <= max_segment_gap:
+                        current_segment.append(idx)
+                        segment_points.append(point)
+                        to_remove.append(idx)
+                        added_any = True
+                
+                # Remove assigned points
+                for idx in to_remove:
+                    unassigned.remove(idx)
+            
+            # Add this segment
+            if len(current_segment) > 0:
+                segment_points_array = points[[i for i in current_segment]]
+                segments.append(segment_points_array)
+        
+        return segments
 
     def sort_points_by_stroke_connectivity(self, points):
         """
