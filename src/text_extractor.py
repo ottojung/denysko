@@ -1193,14 +1193,8 @@ class TextExtractor:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             print(f"Preview saved to: {save_path}")
         
-        # Only show if display is available, otherwise just save
-        try:
-            if os.environ.get('DISPLAY'):
-                plt.show()
-            else:
-                plt.close()
-        except Exception:
-            plt.close()
+        # Close figure instead of show to avoid backend warnings
+        plt.close('all')
         
     def plot_path_outline(self, ax, path, color='blue', alpha=0.5, label='Outline'):
         """
@@ -1315,14 +1309,8 @@ class TextExtractor:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             print(f"Skeleton preview saved to: {save_path}")
         
-        # Only show if display is available, otherwise just save
-        try:
-            if os.environ.get('DISPLAY'):
-                plt.show()
-            else:
-                plt.close()
-        except Exception:
-            plt.close()
+        # Close figure instead of show to avoid backend warnings
+        plt.close('all')
         
     def plot_intersection_grid(self, ax, path, resolution=20, alpha=0.3):
         """
