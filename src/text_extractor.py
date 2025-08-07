@@ -348,9 +348,32 @@ class TextExtractor:
             
             connected_points.extend(right_points)
             
-            # FOR NOW: Skip the crossbar to eliminate jump lines
-            # TODO: Implement proper pen-lift handling for disconnected strokes
-            print(f"            NOTE: Skipping crossbar to avoid unwanted jump lines")
+            # Add crossbar as a separate stroke by connecting to nearest point
+            if crossbar:
+                print(f"            Adding crossbar stroke with smart connection...")
+                crossbar_points = crossbar['points']
+                
+                # Find the closest point on existing strokes to crossbar start
+                right_end = connected_points[-1]  # End of right diagonal
+                crossbar_start = crossbar_points[0]
+                crossbar_end = crossbar_points[-1]
+                
+                # Choose crossbar orientation based on proximity to right diagonal end
+                dist_to_start = np.linalg.norm(np.array(right_end) - np.array(crossbar_start))
+                dist_to_end = np.linalg.norm(np.array(right_end) - np.array(crossbar_end))
+                
+                # Use the crossbar orientation that's closer to our current position
+                if dist_to_end < dist_to_start:
+                    crossbar_points = crossbar_points[::-1]  # Reverse crossbar
+                
+                # Add a single connecting line to crossbar (minimal jump)
+                crossbar_connection_start = crossbar_points[0]
+                connected_points.append(crossbar_connection_start)
+                
+                # Add all crossbar points  
+                connected_points.extend(crossbar_points)
+                
+                print(f"            Crossbar included with minimal connection jump")
         
         # If we only have one or two strokes, use only the main stroke
         elif left_diag:
