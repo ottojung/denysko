@@ -19,17 +19,24 @@ import numpy as np
 class PolynomialFitter:
     """Fits exact polynomials to letter coordinate points."""
     
-    def fit_contour_polynomials(self, contour, max_degree=25):
+    def __init__(self, max_degree=25):
+        """Initialize with default max degree."""
+        self.max_degree = max_degree
+    
+    def fit_contour_polynomials(self, contour, max_degree=None):
         """
         Main fitting method - implements the two core principles.
         
         Args:
             contour: Array of (x, y) letter centerline points
-            max_degree: Maximum polynomial degree
+            max_degree: Maximum polynomial degree (uses instance default if None)
             
         Returns:
             list: Polynomial function strings that pass exactly through points
         """
+        if max_degree is None:
+            max_degree = self.max_degree
+            
         if len(contour) < 3:
             return []
         
