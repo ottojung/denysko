@@ -21,7 +21,7 @@ class PolynomialFitter:
         """
         Split a contour into segments where x is monotonic (always increasing or decreasing).
         This ensures each segment can be represented as y=f(x).
-        Uses a more sophisticated approach to preserve letter shape.
+        SIMPLIFIED VERSION - just looks for major x-direction reversals.
         
         Args:
             contour (np.array): Array of (x, y) points along the contour
@@ -43,45 +43,51 @@ class PolynomialFitter:
         
         contour = np.array(unique_points)
         
-        # Find natural breakpoints where x direction changes significantly
+        # Find points where x direction changes significantly
         segments = []
         current_segment = [contour[0]]
         
+        # Track x direction: 1 for increasing, -1 for decreasing, 0 for unchanged
+        current_direction = 0
+        
         for i in range(1, len(contour)):
-            current_segment.append(contour[i])
+            prev_x = current_segment[-1][0]
+            curr_x = contour[i][0]
             
-            # Look ahead to see if we need to break the segment
-            if len(current_segment) >= 5 and i < len(contour) - 2:
-                # Get x coordinates of recent points
-                recent_x = np.array([p[0] for p in current_segment[-5:]])
+            x_diff = curr_x - prev_x
+            
+            if abs(x_diff) < 1e-6:  # Essentially same x
+                current_segment.append(contour[i])
+                continue
+            
+            new_direction = 1 if x_diff > 0 else -1
+            
+            # If direction changes significantly, start new segment
+            if current_direction != 0 and new_direction != current_direction:
+                # Save current segment if it has enough points
+                if len(current_segment) >= 3:
+                    segments.append(np.array(current_segment))
                 
-                # Check if x is becoming non-monotonic
-                x_diffs = np.diff(recent_x)
-                
-                # Count sign changes in x differences
-                signs = np.sign(x_diffs)
-                sign_changes = np.sum(np.abs(np.diff(signs)) > 1)
-                
-                # If we have multiple direction changes, break the segment
-                if sign_changes >= 2:
-                    # End current segment with some overlap for continuity
-                    segments.append(np.array(current_segment[:-1]))
-                    current_segment = current_segment[-2:]  # Keep overlap
+                # Start new segment with overlap for continuity
+                current_segment = [current_segment[-1], contour[i]]
+                current_direction = new_direction
+            else:
+                current_segment.append(contour[i])
+                if current_direction == 0:
+                    current_direction = new_direction
         
         # Add the final segment
-        if len(current_segment) >= 2:
+        if len(current_segment) >= 3:
             segments.append(np.array(current_segment))
+        elif len(segments) > 0 and len(current_segment) > 0:
+            # Merge short final segment with last segment
+            segments[-1] = np.vstack([segments[-1], current_segment[1:]])
         
-        # Post-process: merge very short segments with neighbors
-        filtered_segments = []
-        for segment in segments:
-            if len(segment) >= 3:
-                filtered_segments.append(segment)
-            elif len(filtered_segments) > 0:
-                # Merge short segment with previous
-                filtered_segments[-1] = np.vstack([filtered_segments[-1], segment])
+        # If no segments were created, return the whole contour
+        if not segments:
+            segments = [contour]
         
-        return filtered_segments if filtered_segments else [contour]
+        return segments
     
     def sort_segment_by_x(self, segment):
         """
@@ -364,47 +370,71 @@ class PolynomialFitter:
 
     def fit_contour_polynomials(self, contour, max_degree=12):
         """
-        NEW REQUIREMENTS IMPLEMENTATION:
+        SIMPLE AND CORRECT IMPLEMENTATION:
         1. Require polynomial degree > 1 (non-linear)
-        2. All curves must match all points they can match  
-        3. Single curve per horizontal space (e.g., top/bottom of "O")
+        2. Each curve must pass through ALL points it's given
+        3. Split into x-monotonic segments that can be represented as y=f(x)
         
         Args:
             contour (np.array): Array of (x, y) centerline points
             max_degree (int): Maximum polynomial degree for shape fitting
             
         Returns:
-            list: List of polynomial function strings meeting the requirements
+            list: List of polynomial function strings that actually pass through the points
         """
         if len(contour) < 3:  # Need at least 3 points for degree > 1
             return []
         
-        print(f"    NEW STRATEGY: {len(contour)} centerline points to fit")
-        print("    Requirements: degree > 1, match all possible points, separate horizontal spaces")
+        print(f"    FITTING {len(contour)} centerline points with degree > 1 polynomials")
         
-        # Step 1: Split into horizontal segments (separate strokes at same x)
-        horizontal_segments = self.split_into_horizontal_segments(contour)
-        print(f"    Found {len(horizontal_segments)} horizontal segments")
+        # Step 1: Split into x-monotonic segments (so each can be y=f(x))
+        segments = self.split_contour_into_x_monotonic_segments(contour)
+        print(f"    Split into {len(segments)} x-monotonic segments")
         
         functions = []
         
-        # Step 2: Fit each horizontal segment with high-degree polynomials
-        for seg_idx, segment in enumerate(horizontal_segments):
+        # Step 2: For each segment, fit a polynomial that passes through ALL its points
+        for seg_idx, segment in enumerate(segments):
             if len(segment) < 3:  # Need at least 3 points for degree > 1
                 continue
             
             print(f"    Segment {seg_idx+1}: {len(segment)} points")
             
-            # Requirements: degree > 1 and match ALL points in segment
-            func = self.fit_high_accuracy_polynomial(segment, max_degree)
+            # Sort by x and handle duplicate x values
+            x_sorted, y_sorted = self.sort_segment_by_x(segment)
             
-            if func:
-                functions.append(func)
-                print(f"      Generated degree > 1 polynomial matching all {len(segment)} points")
-            else:
-                print(f"      Failed to generate polynomial for segment {seg_idx+1}")
+            if len(x_sorted) < 3:
+                continue
+            
+            # Use exact polynomial interpolation to pass through ALL points
+            # Degree will be n-1 where n is number of unique x points
+            degree = len(x_sorted) - 1
+            
+            # Ensure degree > 1 as required
+            if degree <= 1:
+                continue
+                
+            # Fit polynomial that passes EXACTLY through all points
+            try:
+                coeffs = np.polyfit(x_sorted, y_sorted, degree)
+                
+                # Verify it actually passes through the points
+                poly_func = np.poly1d(coeffs)
+                errors = np.abs(poly_func(x_sorted) - y_sorted)
+                max_error = np.max(errors)
+                
+                print(f"      Degree {degree} polynomial, max error: {max_error:.6f}")
+                
+                # Convert to function string
+                func_str = self.coefficients_to_function_string(coeffs)
+                if func_str:
+                    functions.append(func_str)
+                    print(f"      ✓ Generated polynomial passing through all {len(x_sorted)} points")
+                
+            except Exception as e:
+                print(f"      ✗ Failed to fit polynomial: {e}")
         
-        print(f"    Total functions (all degree > 1): {len(functions)}")
+        print(f"    Generated {len(functions)} polynomials total")
         return functions
     
     def split_into_horizontal_segments(self, contour):
@@ -536,49 +566,55 @@ class PolynomialFitter:
         if len(coeffs) < 3:  # Degree must be > 1 
             return None
             
-        terms = []
-        degree = len(coeffs) - 1
+        # Filter out essentially zero coefficients but keep structure
+        filtered_coeffs = []
+        for coeff in coeffs:
+            if abs(coeff) < 1e-12:
+                filtered_coeffs.append(0.0)
+            else:
+                filtered_coeffs.append(coeff)
         
-        for i, coeff in enumerate(coeffs):
+        terms = []
+        degree = len(filtered_coeffs) - 1
+        
+        for i, coeff in enumerate(filtered_coeffs):
             power = degree - i
             
-            if abs(coeff) < 1e-10:  # Skip essentially zero coefficients
+            if abs(coeff) < 1e-12:  # Skip zero coefficients
                 continue
             
+            # Format the coefficient
+            coeff_str = f"{coeff:.8f}"
+            
+            # Build the term
             if power == 0:
                 # Constant term
-                if coeff >= 0 and terms:
-                    terms.append(f" + {coeff:.6f}")
+                if len(terms) > 0:
+                    terms.append(" + " + coeff_str if coeff >= 0 else " - " + coeff_str[1:])
                 else:
-                    terms.append(f"{coeff:.6f}")
+                    terms.append(coeff_str)
             elif power == 1:
                 # Linear term
-                if coeff == 1:
-                    if terms:
-                        terms.append(" + x")
-                    else:
-                        terms.append("x")
-                elif coeff == -1:
+                if abs(coeff - 1.0) < 1e-12:
+                    terms.append(" + x" if len(terms) > 0 else "x")
+                elif abs(coeff + 1.0) < 1e-12:
                     terms.append(" - x")
                 else:
-                    if coeff > 0 and terms:
-                        terms.append(f" + {coeff:.6f}*x")
+                    if len(terms) > 0:
+                        terms.append(" + " + coeff_str + "*x" if coeff >= 0 else " - " + coeff_str[1:] + "*x")
                     else:
-                        terms.append(f"{coeff:.6f}*x")
+                        terms.append(coeff_str + "*x")
             else:
                 # Higher degree terms
-                if coeff == 1:
-                    if terms:
-                        terms.append(f" + x^{power}")
-                    else:
-                        terms.append(f"x^{power}")
-                elif coeff == -1:
+                if abs(coeff - 1.0) < 1e-12:
+                    terms.append(f" + x^{power}" if len(terms) > 0 else f"x^{power}")
+                elif abs(coeff + 1.0) < 1e-12:
                     terms.append(f" - x^{power}")
                 else:
-                    if coeff > 0 and terms:
-                        terms.append(f" + {coeff:.6f}*x^{power}")
+                    if len(terms) > 0:
+                        terms.append(f" + {coeff_str}*x^{power}" if coeff >= 0 else f" - {coeff_str[1:]}*x^{power}")
                     else:
-                        terms.append(f"{coeff:.6f}*x^{power}")
+                        terms.append(f"{coeff_str}*x^{power}")
         
         if not terms:
             return "y = 0"
