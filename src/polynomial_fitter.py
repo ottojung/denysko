@@ -544,11 +544,7 @@ class PolynomialFitter:
         
         return None
     
-    return None
-    
     def _get_degree_from_function(self, func_str):
-    
-    def fit_high_accuracy_polynomial(self, segment, max_degree):
         """
         Fit polynomial with degree > 1 that matches ALL points as accurately as possible.
         
