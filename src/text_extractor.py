@@ -109,288 +109,216 @@ class TextExtractor:
 
     def extract_skeleton_from_path(self, path):
         """
-        Extract letter strokes by analyzing the path structure and decomposing it into individual strokes.
-        This treats letters as a collection of strokes rather than a blob of points.
+        Extract letter strokes using a SIMPLE STRUCTURAL ANALYSIS.
+        Instead of complex algorithms, focus on finding the key structural points of the letter.
+        
+        For letter 'A': Find the 4 key points (bottom-left, top, bottom-right, crossbar endpoints)
+        and create 3 clean line segments from them.
 
         Args:
             path: matplotlib Path object
 
         Returns:
-            np.array: Array of (x, y) points representing the stroke centerlines
-        """
-        # Step 1: Extract individual stroke segments from the path
-        stroke_segments = self.extract_stroke_segments_from_path(path)
-        
-        if not stroke_segments:
-            return self.simplify_outline_to_centerline(path.vertices)
-        
-        # Step 2: For each stroke segment, find its centerline
-        all_centerlines = []
-        
-        for segment in stroke_segments:
-            centerline = self.extract_single_stroke_centerline(segment, path)
-            if len(centerline) > 0:
-                all_centerlines.extend(centerline)
-        
-        if not all_centerlines:
-            return self.simplify_outline_to_centerline(path.vertices)
-        
-        return np.array(all_centerlines)
-
-    def extract_stroke_segments_from_path(self, path):
-        """
-        Decompose the letter path into individual logical strokes.
-        For example, 'A' should give us 3 strokes: left diagonal, right diagonal, and horizontal bar.
-        
-        Args:
-            path: matplotlib Path object
-            
-        Returns:
-            list: List of stroke segments, each representing a logical stroke
+            np.array: Array of (x, y) points representing clean letter structure
         """
         vertices = path.vertices
         
-        # Get bounding box
+        if len(vertices) < 6:
+            return vertices
+        
+        print(f"        STRUCTURAL EXTRACTION: Finding key structural points in {len(vertices)} vertices")
+        
+        # Step 1: Find the key structural points of the letter
+        key_points = self.find_letter_key_points(vertices)
+        
+        if len(key_points) < 3:
+            print("        FALLBACK: Using simplified vertex sampling")
+            return self.create_simple_stroke_approximation(path)
+        
+        # Step 2: Create clean stroke lines connecting these key points
+        stroke_lines = self.create_structural_strokes(key_points)
+        
+        # Step 3: Convert stroke lines to point sequences
+        all_points = []
+        for line in stroke_lines:
+            line_points = self.generate_line_points(line['start'], line['end'], 15)
+            all_points.extend(line_points)
+        
+        if len(all_points) < 10:
+            return self.create_simple_stroke_approximation(path)
+        
+        result_points = np.array(all_points)
+        print(f"        STRUCTURAL SUCCESS: Generated {len(result_points)} points from {len(stroke_lines)} structural strokes")
+        
+        return result_points
+    
+    def find_letter_key_points(self, vertices):
+        """
+        Find the key structural points that define the letter's main features.
+        For 'A': bottom-left corner, top peak, bottom-right corner, crossbar points.
+        
+        Args:
+            vertices: Path vertices
+            
+        Returns:
+            list: Key structural points
+        """
+        if len(vertices) < 4:
+            return vertices
+        
+        # Find bounding box
         min_x, min_y = np.min(vertices, axis=0)
         max_x, max_y = np.max(vertices, axis=0)
-        width = max_x - min_x
-        height = max_y - min_y
         
-        # Sample the letter interior to identify stroke regions
-        stroke_regions = self.identify_stroke_regions(path, width, height)
+        key_points = []
         
-        # Convert stroke regions into individual stroke segments
-        stroke_segments = self.convert_regions_to_segments(stroke_regions, width, height, min_x, min_y)
+        # Find extremal points
+        # 1. Topmost point (peak of 'A')
+        top_idx = np.argmax(vertices[:, 1])
+        key_points.append(vertices[top_idx])
         
-        return stroke_segments
-
-    def identify_stroke_regions(self, path, width, height):
+        # 2. Bottommost points (base of 'A')
+        bottom_y = np.min(vertices[:, 1])
+        bottom_threshold = bottom_y + (max_y - min_y) * 0.1  # Bottom 10%
+        
+        bottom_indices = np.where(vertices[:, 1] <= bottom_threshold)[0]
+        if len(bottom_indices) > 0:
+            # Find leftmost and rightmost bottom points
+            bottom_vertices = vertices[bottom_indices]
+            left_bottom_idx = bottom_indices[np.argmin(bottom_vertices[:, 0])]
+            right_bottom_idx = bottom_indices[np.argmax(bottom_vertices[:, 0])]
+            
+            key_points.append(vertices[left_bottom_idx])
+            key_points.append(vertices[right_bottom_idx])
+        
+        # 3. Middle height points (for crossbar of 'A')
+        mid_y = min_y + (max_y - min_y) * 0.4  # 40% up from bottom
+        mid_threshold = (max_y - min_y) * 0.15  # Tolerance around middle
+        
+        mid_indices = np.where(np.abs(vertices[:, 1] - mid_y) <= mid_threshold)[0]
+        if len(mid_indices) > 1:
+            # Find leftmost and rightmost middle points
+            mid_vertices = vertices[mid_indices]
+            left_mid_idx = mid_indices[np.argmin(mid_vertices[:, 0])]
+            right_mid_idx = mid_indices[np.argmax(mid_vertices[:, 0])]
+            
+            # Only add if they're significantly apart (actual crossbar)
+            if abs(vertices[left_mid_idx][0] - vertices[right_mid_idx][0]) > (max_x - min_x) * 0.3:
+                key_points.append(vertices[left_mid_idx])
+                key_points.append(vertices[right_mid_idx])
+        
+        print(f"            Found {len(key_points)} key structural points")
+        return key_points
+    
+    def create_structural_strokes(self, key_points):
         """
-        Identify regions of the letter that correspond to different strokes.
-        Uses a grid-based approach to sample the letter interior and group connected regions.
+        Create clean stroke lines from key structural points.
+        For 'A': Create left diagonal, right diagonal, and horizontal crossbar.
+        
+        Args:
+            key_points: List of key structural points
+            
+        Returns:
+            list: List of stroke line dictionaries with start/end points
+        """
+        if len(key_points) < 3:
+            return []
+        
+        strokes = []
+        
+        # Sort points by y-coordinate (top to bottom) then by x-coordinate
+        sorted_points = sorted(key_points, key=lambda p: (-p[1], p[0]))
+        
+        if len(sorted_points) >= 3:
+            top_point = sorted_points[0]
+            
+            # Find bottom points
+            bottom_points = [p for p in sorted_points if p[1] < top_point[1] - 10]  # Significantly below top
+            
+            if len(bottom_points) >= 2:
+                # Sort bottom points by x-coordinate
+                bottom_points.sort(key=lambda p: p[0])
+                left_bottom = bottom_points[0]
+                right_bottom = bottom_points[-1]
+                
+                # Create main structural strokes
+                # Left diagonal: top to left bottom
+                strokes.append({
+                    'start': top_point,
+                    'end': left_bottom,
+                    'type': 'diagonal_left'
+                })
+                
+                # Right diagonal: top to right bottom
+                strokes.append({
+                    'start': top_point, 
+                    'end': right_bottom,
+                    'type': 'diagonal_right'
+                })
+                
+                # Crossbar: find middle-height points
+                mid_points = [p for p in sorted_points if abs(p[1] - (top_point[1] + left_bottom[1])/2) < 20]
+                if len(mid_points) >= 2:
+                    mid_points.sort(key=lambda p: p[0])
+                    strokes.append({
+                        'start': mid_points[0],
+                        'end': mid_points[-1],
+                        'type': 'crossbar'
+                    })
+        
+        print(f"            Created {len(strokes)} structural strokes")
+        return strokes
+    
+    def generate_line_points(self, start_point, end_point, num_points=20):
+        """
+        Generate evenly spaced points along a straight line.
+        
+        Args:
+            start_point: [x, y] start coordinates
+            end_point: [x, y] end coordinates
+            num_points: Number of points to generate
+            
+        Returns:
+            list: List of (x, y) points along the line
+        """
+        if num_points < 2:
+            return [start_point, end_point]
+        
+        # Generate parameter values from 0 to 1
+        t_values = np.linspace(0, 1, num_points)
+        
+        # Interpolate along the line
+        points = []
+        for t in t_values:
+            point = start_point + t * (end_point - start_point)
+            points.append(point)
+        
+        return points
+    
+    def create_simple_stroke_approximation(self, path):
+        """
+        Fallback method: Create a simple approximation when geometric detection fails.
         
         Args:
             path: matplotlib Path object
-            width, height: Letter dimensions
             
         Returns:
-            list: List of stroke regions (connected components)
+            np.array: Simple stroke approximation points
         """
         vertices = path.vertices
-        min_x, min_y = np.min(vertices, axis=0)
-        max_x, max_y = np.max(vertices, axis=0)
         
-        # Use adaptive resolution based on letter size
-        resolution = max(30, int(min(width, height) * 0.5))
+        if len(vertices) < 6:
+            return vertices
         
-        # Sample points in a grid
-        x_samples = np.linspace(min_x, max_x, resolution)
-        y_samples = np.linspace(min_y, max_y, resolution)
+        # Use every 10th vertex to create a simplified representation
+        step = max(1, len(vertices) // 10)
+        simplified = vertices[::step]
         
-        # Create a binary mask of interior points
-        interior_mask = np.zeros((len(y_samples), len(x_samples)), dtype=bool)
+        # Ensure we have at least a few points
+        if len(simplified) < 3:
+            simplified = vertices[[0, len(vertices)//2, -1]]
         
-        for i, y in enumerate(y_samples):
-            for j, x in enumerate(x_samples):
-                point = np.array([x, y])
-                if path.contains_point(point):
-                    interior_mask[i, j] = True
-        
-        # Find connected components in the interior mask
-        stroke_regions = self.find_connected_stroke_components(interior_mask, x_samples, y_samples)
-        
-        return stroke_regions
-
-    def find_connected_stroke_components(self, mask, x_samples, y_samples):
-        """
-        Find connected components in the binary mask that represent stroke regions.
-        
-        Args:
-            mask: 2D boolean array of interior points
-            x_samples, y_samples: Grid coordinates
-            
-        Returns:
-            list: List of stroke regions (each is a list of (x,y) points)
-        """
-        visited = np.zeros_like(mask, dtype=bool)
-        stroke_regions = []
-        
-        # 8-connectivity neighbors
-        directions = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
-        
-        for i in range(mask.shape[0]):
-            for j in range(mask.shape[1]):
-                if mask[i, j] and not visited[i, j]:
-                    # Start a new connected component
-                    region_points = []
-                    stack = [(i, j)]
-                    
-                    while stack:
-                        y_idx, x_idx = stack.pop()
-                        
-                        if (0 <= y_idx < mask.shape[0] and 0 <= x_idx < mask.shape[1] and 
-                            mask[y_idx, x_idx] and not visited[y_idx, x_idx]):
-                            
-                            visited[y_idx, x_idx] = True
-                            x = x_samples[x_idx]
-                            y = y_samples[y_idx]
-                            region_points.append([x, y])
-                            
-                            # Add neighbors to stack
-                            for dy, dx in directions:
-                                stack.append((y_idx + dy, x_idx + dx))
-                    
-                    # Only keep regions with sufficient points
-                    if len(region_points) > 5:
-                        stroke_regions.append(np.array(region_points))
-        
-        return stroke_regions
-
-    def convert_regions_to_segments(self, stroke_regions, width, height, min_x, min_y):
-        """
-        Convert stroke regions into ordered stroke segments.
-        Each segment represents the path of a single stroke.
-        
-        Args:
-            stroke_regions: List of point regions for each stroke
-            width, height: Letter dimensions  
-            min_x, min_y: Letter bounding box origin
-            
-        Returns:
-            list: List of ordered stroke segments
-        """
-        stroke_segments = []
-        
-        for region in stroke_regions:
-            if len(region) < 3:
-                continue
-            
-            # Find the principal direction of this stroke region
-            stroke_direction = self.find_stroke_direction(region)
-            
-            # Order points along the stroke direction
-            ordered_points = self.order_points_along_stroke(region, stroke_direction)
-            
-            # Simplify to get the stroke centerline path
-            centerline_path = self.simplify_stroke_to_centerline(ordered_points)
-            
-            if len(centerline_path) > 2:
-                stroke_segments.append(centerline_path)
-        
-        return stroke_segments
-
-    def find_stroke_direction(self, region_points):
-        """
-        Find the principal direction of a stroke region using PCA.
-        
-        Args:
-            region_points: Array of (x,y) points in the stroke region
-            
-        Returns:
-            np.array: Principal direction vector
-        """
-        # Center the points
-        centroid = np.mean(region_points, axis=0)
-        centered_points = region_points - centroid
-        
-        # Compute covariance matrix
-        cov_matrix = np.cov(centered_points.T)
-        
-        # Find principal eigenvector
-        eigenvalues, eigenvectors = np.linalg.eigh(cov_matrix)
-        
-        # Principal direction is the eigenvector with largest eigenvalue
-        principal_idx = np.argmax(eigenvalues)
-        principal_direction = eigenvectors[:, principal_idx]
-        
-        return principal_direction
-
-    def order_points_along_stroke(self, region_points, stroke_direction):
-        """
-        Order points along the stroke direction to create a path.
-        
-        Args:
-            region_points: Array of (x,y) points
-            stroke_direction: Principal direction vector
-            
-        Returns:
-            np.array: Points ordered along stroke direction
-        """
-        # Project points onto the principal direction
-        centroid = np.mean(region_points, axis=0)
-        centered_points = region_points - centroid
-        
-        projections = np.dot(centered_points, stroke_direction)
-        
-        # Sort by projection value
-        sorted_indices = np.argsort(projections)
-        ordered_points = region_points[sorted_indices]
-        
-        return ordered_points
-
-    def simplify_stroke_to_centerline(self, ordered_points):
-        """
-        Simplify an ordered set of stroke points to a smooth centerline.
-        
-        Args:
-            ordered_points: Points ordered along stroke direction
-            
-        Returns:
-            np.array: Simplified centerline points
-        """
-        if len(ordered_points) <= 3:
-            return ordered_points
-        
-        # Use a simple smoothing approach - take every nth point and smooth
-        n_target_points = max(3, len(ordered_points) // 5)  # Reduce density
-        
-        if len(ordered_points) <= n_target_points:
-            return ordered_points
-        
-        # Select evenly spaced points
-        indices = np.linspace(0, len(ordered_points) - 1, n_target_points, dtype=int)
-        selected_points = ordered_points[indices]
-        
-        # Apply simple smoothing
-        smoothed_points = self.smooth_centerline_points(selected_points)
-        
-        return smoothed_points
-
-    def smooth_centerline_points(self, points):
-        """
-        Apply smoothing to centerline points.
-        
-        Args:
-            points: Array of centerline points
-            
-        Returns:
-            np.array: Smoothed centerline points
-        """
-        if len(points) <= 2:
-            return points
-        
-        # Simple moving average smoothing
-        smoothed = np.copy(points)
-        
-        for i in range(1, len(points) - 1):
-            # Average with neighbors
-            smoothed[i] = (points[i-1] + points[i] + points[i+1]) / 3.0
-        
-        return smoothed
-
-    def extract_single_stroke_centerline(self, stroke_segment, path):
-        """
-        Extract the centerline from a single stroke segment.
-        
-        Args:
-            stroke_segment: Points representing one stroke
-            path: Original path for reference
-            
-        Returns:
-            list: Centerline points for this stroke
-        """
-        # The stroke segment already represents the centerline path
-        return stroke_segment.tolist() if len(stroke_segment) > 0 else []
+        return simplified
 
     def find_x_intersections_at_y(self, path, y):
         """
