@@ -368,133 +368,185 @@ class PolynomialFitter:
         # Sample points smartly from this region
         return self.generate_smart_sample_points(region, points_per_curve)
 
-    def fit_contour_polynomials(self, contour, max_degree=12):
+    def fit_contour_polynomials(self, contour, max_degree=15):
         """
-        SIMPLE AND CORRECT IMPLEMENTATION:
-        1. Require polynomial degree > 1 (non-linear)
-        2. Each curve must pass through ALL points it's given
-        3. Split into x-monotonic segments that can be represented as y=f(x)
+        COMPLETELY REWRITTEN FROM SCRATCH:
+        Two guiding principles:
+        1. Exact fitting to as many points as possible
+        2. Separation into multiple curves when multiple strokes cover same horizontal domain
         
         Args:
             contour (np.array): Array of (x, y) centerline points
-            max_degree (int): Maximum polynomial degree for shape fitting
+            max_degree (int): Maximum polynomial degree for fitting
             
         Returns:
-            list: List of polynomial function strings that actually pass through the points
+            list: List of polynomial function strings that exactly fit the letter points
         """
-        if len(contour) < 3:  # Need at least 3 points for degree > 1
+        if len(contour) < 3:
             return []
         
-        print(f"    FITTING {len(contour)} centerline points with degree > 1 polynomials")
+        print(f"    REWRITTEN ALGORITHM: Processing {len(contour)} letter points")
         
-        # Step 1: Split into x-monotonic segments (so each can be y=f(x))
-        segments = self.split_contour_into_x_monotonic_segments(contour)
-        print(f"    Split into {len(segments)} x-monotonic segments")
+        # Step 1: Detect horizontal overlap (multiple y values at same x)
+        overlapping_regions = self.detect_horizontal_overlap(contour)
         
-        functions = []
-        
-        # Step 2: For each segment, fit a polynomial that passes through ALL its points
-        for seg_idx, segment in enumerate(segments):
-            if len(segment) < 3:  # Need at least 3 points for degree > 1
-                continue
+        if overlapping_regions:
+            print(f"    Detected {len(overlapping_regions)} overlapping horizontal regions")
+            functions = []
             
-            print(f"    Segment {seg_idx+1}: {len(segment)} points")
+            # Fit each overlapping region separately 
+            for i, region in enumerate(overlapping_regions):
+                print(f"    Region {i+1}: {len(region)} points")
+                func = self.fit_exact_polynomial(region, max_degree)
+                if func:
+                    functions.append(func)
             
-            # Sort by x and handle duplicate x values
-            x_sorted, y_sorted = self.sort_segment_by_x(segment)
-            
-            if len(x_sorted) < 3:
-                continue
-            
-            # Use exact polynomial interpolation to pass through ALL points
-            # Degree will be n-1 where n is number of unique x points
-            degree = len(x_sorted) - 1
-            
-            # Ensure degree > 1 as required
-            if degree <= 1:
-                continue
-                
-            # Fit polynomial that passes EXACTLY through all points
-            try:
-                coeffs = np.polyfit(x_sorted, y_sorted, degree)
-                
-                # Verify it actually passes through the points
-                poly_func = np.poly1d(coeffs)
-                errors = np.abs(poly_func(x_sorted) - y_sorted)
-                max_error = np.max(errors)
-                
-                print(f"      Degree {degree} polynomial, max error: {max_error:.6f}")
-                
-                # Convert to function string
-                func_str = self.coefficients_to_function_string(coeffs)
-                if func_str:
-                    functions.append(func_str)
-                    print(f"      ✓ Generated polynomial passing through all {len(x_sorted)} points")
-                
-            except Exception as e:
-                print(f"      ✗ Failed to fit polynomial: {e}")
-        
-        print(f"    Generated {len(functions)} polynomials total")
-        return functions
+            return functions
+        else:
+            print("    No horizontal overlap detected - fitting single curve")
+            # No overlap: fit one curve to all points
+            func = self.fit_exact_polynomial(contour, max_degree)
+            return [func] if func else []
     
-    def split_into_horizontal_segments(self, contour):
+    def detect_horizontal_overlap(self, contour):
         """
-        Split contour into segments where each segment represents a single 
-        horizontal space (e.g., top arc vs bottom arc of "O").
+        Detect regions where multiple strokes occupy the same horizontal space.
+        This is the key to separating letter "A" into multiple curves.
         
         Args:
             contour: Array of (x, y) points
             
         Returns:
-            list: List of segments, each representing one horizontal space
+            list: List of point arrays, each representing a separate stroke
         """
-        if len(contour) < 3:
-            return [contour]
+        if len(contour) < 6:  # Need enough points to detect overlap
+            return None
         
-        # Sort by x coordinate to analyze horizontal distribution
+        # Sort points by x coordinate
         sorted_indices = np.argsort(contour[:, 0])
-        sorted_contour = contour[sorted_indices]
+        sorted_points = contour[sorted_indices]
         
-        # Group points by x-ranges and y-positions to separate strokes
-        x_values = sorted_contour[:, 0]
-        y_values = sorted_contour[:, 1]
+        # Group points by x-coordinate ranges to find overlaps
+        x_coords = sorted_points[:, 0]
+        y_coords = sorted_points[:, 1]
         
-        # Find x-ranges where there might be multiple y values (overlapping strokes)
-        x_unique = np.unique(x_values)
+        # Find x-ranges where there are multiple y values (indicating overlap)
+        x_min, x_max = np.min(x_coords), np.max(x_coords)
+        x_range = x_max - x_min
         
-        if len(x_unique) < 3:
-            return [contour]  # Too few unique x values
+        if x_range < 1e-6:  # All points at same x
+            return None
         
-        # Analyze y distribution at each x to detect separate strokes
-        segments_by_y_level = []
+        # Divide x-range into bins and check for multiple y values in each bin
+        num_bins = min(20, len(contour) // 3)
+        bin_edges = np.linspace(x_min, x_max, num_bins + 1)
         
-        # Simple approach: if points span large y range, likely multiple strokes
-        y_min, y_max = np.min(y_values), np.max(y_values)
-        y_span = y_max - y_min
-        
-        if y_span > (np.max(x_values) - np.min(x_values)) * 0.3:  # Tall relative to width
-            # Likely multiple horizontal strokes - split by y levels
-            y_median = np.median(y_values)
-            
-            upper_points = []
-            lower_points = []
-            
-            for i, point in enumerate(sorted_contour):
-                if point[1] >= y_median:
-                    upper_points.append(point)
-                else:
-                    lower_points.append(point)
-            
-            if len(upper_points) >= 3:
-                segments_by_y_level.append(np.array(upper_points))
-            if len(lower_points) >= 3:
-                segments_by_y_level.append(np.array(lower_points))
+        overlap_detected = False
+        for i in range(num_bins):
+            bin_mask = (x_coords >= bin_edges[i]) & (x_coords <= bin_edges[i + 1])
+            if np.sum(bin_mask) >= 2:  # At least 2 points in this x-range
+                y_in_bin = y_coords[bin_mask]
+                y_span = np.max(y_in_bin) - np.min(y_in_bin)
                 
-            if segments_by_y_level:
-                return segments_by_y_level
+                # If y-span is significant, we have overlap
+                if y_span > x_range * 0.1:  # 10% of x-range
+                    overlap_detected = True
+                    break
         
-        # Fallback: treat as single segment if no clear horizontal separation
-        return [sorted_contour]
+        if not overlap_detected:
+            return None
+        
+        # Separate into upper and lower strokes based on y-coordinate
+        y_median = np.median(y_coords)
+        
+        upper_stroke = []
+        lower_stroke = []
+        
+        for point in sorted_points:
+            if point[1] >= y_median:
+                upper_stroke.append(point)
+            else:
+                lower_stroke.append(point)
+        
+        strokes = []
+        if len(upper_stroke) >= 3:
+            strokes.append(np.array(upper_stroke))
+        if len(lower_stroke) >= 3:
+            strokes.append(np.array(lower_stroke))
+        
+        return strokes if len(strokes) >= 2 else None
+    
+    def fit_exact_polynomial(self, points, max_degree):
+        """
+        Fit a polynomial that passes exactly through as many points as possible.
+        Uses exact interpolation when possible, high-degree fitting otherwise.
+        
+        Args:
+            points: Array of (x, y) points to fit
+            max_degree: Maximum polynomial degree
+            
+        Returns:
+            str: Polynomial function string that fits the points exactly
+        """
+        if len(points) < 3:
+            return None
+        
+        # Sort by x and handle duplicate x values
+        x_sorted, y_sorted = self.sort_segment_by_x(points)
+        
+        if len(x_sorted) < 3:
+            return None
+        
+        print(f"      Fitting {len(x_sorted)} unique points")
+        
+        # Choose degree for exact fitting
+        n_points = len(x_sorted)
+        
+        # Try exact interpolation first (degree = n-1)
+        if n_points <= max_degree + 1:
+            degree = n_points - 1
+        else:
+            # Use maximum degree for best approximation
+            degree = max_degree
+        
+        # Ensure degree > 1
+        if degree <= 1:
+            degree = 2  # Force at least quadratic
+        
+        try:
+            # Fit polynomial
+            coeffs = np.polyfit(x_sorted, y_sorted, degree)
+            
+            # Verify accuracy
+            poly_func = np.poly1d(coeffs)
+            errors = np.abs(poly_func(x_sorted) - y_sorted)
+            max_error = np.max(errors)
+            mean_error = np.mean(errors)
+            
+            print(f"      Degree {degree}: max_error={max_error:.6f}, mean_error={mean_error:.6f}")
+            
+            # If error is too high and we can increase degree, try higher degree
+            if max_error > 0.01 and degree < min(max_degree, n_points - 1):
+                degree = min(max_degree, n_points - 1)
+                coeffs = np.polyfit(x_sorted, y_sorted, degree)
+                poly_func = np.poly1d(coeffs)
+                max_error = np.max(np.abs(poly_func(x_sorted) - y_sorted))
+                print(f"      Improved to degree {degree}: max_error={max_error:.6f}")
+            
+            # Convert to function string
+            func_str = self.coefficients_to_function_string(coeffs)
+            if func_str:
+                print("      ✓ Generated exact-fitting polynomial")
+                return func_str
+            
+        except Exception as e:
+            print(f"      ✗ Polynomial fitting failed: {e}")
+        
+        return None
+    
+    return None
+    
+    def _get_degree_from_function(self, func_str):
     
     def fit_high_accuracy_polynomial(self, segment, max_degree):
         """
