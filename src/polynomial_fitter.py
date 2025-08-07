@@ -545,37 +545,22 @@ class PolynomialFitter:
         return None
     
     def _get_degree_from_function(self, func_str):
-        """
-        Fit polynomial with degree > 1 that matches ALL points as accurately as possible.
+        """Extract the degree from a polynomial function string."""
+        if 'x^' not in func_str:
+            if '*x' in func_str:
+                return 1
+            return 0
         
-        Args:
-            segment: Points to fit
-            max_degree: Maximum degree allowed
-            
-        Returns:
-            str: Polynomial function string with degree > 1
-        """
-        if len(segment) < 3:
-            return None
+        max_degree = 0
+        parts = func_str.split('x^')
+        for part in parts[1:]:
+            try:
+                degree = int(part.split()[0].split('*')[0].split('+')[0].split('-')[0])
+                max_degree = max(max_degree, degree)
+            except Exception:
+                pass
         
-        try:
-            # Sort and clean data
-            x_sorted, y_sorted = self.sort_segment_by_x(segment)
-            
-            if len(x_sorted) < 3:
-                return None
-            
-            # Requirement: degree > 1 (minimum quadratic)
-            min_degree = 2  # quadratic minimum
-            max_feasible_degree = min(max_degree, len(x_sorted) - 1)
-            
-            if max_feasible_degree < min_degree:
-                return None  # Cannot satisfy degree > 1 requirement
-            
-            # Use degree that can match all points well
-            optimal_degree = min(max_feasible_degree, max(min_degree, len(x_sorted) // 2))
-            
-            print(f"        Using degree {optimal_degree} for {len(x_sorted)} points")
+        return max_degree
             
             # Fit polynomial to match ALL points as accurately as possible
             coeffs = np.polyfit(x_sorted, y_sorted, optimal_degree)
