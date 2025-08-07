@@ -561,29 +561,6 @@ class PolynomialFitter:
                 pass
         
         return max_degree
-            
-            # Fit polynomial to match ALL points as accurately as possible
-            coeffs = np.polyfit(x_sorted, y_sorted, optimal_degree)
-            
-            # Verify it's degree > 1
-            if optimal_degree <= 1:
-                return None
-            
-            # Verify accuracy at all points
-            poly_func = np.poly1d(coeffs)
-            errors = np.abs(poly_func(x_sorted) - y_sorted)
-            max_error = np.max(errors)
-            mean_error = np.mean(errors)
-            
-            print(f"        Accuracy: max_error={max_error:.3f}, mean_error={mean_error:.3f}")
-            
-            # Convert to function string
-            func_str = self.coefficients_to_function_string(coeffs)
-            return func_str
-            
-        except Exception as e:
-            print(f"        Error fitting high-accuracy polynomial: {e}")
-            return None
     
     def coefficients_to_function_string(self, coeffs):
         """
