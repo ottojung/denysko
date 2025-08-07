@@ -147,19 +147,38 @@ class PolynomialFitter:
         
         # EXACT FITTING: Use degree = n-1 (passes through ALL points)
         degree = min(n_points - 1, max_degree)
+        
+        # Handle minimum degree requirement
         if degree <= 1:
-            degree = 2  # Minimum quadratic
+            if n_points >= 3:
+                # We have enough points for degree > 1, use exact fitting
+                degree = n_points - 1
+            else:
+                # Not enough points for degree > 1, skip this curve
+                print(f"  Skipping: only {n_points} unique points, need ≥3 for degree > 1")
+                return None
         
         try:
             # Polynomial interpolation - EXACT fit
+            print(f"  Fitting degree {degree} polynomial through {n_points} points")
+            print(f"  Points: {list(zip(unique_x, unique_y))}")
+            
             coeffs = np.polyfit(unique_x, unique_y, degree)
+            print(f"  Coefficients: {coeffs}")
             
             # Verify exactness
             poly = np.poly1d(coeffs)
             errors = np.abs(poly(unique_x) - unique_y)
             max_error = np.max(errors)
             
-            print(f"  Degree {degree}: max_error = {max_error:.8f}")
+            print(f"  Max error = {max_error:.8f}")
+            
+            # Show individual point errors
+            print("  Point-by-point verification:")
+            for i, (x, y) in enumerate(zip(unique_x, unique_y)):
+                predicted = poly(x)
+                error = abs(predicted - y)
+                print(f"    Point {i+1}: x={x}, expected={y}, predicted={predicted:.8f}, error={error:.8f}")
             
             return self._coeffs_to_string(coeffs)
             
@@ -213,8 +232,11 @@ class PolynomialFitter:
         
         return result
     
-    def fit_contours_to_polynomials(self, contours, max_degree=25):
+    def fit_contours_to_polynomials(self, contours, max_degree=None):
         """Fit polynomials to multiple contours."""
+        if max_degree is None:
+            max_degree = self.max_degree
+            
         all_functions = []
         
         for i, contour in enumerate(contours):
