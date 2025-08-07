@@ -145,18 +145,24 @@ class PolynomialFitter:
         if n_points < 3:
             return None
         
-        # EXACT FITTING: Use degree = n-1 (passes through ALL points)
-        degree = min(n_points - 1, max_degree)
+        # EXACT FITTING: Use degree = n-1 (passes through ALL points)  
+        # But ensure degree > 1 as required by the problem
+        if n_points < 3:
+            print(f"  Skipping: only {n_points} unique points, need ≥3 for degree ≥ 2")
+            return None
         
-        # Handle minimum degree requirement
-        if degree <= 1:
-            if n_points >= 3:
-                # We have enough points for degree > 1, use exact fitting
-                degree = n_points - 1
-            else:
-                # Not enough points for degree > 1, skip this curve
-                print(f"  Skipping: only {n_points} unique points, need ≥3 for degree > 1")
-                return None
+        # For exact fitting: degree = n-1, but ensure it's at least 2
+        natural_degree = n_points - 1
+        degree = max(2, min(natural_degree, max_degree))  # At least degree 2
+        
+        print(f"  Points: {n_points}, Natural degree: {natural_degree}, Using: {degree}")
+        
+        if degree > natural_degree:
+            # We're forcing a higher degree than natural - this won't be exact
+            print(f"  Warning: Forcing degree {degree} with only {n_points} points - not exact fit")
+        elif degree < natural_degree:
+            # We're limiting the degree - this won't be exact either  
+            print(f"  Warning: Limiting to degree {degree} instead of natural {natural_degree} - not exact fit")
         
         try:
             # Polynomial interpolation - EXACT fit
@@ -189,37 +195,42 @@ class PolynomialFitter:
     def _coeffs_to_string(self, coeffs):
         """Convert coefficients to clean function string."""
         if len(coeffs) < 3:
+            print(f"  Error: Polynomial degree too low - got {len(coeffs)-1}, need ≥ 2")
             return None
         
         terms = []
         degree = len(coeffs) - 1
         
+        print(f"  Converting degree {degree} polynomial to string")
+        print(f"  Coefficients: {coeffs}")
+        
         for i, c in enumerate(coeffs):
             power = degree - i
-            if abs(c) < 1e-12:
+            if abs(c) < 1e-15:  # Very small threshold for essentially zero
                 continue
             
-            # Format coefficient
-            c_str = f"{c:.8g}"
+            # Format coefficient with more precision for debugging
+            c_str = f"{c:.12g}"
             
             if power == 0:
                 terms.append(c_str)
             elif power == 1:
-                if abs(c - 1) < 1e-12:
+                if abs(c - 1.0) < 1e-15:
                     terms.append("x")
-                elif abs(c + 1) < 1e-12:
+                elif abs(c + 1.0) < 1e-15:
                     terms.append("-x")
                 else:
                     terms.append(f"{c_str}*x")
             else:
-                if abs(c - 1) < 1e-12:
+                if abs(c - 1.0) < 1e-15:
                     terms.append(f"x^{power}")
-                elif abs(c + 1) < 1e-12:
+                elif abs(c + 1.0) < 1e-15:
                     terms.append(f"-x^{power}")
                 else:
                     terms.append(f"{c_str}*x^{power}")
         
         if not terms:
+            print("  Warning: All coefficients were essentially zero")
             return "y = 0"
         
         # Join with proper signs
@@ -230,6 +241,7 @@ class PolynomialFitter:
             else:
                 result += " + " + term
         
+        print(f"  Generated function: {result}")
         return result
     
     def fit_contours_to_polynomials(self, contours, max_degree=None):
