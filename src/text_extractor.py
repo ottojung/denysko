@@ -138,17 +138,16 @@ class TextExtractor:
         # Step 2: Create clean stroke lines connecting these key points
         stroke_lines = self.create_structural_strokes(key_points)
         
-        # Step 3: Convert stroke lines to point sequences
-        all_points = []
-        for line in stroke_lines:
-            line_points = self.generate_line_points(line['start'], line['end'], 15)
-            all_points.extend(line_points)
+        # Step 3: Connect strokes in a logical pen-drawing order to minimize unwanted lines
+        connected_points = self.connect_strokes_intelligently(stroke_lines)
         
-        if len(all_points) < 10:
+        if len(connected_points) < 10:
             return self.create_simple_stroke_approximation(path)
         
-        result_points = np.array(all_points)
-        print(f"        STRUCTURAL SUCCESS: Generated {len(result_points)} points from {len(stroke_lines)} structural strokes")
+        result_points = np.array(connected_points)
+        print(f"        STRUCTURAL SUCCESS: Generated {len(result_points)} connected points from {len(stroke_lines)} strokes")
+        
+        return result_points
         
         return result_points
     
@@ -268,6 +267,109 @@ class TextExtractor:
         
         print(f"            Created {len(strokes)} structural strokes")
         return strokes
+    
+    def connect_strokes_intelligently(self, stroke_lines):
+        """
+        Connect stroke lines in a logical pen-drawing order to minimize unwanted connecting lines.
+        For letter 'A': Connect left-diagonal -> right-diagonal -> crossbar with minimal jumps.
+        
+        Args:
+            stroke_lines: List of stroke line dictionaries
+            
+        Returns:
+            list: Connected sequence of points with intelligent stroke ordering
+        """
+        if not stroke_lines:
+            return []
+        
+        print(f"            Connecting {len(stroke_lines)} strokes intelligently...")
+        
+        # Convert each stroke to points first
+        stroke_segments = []
+        for line in stroke_lines:
+            line_points = self.generate_line_points(line['start'], line['end'], 15)
+            if len(line_points) > 1:
+                stroke_segments.append({
+                    'points': line_points,
+                    'type': line['type'],
+                    'start': line['start'],
+                    'end': line['end']
+                })
+        
+        if not stroke_segments:
+            return []
+        
+        # For letter 'A': Connect in a logical pen-drawing order
+        # 1. Left diagonal: bottom-left to top
+        # 2. Right diagonal: top to bottom-right  
+        # 3. Crossbar: left to right
+        
+        connected_points = []
+        
+        # Find strokes by type
+        left_diag = None
+        right_diag = None
+        crossbar = None
+        
+        for stroke in stroke_segments:
+            if stroke['type'] == 'diagonal_left':
+                left_diag = stroke
+            elif stroke['type'] == 'diagonal_right':
+                right_diag = stroke
+            elif stroke['type'] == 'crossbar':
+                crossbar = stroke
+        
+        # Connect strokes in optimal order to minimize jumps
+        if left_diag and right_diag:
+            # Start with left diagonal (bottom to top)
+            left_points = left_diag['points']
+            
+            # Check if we need to reverse to go bottom->top
+            if left_points[0][1] > left_points[-1][1]:  # First point is higher than last
+                left_points = left_points[::-1]  # Reverse to go bottom->top
+            
+            connected_points.extend(left_points)
+            
+            # Continue with right diagonal (top to bottom) 
+            # The right diagonal should start near where left diagonal ended (the top)
+            right_points = right_diag['points']
+            
+            # Check if right diagonal should be reversed to connect smoothly
+            left_end = left_points[-1]
+            right_start = right_points[0]
+            right_end = right_points[-1]
+            
+            # Use the right diagonal orientation that connects better to left diagonal end
+            start_dist = np.linalg.norm(np.array(left_end) - np.array(right_start))
+            end_dist = np.linalg.norm(np.array(left_end) - np.array(right_end))
+            
+            if end_dist < start_dist:
+                right_points = right_points[::-1]  # Reverse to connect better
+            
+            connected_points.extend(right_points)
+            
+            # Add crossbar if it exists (with a short connecting jump)
+            if crossbar:
+                crossbar_points = crossbar['points']
+                connected_points.extend(crossbar_points)
+        
+        # If we only have one or two strokes, connect them simply
+        elif left_diag:
+            connected_points.extend(left_diag['points'])
+            if crossbar:
+                connected_points.extend(crossbar['points'])
+        elif right_diag:
+            connected_points.extend(right_diag['points'])
+            if crossbar:
+                connected_points.extend(crossbar['points'])
+        
+        # Fallback: if stroke types don't match expected patterns, connect in order
+        if not connected_points:
+            for stroke in stroke_segments:
+                connected_points.extend(stroke['points'])
+        
+        print(f"            Connected {len(stroke_segments)} strokes into {len(connected_points)} points")
+        return connected_points
     
     def generate_line_points(self, start_point, end_point, num_points=20):
         """
