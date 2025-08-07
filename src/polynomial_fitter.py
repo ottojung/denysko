@@ -37,7 +37,8 @@ class PolynomialFitter:
         if max_degree is None:
             max_degree = self.max_degree
             
-        if len(contour) < 3:
+        if len(contour) < 10:  # Require many points for quality fitting
+            print(f"Warning: Only {len(contour)} points, need at least 10 for quality fitting")
             return []
         
         print(f"Fitting {len(contour)} letter points...")
@@ -110,9 +111,9 @@ class PolynomialFitter:
         lower = points[y_coords < y_median]
         
         strokes = []
-        if len(upper) >= 3:
+        if len(upper) >= 5:  # Require at least 5 points per stroke for quality
             strokes.append(upper)
-        if len(lower) >= 3:
+        if len(lower) >= 5:  # Require at least 5 points per stroke for quality
             strokes.append(lower)
         
         return strokes if strokes else [points]
@@ -129,7 +130,8 @@ class PolynomialFitter:
         Returns:
             str: Exact polynomial function string
         """
-        if len(points) < 3:
+        if len(points) < 5:  # Require at least 5 points for quality
+            print(f"  Skipping: only {len(points)} points, need ≥5 for quality fitting")
             return None
         
         # Sort by x and handle duplicates
@@ -142,13 +144,8 @@ class PolynomialFitter:
         unique_y = np.array([np.mean(y_sorted[inverse == i]) for i in range(len(unique_x))])
         
         n_points = len(unique_x)
-        if n_points < 3:
-            return None
-        
-        # EXACT FITTING: Use degree = n-1 (passes through ALL points)  
-        # But ensure degree > 1 as required by the problem
-        if n_points < 3:
-            print(f"  Skipping: only {n_points} unique points, need ≥3 for degree ≥ 2")
+        if n_points < 5:
+            print(f"  Skipping: only {n_points} unique x-coordinates, need ≥5")
             return None
         
         # For exact fitting: degree = n-1, but ensure it's at least 2
@@ -167,7 +164,8 @@ class PolynomialFitter:
         try:
             # Polynomial interpolation - EXACT fit
             print(f"  Fitting degree {degree} polynomial through {n_points} points")
-            print(f"  Points: {list(zip(unique_x, unique_y))}")
+            print(f"  X range: [{np.min(unique_x):.3f}, {np.max(unique_x):.3f}]")
+            print(f"  Y range: [{np.min(unique_y):.3f}, {np.max(unique_y):.3f}]")
             
             coeffs = np.polyfit(unique_x, unique_y, degree)
             print(f"  Coefficients: {coeffs}")
@@ -179,12 +177,8 @@ class PolynomialFitter:
             
             print(f"  Max error = {max_error:.8f}")
             
-            # Show individual point errors
-            print("  Point-by-point verification:")
-            for i, (x, y) in enumerate(zip(unique_x, unique_y)):
-                predicted = poly(x)
-                error = abs(predicted - y)
-                print(f"    Point {i+1}: x={x}, expected={y}, predicted={predicted:.8f}, error={error:.8f}")
+            if max_error > 1e-6:
+                print("  WARNING: Error too high for exact fit!")
             
             return self._coeffs_to_string(coeffs)
             
@@ -202,15 +196,17 @@ class PolynomialFitter:
         degree = len(coeffs) - 1
         
         print(f"  Converting degree {degree} polynomial to string")
-        print(f"  Coefficients: {coeffs}")
         
         for i, c in enumerate(coeffs):
             power = degree - i
             if abs(c) < 1e-15:  # Very small threshold for essentially zero
                 continue
             
-            # Format coefficient with more precision for debugging
-            c_str = f"{c:.12g}"
+            # Format coefficient with reasonable precision
+            if abs(c) < 1e-6:
+                c_str = f"{c:.15g}"  # High precision for small coefficients
+            else:
+                c_str = f"{c:.10g}"  # Normal precision
             
             if power == 0:
                 terms.append(c_str)
@@ -240,6 +236,9 @@ class PolynomialFitter:
                 result += " - " + term[1:]
             else:
                 result += " + " + term
+        
+        # Clean up the result - remove redundant + signs
+        result = result.replace(" + -", " - ")
         
         print(f"  Generated function: {result}")
         return result
