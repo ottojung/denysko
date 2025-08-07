@@ -4,7 +4,6 @@ Text extraction module - handles font path extraction and contour point sampling
 """
 
 import numpy as np
-import os
 from matplotlib import font_manager
 from matplotlib.path import Path
 import matplotlib.pyplot as plt
@@ -1218,14 +1217,20 @@ class TextExtractor:
         # Plot path segments according to codes
         from matplotlib.path import Path as MPLPath
         
+        # Track if we've added a label yet
+        label_used = False
+        
         current_pos = None
         for i, (vertex, code) in enumerate(zip(vertices, codes)):
             if code == MPLPath.MOVETO:
                 current_pos = vertex
             elif code == MPLPath.LINETO:
                 if current_pos is not None:
+                    # Only add label to first line segment
+                    line_label = label if not label_used else None
                     ax.plot([current_pos[0], vertex[0]], [current_pos[1], vertex[1]], 
-                           color=color, alpha=alpha, linewidth=1)
+                           color=color, alpha=alpha, linewidth=1, label=line_label)
+                    label_used = True
                 current_pos = vertex
             elif code == MPLPath.CLOSEPOLY:
                 # Close the path back to the start of current segment
@@ -1237,8 +1242,10 @@ class TextExtractor:
                             start_vertex = vertices[j]
                             break
                     if start_vertex is not None:
+                        line_label = label if not label_used else None
                         ax.plot([current_pos[0], start_vertex[0]], [current_pos[1], start_vertex[1]], 
-                               color=color, alpha=alpha, linewidth=1)
+                               color=color, alpha=alpha, linewidth=1, label=line_label)
+                        label_used = True
     
     def preview_skeleton_extraction_steps(self, text, font_size=100, save_path=None):
         """
@@ -1277,7 +1284,10 @@ class TextExtractor:
             ax_top.set_aspect('equal')
             ax_top.grid(True, alpha=0.2)
             ax_top.set_title('Step 1: Outline + Sampling Grid')
-            ax_top.legend()
+            # Only show legend if there are labeled elements
+            handles, labels = ax_top.get_legend_handles_labels()
+            if handles:
+                ax_top.legend()
             ax_top.invert_yaxis()
             
             # Bottom subplot: Skeleton extraction result
@@ -1299,7 +1309,10 @@ class TextExtractor:
             ax_bottom.set_aspect('equal')
             ax_bottom.grid(True, alpha=0.2)
             ax_bottom.set_title(f'Step 2: Extracted Skeleton\n({len(skeleton_points)} points)')
-            ax_bottom.legend()
+            # Only show legend if there are labeled elements
+            handles, labels = ax_bottom.get_legend_handles_labels()
+            if handles:
+                ax_bottom.legend()
             ax_bottom.invert_yaxis()
         
         plt.tight_layout()
