@@ -110,8 +110,8 @@ class TextExtractor:
 
     def extract_skeleton_from_path(self, path):
         """
-        Extract the skeleton (medial axis) from a font path using a midpoint-based approach.
-        This finds the true centerline of the letter strokes.
+        Extract the skeleton (medial axis) from a font path using proper stroke centerline detection.
+        This finds the true centerline of individual letter strokes, not just boundary midpoints.
 
         Args:
             path: matplotlib Path object
@@ -132,56 +132,27 @@ class TextExtractor:
         if width <= 0 or height <= 0:
             return vertices
 
-        # Sample points across the letter shape
-        resolution = 50  # Grid resolution
-        x_samples = np.linspace(min_x, max_x, resolution)
-        y_samples = np.linspace(min_y, max_y, resolution)
-
-        skeleton_points = []
-
-        # For each y-level, find the midpoints between left and right boundaries
-        for y in y_samples:
-            x_intersections = self.find_x_intersections_at_y(path, y)
-
-            if len(x_intersections) >= 2:
-                # Sort intersections and pair them to find interior segments
-                x_intersections = sorted(x_intersections)
-
-                # Take pairs of intersections and find their midpoints
-                for i in range(0, len(x_intersections) - 1, 2):
-                    if i + 1 < len(x_intersections):
-                        left_x = x_intersections[i]
-                        right_x = x_intersections[i + 1]
-
-                        # Calculate midpoint
-                        mid_x = (left_x + right_x) / 2
-                        skeleton_points.append([mid_x, y])
-
-        # Similarly, for each x-level, find midpoints between top and bottom boundaries
-        for x in x_samples:
-            y_intersections = self.find_y_intersections_at_x(path, x)
-
-            if len(y_intersections) >= 2:
-                y_intersections = sorted(y_intersections)
-
-                for i in range(0, len(y_intersections) - 1, 2):
-                    if i + 1 < len(y_intersections):
-                        bottom_y = y_intersections[i]
-                        top_y = y_intersections[i + 1]
-
-                        mid_y = (bottom_y + top_y) / 2
-                        skeleton_points.append([x, mid_y])
-
-        if not skeleton_points:
-            # Fallback: use simplified outline
+        # Use a finer resolution for better stroke detection
+        resolution = 100  # Higher resolution for better accuracy
+        
+        # First, identify points that are truly inside the shape
+        interior_points = self.find_interior_stroke_points(path, resolution)
+        
+        if len(interior_points) < 3:
+            # Fallback: use simplified outline approach
             return self.simplify_outline_to_centerline(vertices)
 
-        # Remove duplicate points and sort by connectivity
-        skeleton_points = np.array(skeleton_points)
-        skeleton_points = self.remove_duplicate_points(skeleton_points)
-        skeleton_points = self.sort_points_by_connectivity(skeleton_points)
+        # Filter points to keep only those that represent stroke centerlines
+        stroke_centerline_points = self.filter_stroke_centerline_points(path, interior_points)
+        
+        if len(stroke_centerline_points) < 3:
+            # If stroke filtering fails, use interior points
+            stroke_centerline_points = interior_points
 
-        return skeleton_points
+        # Connect the points to form continuous stroke paths
+        connected_skeleton = self.connect_stroke_segments(stroke_centerline_points)
+
+        return connected_skeleton
 
     def find_x_intersections_at_y(self, path, y):
         """
@@ -210,6 +181,330 @@ class TextExtractor:
                 intersections.append(x_intersect)
 
         return intersections
+
+    def find_interior_stroke_points(self, path, resolution=100):
+        """
+        Find points that are truly inside the letter shape and represent stroke centers.
+        Uses distance transform approach to find points equidistant from boundaries.
+        
+        Args:
+            path: matplotlib Path object
+            resolution: Grid resolution for sampling
+            
+        Returns:
+            np.array: Interior points that likely represent stroke centers
+        """
+        vertices = path.vertices
+        min_x, min_y = np.min(vertices, axis=0)
+        max_x, max_y = np.max(vertices, axis=0)
+        
+        # Create dense sampling grid
+        x_samples = np.linspace(min_x, max_x, resolution)
+        y_samples = np.linspace(min_y, max_y, resolution)
+        
+        interior_points = []
+        
+        # For each grid point, check if it's inside and calculate distance to boundary
+        for x in x_samples:
+            for y in y_samples:
+                point = np.array([x, y])
+                
+                # Check if point is inside the path
+                if path.contains_point(point):
+                    # Calculate distance to nearest boundary
+                    dist_to_boundary = self.distance_to_boundary(point, path)
+                    
+                    # Only keep points that are not too close to boundary (stroke centers)
+                    if dist_to_boundary > 2.0:  # Minimum distance from boundary
+                        interior_points.append([x, y, dist_to_boundary])
+        
+        if not interior_points:
+            return np.array([])
+        
+        # Convert to numpy array and sort by distance (furthest from boundary first)
+        interior_points = np.array(interior_points)
+        # Sort by distance to boundary (descending)
+        interior_points = interior_points[interior_points[:, 2].argsort()[::-1]]
+        
+        # Return only x,y coordinates
+        return interior_points[:, :2]
+
+    def distance_to_boundary(self, point, path):
+        """
+        Calculate minimum distance from a point to the path boundary.
+        
+        Args:
+            point: [x, y] coordinates
+            path: matplotlib Path object
+            
+        Returns:
+            float: Distance to nearest boundary point
+        """
+        vertices = path.vertices
+        min_dist = float('inf')
+        
+        # Check distance to each edge of the path
+        for i in range(len(vertices) - 1):
+            edge_start = vertices[i]
+            edge_end = vertices[i + 1]
+            
+            # Calculate distance from point to line segment
+            dist = self.point_to_line_distance(point, edge_start, edge_end)
+            min_dist = min(min_dist, dist)
+        
+        return min_dist
+
+    def point_to_line_distance(self, point, line_start, line_end):
+        """
+        Calculate distance from a point to a line segment.
+        
+        Args:
+            point: [x, y] coordinates of point
+            line_start: [x, y] start of line segment
+            line_end: [x, y] end of line segment
+            
+        Returns:
+            float: Distance from point to line segment
+        """
+        # Vector from line_start to line_end
+        line_vec = line_end - line_start
+        # Vector from line_start to point
+        point_vec = point - line_start
+        
+        # Calculate projection of point_vec onto line_vec
+        line_len_sq = np.dot(line_vec, line_vec)
+        
+        if line_len_sq == 0:
+            # Line is actually a point
+            return np.linalg.norm(point - line_start)
+        
+        # Parameter t represents position along line (0 = start, 1 = end)
+        t = max(0, min(1, np.dot(point_vec, line_vec) / line_len_sq))
+        
+        # Find closest point on line segment
+        closest_point = line_start + t * line_vec
+        
+        # Return distance
+        return np.linalg.norm(point - closest_point)
+
+    def filter_stroke_centerline_points(self, path, interior_points):
+        """
+        Filter interior points to keep only those that represent actual stroke centerlines.
+        Removes points that are in hollow areas (like inside the triangle of 'A').
+        
+        Args:
+            path: Original path
+            interior_points: Points inside the shape
+            
+        Returns:
+            np.array: Filtered points representing stroke centerlines
+        """
+        if len(interior_points) == 0:
+            return interior_points
+        
+        filtered_points = []
+        
+        for point in interior_points:
+            x, y = point
+            
+            # Check if this point is part of a stroke by examining its neighborhood
+            if self.is_stroke_center_point(path, point):
+                filtered_points.append(point)
+        
+        return np.array(filtered_points) if filtered_points else interior_points
+
+    def is_stroke_center_point(self, path, point):
+        """
+        Determine if a point represents the center of a stroke.
+        A stroke center point should have roughly equal distances to boundaries
+        in perpendicular directions.
+        
+        Args:
+            path: Original path
+            point: [x, y] coordinates to test
+            
+        Returns:
+            bool: True if point is likely a stroke center
+        """
+        x, y = point
+        
+        # Sample in 8 directions around the point to find boundary distances
+        directions = [
+            [1, 0], [-1, 0],   # horizontal
+            [0, 1], [0, -1],   # vertical
+            [1, 1], [-1, -1],  # diagonal
+            [1, -1], [-1, 1]   # diagonal
+        ]
+        
+        boundary_distances = []
+        
+        for dx, dy in directions:
+            # Cast ray in this direction until we hit the boundary
+            dist = self.ray_to_boundary_distance(path, point, [dx, dy])
+            if dist > 0:
+                boundary_distances.append(dist)
+        
+        if len(boundary_distances) < 4:
+            return False
+        
+        # For a stroke center, we expect roughly equal distances in opposite directions
+        # Check horizontal and vertical balance
+        horizontal_dists = boundary_distances[0:2]  # left, right
+        vertical_dists = boundary_distances[2:4]    # up, down
+        
+        # A good stroke center has balanced distances
+        h_ratio = min(horizontal_dists) / max(horizontal_dists) if max(horizontal_dists) > 0 else 0
+        v_ratio = min(vertical_dists) / max(vertical_dists) if max(vertical_dists) > 0 else 0
+        
+        # Point is likely a stroke center if distances are reasonably balanced
+        return h_ratio > 0.3 or v_ratio > 0.3
+
+    def ray_to_boundary_distance(self, path, start_point, direction, max_dist=50):
+        """
+        Cast a ray from start_point in given direction until hitting boundary.
+        
+        Args:
+            path: Path object
+            start_point: [x, y] starting coordinates
+            direction: [dx, dy] direction vector
+            max_dist: Maximum distance to search
+            
+        Returns:
+            float: Distance to boundary, or 0 if not found
+        """
+        x, y = start_point
+        dx, dy = direction
+        
+        # Normalize direction
+        length = np.sqrt(dx*dx + dy*dy)
+        if length == 0:
+            return 0
+        dx, dy = dx/length, dy/length
+        
+        # Step along ray until we exit the shape
+        step_size = 0.5
+        for distance in np.arange(step_size, max_dist, step_size):
+            test_point = [x + dx * distance, y + dy * distance]
+            
+            if not path.contains_point(test_point):
+                return distance
+        
+        return 0
+
+    def connect_stroke_segments(self, stroke_points):
+        """
+        Connect stroke centerline points into continuous segments.
+        This creates connected paths that follow the letter strokes.
+        
+        Args:
+            stroke_points: Array of stroke center points
+            
+        Returns:
+            np.array: Connected stroke centerline points
+        """
+        if len(stroke_points) <= 2:
+            return stroke_points
+        
+        # Use improved connectivity sorting that preserves stroke structure
+        connected_points = self.sort_points_by_stroke_connectivity(stroke_points)
+        
+        return connected_points
+
+    def sort_points_by_stroke_connectivity(self, points):
+        """
+        Sort points to follow stroke patterns rather than just nearest neighbor.
+        
+        Args:
+            points: Array of stroke points
+            
+        Returns:
+            np.array: Points sorted to follow stroke structure
+        """
+        if len(points) <= 2:
+            return points
+
+        # Find stroke endpoints (points that are furthest from other points)
+        endpoint_indices = self.find_stroke_endpoints(points)
+        
+        if len(endpoint_indices) < 2:
+            # Fallback to simple connectivity sorting
+            return self.sort_points_by_connectivity(points)
+        
+        # Start from one endpoint and trace to others
+        sorted_points = []
+        remaining_indices = set(range(len(points)))
+        
+        # Start with the first endpoint
+        current_idx = endpoint_indices[0]
+        sorted_points.append(points[current_idx])
+        remaining_indices.remove(current_idx)
+        
+        # Trace path by following nearest neighbors
+        while remaining_indices:
+            current_point = sorted_points[-1]
+            
+            # Find nearest remaining point
+            min_dist = float('inf')
+            next_idx = None
+            
+            for idx in remaining_indices:
+                dist = np.linalg.norm(current_point - points[idx])
+                if dist < min_dist:
+                    min_dist = dist
+                    next_idx = idx
+            
+            if next_idx is not None:
+                sorted_points.append(points[next_idx])
+                remaining_indices.remove(next_idx)
+            else:
+                break
+        
+        return np.array(sorted_points)
+
+    def find_stroke_endpoints(self, points):
+        """
+        Find points that are likely endpoints of strokes.
+        
+        Args:
+            points: Array of points
+            
+        Returns:
+            list: Indices of points that are likely stroke endpoints
+        """
+        if len(points) <= 3:
+            return [0, len(points)-1]
+        
+        endpoint_indices = []
+        
+        # Calculate average distance to nearest neighbors for each point
+        for i, point in enumerate(points):
+            distances = []
+            for j, other_point in enumerate(points):
+                if i != j:
+                    distances.append(np.linalg.norm(point - other_point))
+            
+            # Sort distances and take the 3 nearest neighbors
+            distances.sort()
+            avg_near_dist = np.mean(distances[:min(3, len(distances))])
+            
+            # Points with higher average distances to neighbors are likely endpoints
+            if len(endpoint_indices) == 0 or avg_near_dist > distances[0] * 1.5:
+                endpoint_indices.append(i)
+        
+        # Limit to a reasonable number of endpoints
+        if len(endpoint_indices) > 4:
+            # Sort by distance score and take top 4
+            endpoint_scores = []
+            for idx in endpoint_indices:
+                distances = [np.linalg.norm(points[idx] - points[j]) for j in range(len(points)) if j != idx]
+                distances.sort()
+                score = np.mean(distances[:3])
+                endpoint_scores.append((score, idx))
+            
+            endpoint_scores.sort(reverse=True)
+            endpoint_indices = [idx for _, idx in endpoint_scores[:4]]
+        
+        return endpoint_indices
 
     def find_y_intersections_at_x(self, path, x):
         """
