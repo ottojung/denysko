@@ -8,13 +8,19 @@ import sys
 import os
 sys.path.append(os.path.dirname(__file__))
 
-from .text_extractor import TextExtractor
-import matplotlib.pyplot as plt
-import matplotlib
-
-# Use non-interactive backend if no display available
-if not os.environ.get('DISPLAY'):
-    matplotlib.use('Agg')
+try:
+    from text_extractor import TextExtractor
+    import matplotlib.pyplot as plt
+    import matplotlib
+    
+    # Use non-interactive backend if no display available
+    if not os.environ.get('DISPLAY'):
+        matplotlib.use('Agg')
+        
+except ImportError as e:
+    print(f"Import error: {e}")
+    print("Make sure you're running this from the src/ directory")
+    sys.exit(1)
 
 def preview_text(text='A', font_size=100, num_points=500):
     """

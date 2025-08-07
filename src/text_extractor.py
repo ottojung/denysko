@@ -4,6 +4,7 @@ Text extraction module - handles font path extraction and contour point sampling
 """
 
 import numpy as np
+import os
 from matplotlib import font_manager
 from matplotlib.path import Path
 import matplotlib.pyplot as plt
@@ -704,7 +705,14 @@ class TextExtractor:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             print(f"Preview saved to: {save_path}")
         
-        plt.show()
+        # Only show if display is available, otherwise just save
+        try:
+            if os.environ.get('DISPLAY'):
+                plt.show()
+            else:
+                plt.close()
+        except Exception:
+            plt.close()
         
     def plot_path_outline(self, ax, path, color='blue', alpha=0.5, label='Outline'):
         """
@@ -770,12 +778,13 @@ class TextExtractor:
         
         fig, axes = plt.subplots(2, len(paths), figsize=(6*len(paths), 12))
         
+        # Ensure axes is always 2D for consistent indexing
         if len(paths) == 1:
-            axes = axes.reshape(-1, 1)
+            axes = axes.reshape(2, 1)
         
         for i, path in enumerate(paths):
             # Top subplot: Original outline + intersection grid
-            ax_top = axes[0, i] if len(paths) > 1 else axes[0]
+            ax_top = axes[0, i]
             
             # Plot original outline
             self.plot_path_outline(ax_top, path, color='black', alpha=0.8, label='Original Outline')
@@ -790,7 +799,7 @@ class TextExtractor:
             ax_top.invert_yaxis()
             
             # Bottom subplot: Skeleton extraction result
-            ax_bottom = axes[1, i] if len(paths) > 1 else axes[1]
+            ax_bottom = axes[1, i]
             
             # Plot faded outline for reference
             self.plot_path_outline(ax_bottom, path, color='lightgray', alpha=0.5, label='Original (faded)')
@@ -818,7 +827,14 @@ class TextExtractor:
             plt.savefig(save_path, dpi=150, bbox_inches='tight')
             print(f"Skeleton preview saved to: {save_path}")
         
-        plt.show()
+        # Only show if display is available, otherwise just save
+        try:
+            if os.environ.get('DISPLAY'):
+                plt.show()
+            else:
+                plt.close()
+        except Exception:
+            plt.close()
         
     def plot_intersection_grid(self, ax, path, resolution=20, alpha=0.3):
         """
