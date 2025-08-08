@@ -37,7 +37,7 @@ def main():
     if len(x_functions) > 0:
         print("ERROR: Found x = f(y) functions!")
         for func in x_functions:
-            print(f"  {func}")
+            print(f"{func}")
     else:
         print("SUCCESS: All functions are y = f(x)")
 
