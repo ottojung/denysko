@@ -9,12 +9,14 @@ Two guiding principles:
 Algorithm:
 - Detect horizontal overlap (multiple y values at similar x coordinates)
 - Split overlapping regions into separate curves  
-- Fit exact polynomial through ALL points in each curve (piecewise if needed)
+- Fit exact polynomial through ALL points in each curve
 - Use degree = n-1 for n points (exact interpolation) on each piece
 - IMPORTANT: No domain restrictions in the output; functions are for all real x
 """
 
 import numpy as np
+from numpy.polynomial import Polynomial as Poly
+from numpy.polynomial import polynomial as P  # for polyadd, polymul, polypow
 
 
 class PolynomialFitter:
@@ -26,6 +28,7 @@ class PolynomialFitter:
         # Piecewise control to maintain numerical stability while keeping exactness
         self.min_points_per_piece = 5
         self.max_points_per_piece = 12  # not a degree cap; we segment instead
+        self.max_x_span_ratio = 0.15  # each piece spans at most 15% of total x-range
     
     def fit_contour_polynomials(self, contour, max_degree=None):
         """
@@ -136,18 +139,28 @@ class PolynomialFitter:
             print(f"  Skipping: only {n} unique x-coordinates, need ≥{self.min_points_per_piece}")
             return []
         
-        # If small enough, fit in one go; otherwise segment into pieces of size <= max_points_per_piece
         funcs = []
-        if n <= self.max_points_per_piece:
+        total_span = float(np.max(unique_x) - np.min(unique_x)) if n > 1 else 0.0
+        max_span = self.max_x_span_ratio * total_span if total_span > 0 else float('inf')
+        
+        if n <= self.max_points_per_piece and (total_span <= max_span or not np.isfinite(max_span)):
             func = self._fit_exact_single(unique_x, unique_y)
             if func:
                 funcs.append(func)
             return funcs
         
-        # Segment into contiguous chunks by x
+        # Segment into contiguous chunks by x with both point-count and x-span constraints
         start = 0
         while start < n:
-            end = min(start + self.max_points_per_piece, n)
+            # initial tentative end by count
+            tentative_end = min(start + self.max_points_per_piece, n)
+            end = tentative_end
+            # enforce x-span constraint by shrinking end if needed
+            while end - start >= self.min_points_per_piece and (unique_x[end - 1] - unique_x[start]) > max_span:
+                end -= 1
+            # if still violates (e.g., enormous gaps), force minimal viable chunk
+            if end - start < self.min_points_per_piece:
+                end = min(start + self.min_points_per_piece, n)
             x_seg = unique_x[start:end]
             y_seg = unique_y[start:end]
             if len(x_seg) >= self.min_points_per_piece:
@@ -159,60 +172,78 @@ class PolynomialFitter:
 
     def _fit_exact_single(self, x_vals, y_vals):
         """Fit a single exact polynomial of degree len(x_vals)-1 to the segment.
-        Produces a function string with NO domain constraint.
+        Uses affine scaling to [-1,1] to stabilize the Vandermonde solve, then
+        composes back to the x-basis to emit a global polynomial (no domain).
         """
         n_points = len(x_vals)
         degree = max(2, n_points - 1)
         print(f"  Points: {n_points}, Natural degree: {n_points - 1}, Using: {degree}")
         try:
-            # Solve Vandermonde exactly for small n
-            V = np.vander(x_vals, N=degree + 1, increasing=False)
-            coeffs = np.linalg.solve(V, y_vals)
-            # Verify exactness
-            y_fit = V @ coeffs
+            xmin = float(np.min(x_vals))
+            xmax = float(np.max(x_vals))
+            span = xmax - xmin if xmax > xmin else 1.0
+            # Affine map: x in [xmin,xmax] -> z in [-1,1]: z = a*x + b
+            a = 2.0 / span
+            b = -(xmax + xmin) / span
+            z_vals = a * x_vals + b
+
+            # Build stable Vandermonde in ascending powers of z and solve for exact coefficients
+            Vz = np.vander(z_vals, N=degree + 1, increasing=True)  # columns: z^0, z^1, ..., z^degree
+            cz = np.linalg.solve(Vz, y_vals)  # cz[k] is coeff for z^k
+
+            # Compose p(z) with z=a*x+b in coefficient space (ascending order)
+            # px(x) = sum_k cz[k] * (a*x + b)^k
+            z_poly = np.array([b, a], dtype=float)  # coefficients of b + a*x
+            px = np.array([0.0], dtype=float)
+            for k, ck in enumerate(cz):
+                if abs(ck) < 1e-18:
+                    continue
+                # (a*x + b)^k
+                zk = P.polypow(z_poly, k)
+                term = zk * ck
+                # pad and add
+                px = P.polyadd(px, term)
+
+            # Verify exactness back on original x
+            y_fit = P.polyval(x_vals, px)  # ascending order
             max_err = float(np.max(np.abs(y_fit - y_vals)))
             print(f"  Max error = {max_err:.8e}")
-            if max_err > 1e-9:
+            if not np.isfinite(max_err) or max_err > 1e-8:
                 print("  WARNING: Residual detected; expected exact fit")
-            # Build function string (no domain constraint)
-            func = self._coeffs_to_string(coeffs)
+
+            # Convert to string (need high->low order)
+            func = self._coeffs_to_string(px[::-1])  # reverse to high->low for string builder
             if func is None:
                 return None
             print("  Generated function (no domain)")
             return func
         except np.linalg.LinAlgError as e:
-            print(f"  Linear solve failed: {e}. Falling back to least squares (still exact within segment).")
-            coeffs, *_ = np.linalg.lstsq(np.vander(x_vals, N=degree + 1, increasing=False), y_vals, rcond=None)
-            func = self._coeffs_to_string(coeffs)
-            if func is None:
-                return None
-            return func
+            print(f"  Linear solve failed: {e}")
+            return None
         except Exception as e:
             print(f"  Error: {e}")
             return None
 
     def _coeffs_to_string(self, coeffs):
-        """Convert coefficients to clean function string (no domain constraints)."""
+        """Convert coefficients (high->low) to clean function string (no domain constraints)."""
         if len(coeffs) < 3:
             print(f"  Error: Polynomial degree too low - got {len(coeffs)-1}, need ≥ 2")
             return None
-        
         terms = []
         degree = len(coeffs) - 1
-        
         print(f"  Converting degree {degree} polynomial to string")
-        
         for i, c in enumerate(coeffs):
             power = degree - i
-            if abs(c) < 1e-15:  # Very small threshold for essentially zero
+            if not np.isfinite(c) or abs(c) < 1e-15:
                 continue
-            
-            # Format coefficient with reasonable precision
-            if abs(c) < 1e-6:
-                c_str = f"{c:.15g}"  # High precision for small coefficients
+            c_abs = abs(c)
+            # Precision heuristics
+            if c_abs < 1e-6:
+                c_str = f"{c:.15g}"
+            elif c_abs > 1e6:
+                c_str = f"{c:.6g}"
             else:
-                c_str = f"{c:.10g}"  # Normal precision
-            
+                c_str = f"{c:.10g}"
             if power == 0:
                 terms.append(c_str)
             elif power == 1:
@@ -229,22 +260,16 @@ class PolynomialFitter:
                     terms.append(f"-x^{power}")
                 else:
                     terms.append(f"{c_str}*x^{power}")
-        
         if not terms:
             print("  Warning: All coefficients were essentially zero")
             return "y = 0"
-        
-        # Join with proper signs
         result = "y = " + terms[0]
         for term in terms[1:]:
             if term.startswith('-'):
                 result += " - " + term[1:]
             else:
                 result += " + " + term
-        
-        # Clean up the result - remove redundant + signs
         result = result.replace(" + -", " - ")
-        
         print(f"  Generated function: {result}")
         return result
     
