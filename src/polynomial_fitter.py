@@ -71,7 +71,7 @@ class PolynomialFitter:
     def _detect_overlapping_strokes(self, points):
         """
         Detect if multiple strokes occupy the same horizontal space.
-        Key for separating letter "A" diagonals from crossbar.
+        Key for separating letter diagonals from crossbar.
 
         Args:
             points: Array of (x, y) coordinates
