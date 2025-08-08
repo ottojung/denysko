@@ -22,12 +22,12 @@ except ImportError as e:
     print("Make sure you're running this from the src/ directory")
     sys.exit(1)
 
-def preview_text(text='A', font_size=100, num_points=500):
+def preview_text(text, font_size=100, num_points=500):
     """
     Preview centerline extraction for given text.
     
     Args:
-        text (str): Text to preview (default: 'A')
+        text (str): Text to preview
         font_size (int): Font size for rendering
         num_points (int): Number of centerline points to extract
     """
@@ -57,7 +57,7 @@ def preview_text(text='A', font_size=100, num_points=500):
     
     print("Preview complete!")
     
-def compare_different_approaches(text='A'):
+def compare_different_approaches(text):
     """
     Compare different numbers of points to see the effect.
     """
