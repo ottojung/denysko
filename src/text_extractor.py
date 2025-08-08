@@ -105,68 +105,82 @@ class TextExtractor:
 
     def extract_skeleton_from_path(self, path):
         """
-        Extract a medial-like centerline that collapses each stroke to a single path.
-        Prioritizes morphological thinning (single-pixel skeleton), falls back to
-        chamfer-distance ridge, and only then to scanline midpoints as a last resort.
+        Extract centerlines using horizontal-monotonic component decomposition:
+        1. Decompose letter into components where each x-position is covered once per component
+        2. Generate random left-to-right walks through each component
+        3. Average walks to get centerlines
+        4. Return multiple continuous paths (one per component)
         """
         vertices = path.vertices
         if len(vertices) < 6:
             return vertices
 
-        # 1) Rasterize once for all downstream steps
-        mask, x_grid, y_grid = self._rasterize_path(path, resolution=512)
+        # Rasterize the path to work with pixels
+        mask, x_grid, y_grid = self._rasterize_path(path, resolution=400)
         if mask.sum() == 0:
             return vertices
 
-        # 2) Primary: Zhang–Suen thinning yields true single-pixel skeletons
-        skel = self._zhang_suen_thinning(mask)
-
-        # 3) Fallback to medial ridge if thinning is too sparse
-        if skel.sum() < 5:
-            dist = self._chamfer_distance_transform(mask)
-            skel = self._medial_ridge(mask, dist)
-
-        # 4) If we still don't have enough, last resort: scanline midpoints
-        if skel.sum() < 5:
-            pts = self._scanline_midpoint_skeleton(path)
-            if pts is not None and len(pts) >= 10:
-                pts = self._smooth_polyline(pts, window=9)
-                pts = self._dedupe_close_points(pts, tol=1e-2)
-                return pts
+        # Decompose into horizontal-monotonic components
+        components = self._decompose_into_h_monotonic_components(mask)
+        if not components:
             return self.create_simple_stroke_approximation(path)
 
-        # 5) Trace skeleton components to ordered polylines and pick the longest
-        comps = self._connected_components(skel)
-        if not comps:
+        # Generate centerlines for each component
+        all_centerlines = []
+        for component in components:
+            centerline = self._generate_component_centerline(component, x_grid, y_grid)
+            if centerline is not None and len(centerline) >= 3:
+                # Verify that centerline points are within the letter body
+                if self._verify_centerline_within_letter(centerline, path):
+                    all_centerlines.append(centerline)
+
+        if not all_centerlines:
             return self.create_simple_stroke_approximation(path)
 
-        best_trace = None
-        best_len = -1.0
-        for comp in comps:
-            trace = self._trace_component_path(comp)
-            if len(trace) < 3:
-                continue
-            rs = np.array([p[0] for p in trace])
-            cs = np.array([p[1] for p in trace])
-            xs = x_grid[0, cs]
-            ys = y_grid[rs, 0]
-            path_pts = np.stack([xs, ys], axis=1)
-            L = np.sum(np.linalg.norm(np.diff(path_pts, axis=0), axis=1))
-            if L > best_len:
-                best_len = L
-                best_trace = trace
+        # For backward compatibility, return the longest centerline
+        # TODO: Later modify interface to return all components as separate paths
+        longest = max(all_centerlines, key=len)
 
-        if not best_trace:
-            return self.create_simple_stroke_approximation(path)
+        # Log information about components found
+        print(
+            f"Found {len(components)} components, {len(all_centerlines)} valid centerlines"
+        )
+        if len(all_centerlines) > 1:
+            lengths = [len(c) for c in all_centerlines]
+            print(f"Centerline lengths: {lengths} (returning longest: {len(longest)})")
 
-        rs = np.array([p[0] for p in best_trace])
-        cs = np.array([p[1] for p in best_trace])
-        xs = x_grid[0, cs]
-        ys = y_grid[rs, 0]
-        path_pts = np.stack([xs, ys], axis=1)
-        path_pts = self._smooth_polyline(path_pts, window=9)
-        path_pts = self._dedupe_close_points(path_pts, tol=1e-2)
-        return path_pts
+        return longest
+
+    def _verify_centerline_within_letter(self, centerline, path, tolerance=0.1):
+        """
+        Verify that centerline points are within the letter body (with small tolerance).
+
+        Args:
+            centerline: Array of (x,y) points
+            path: Original letter path
+            tolerance: Fraction of points that can be outside (for numerical errors)
+
+        Returns:
+            bool: True if centerline is mostly within the letter
+        """
+        if len(centerline) == 0:
+            return False
+
+        # Check how many points are inside the path
+        inside_count = 0
+        for point in centerline:
+            if path.contains_point(point):
+                inside_count += 1
+
+        inside_fraction = inside_count / len(centerline)
+        is_valid = inside_fraction >= (1.0 - tolerance)
+
+        if not is_valid:
+            print(
+                f"Warning: Only {inside_fraction:.1%} of centerline points are within letter body"
+            )
+
+        return is_valid
 
     def extract_skeleton_from_path_old(self, path):
         """
@@ -578,6 +592,7 @@ class TextExtractor:
         if len(vertices) < 3:
             return np.array(vertices)
         from matplotlib.path import Path as MPLPath
+
         temp = MPLPath(vertices, codes)
         skel = self.extract_skeleton_from_path(temp)
         if len(skel) < 3:
@@ -608,83 +623,117 @@ class TextExtractor:
             elif j >= len(d):
                 out.append(points[-1])
             else:
-                t0, t1 = d[j-1], d[j]
+                t0, t1 = d[j - 1], d[j]
                 if t1 == t0:
-                    out.append(points[j-1])
+                    out.append(points[j - 1])
                 else:
                     a = (t - t0) / (t1 - t0)
-                    out.append(points[j-1] + a * (points[j] - points[j-1]))
+                    out.append(points[j - 1] + a * (points[j] - points[j - 1]))
         return np.array(out)
 
-    def preview_extracted_points(self, text, font_size=100, num_points=500, save_path=None):
+    def preview_extracted_points(
+        self, text, font_size=100, num_points=500, save_path=None
+    ):
         """Render outline and extracted centerline for each character and save image."""
         import matplotlib.pyplot as plt
+
         print(f"Generating preview for text: '{text}'")
         paths = self.text_to_paths(text, font_size)
         if not paths:
             print("No paths generated for preview")
             return
         n = len(paths)
-        fig, axes = plt.subplots(1, max(1, n), figsize=(4*n, 6))
+        fig, axes = plt.subplots(1, max(1, n), figsize=(4 * n, 6))
         if n == 1:
             axes = [axes]
         for i, path in enumerate(paths):
             ax = axes[i]
-            self.plot_path_outline(ax, path, color='lightgray', alpha=0.8, label='Outline')
+            self.plot_path_outline(
+                ax, path, color="lightgray", alpha=0.8, label="Outline"
+            )
             contours = self.extract_contour_points(path, num_points)
             for j, contour in enumerate(contours):
                 if len(contour) > 0:
-                    ax.plot(contour[:, 0], contour[:, 1], 'r-', linewidth=1.2, label='Centerline' if j == 0 else None)
-                    ax.plot(contour[0, 0], contour[0, 1], 'go', markersize=6, label='Start' if j == 0 else None)
-                    ax.plot(contour[-1, 0], contour[-1, 1], 'bo', markersize=6, label='End' if j == 0 else None)
-            ax.set_aspect('equal')
+                    ax.plot(
+                        contour[:, 0],
+                        contour[:, 1],
+                        "r-",
+                        linewidth=1.2,
+                        label="Centerline" if j == 0 else None,
+                    )
+                    ax.plot(
+                        contour[0, 0],
+                        contour[0, 1],
+                        "go",
+                        markersize=6,
+                        label="Start" if j == 0 else None,
+                    )
+                    ax.plot(
+                        contour[-1, 0],
+                        contour[-1, 1],
+                        "bo",
+                        markersize=6,
+                        label="End" if j == 0 else None,
+                    )
+            ax.set_aspect("equal")
             ax.grid(True, alpha=0.3)
             if i == 0:
                 ax.legend()
             ax.invert_yaxis()
         plt.tight_layout()
         if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
             print(f"Preview saved to: {save_path}")
-        plt.close('all')
+        plt.close("all")
 
     def preview_skeleton_extraction_steps(self, text, font_size=100, save_path=None):
         """Minimal step preview: show outline and final skeleton per character."""
         import matplotlib.pyplot as plt
+
         print(f"Generating detailed skeleton preview for: '{text}'")
         paths = self.text_to_paths(text, font_size)
         if not paths:
             print("No paths generated for skeleton preview")
             return
         n = len(paths)
-        fig, axes = plt.subplots(1, max(1, n), figsize=(6*n, 6))
+        fig, axes = plt.subplots(1, max(1, n), figsize=(6 * n, 6))
         if n == 1:
             axes = [axes]
         for i, path in enumerate(paths):
             ax = axes[i]
-            self.plot_path_outline(ax, path, color='black', alpha=0.5, label='Outline')
+            self.plot_path_outline(ax, path, color="black", alpha=0.5, label="Outline")
             skel = self.extract_skeleton_from_path(path)
             if len(skel) > 0:
-                ax.plot(skel[:, 0], skel[:, 1], 'r.-', markersize=3, linewidth=1.2, label='Skeleton')
-            ax.set_aspect('equal')
+                ax.plot(
+                    skel[:, 0],
+                    skel[:, 1],
+                    "r.-",
+                    markersize=3,
+                    linewidth=1.2,
+                    label="Skeleton",
+                )
+            ax.set_aspect("equal")
             ax.grid(True, alpha=0.3)
             if i == 0:
                 ax.legend()
             ax.invert_yaxis()
         plt.tight_layout()
         if save_path:
-            plt.savefig(save_path, dpi=150, bbox_inches='tight')
+            plt.savefig(save_path, dpi=150, bbox_inches="tight")
             print(f"Skeleton preview saved to: {save_path}")
-        plt.close('all')
+        plt.close("all")
 
-    def plot_path_outline(self, ax, path, color='blue', alpha=0.5, label='Outline'):
+    def plot_path_outline(self, ax, path, color="blue", alpha=0.5, label="Outline"):
         """Plot the outline of a Path on provided axes, honoring codes if present."""
         vertices = path.vertices
         codes = path.codes
         if codes is None:
-            ax.plot(vertices[:, 0], vertices[:, 1], color=color, alpha=alpha, label=label)
+            ax.plot(
+                vertices[:, 0], vertices[:, 1], color=color, alpha=alpha, label=label
+            )
             return
         from matplotlib.path import Path as MPLPath
+
         label_used = False
         current = None
         for v, c in zip(vertices, codes):
@@ -692,8 +741,14 @@ class TextExtractor:
                 current = v
             elif c == MPLPath.LINETO:
                 if current is not None:
-                    ax.plot([current[0], v[0]], [current[1], v[1]], color=color, alpha=alpha, linewidth=1,
-                            label=(label if not label_used else None))
+                    ax.plot(
+                        [current[0], v[0]],
+                        [current[1], v[1]],
+                        color=color,
+                        alpha=alpha,
+                        linewidth=1,
+                        label=(label if not label_used else None),
+                    )
                     label_used = True
                 current = v
             elif c == MPLPath.CLOSEPOLY:
@@ -705,7 +760,16 @@ class TextExtractor:
         bin_img = img.astype(np.uint8).copy()
         changed = True
         h, w = bin_img.shape
-        neighbors = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
+        neighbors = [
+            (-1, 0),
+            (-1, 1),
+            (0, 1),
+            (1, 1),
+            (1, 0),
+            (1, -1),
+            (0, -1),
+            (-1, -1),
+        ]
 
         def neighbor_vals(r, c):
             return [bin_img[r + dr, c + dc] for dr, dc in neighbors]
@@ -829,5 +893,344 @@ class TextExtractor:
         simplified = vertices[::step]
         # Ensure we have at least a few points
         if len(simplified) < 3:
-            simplified = vertices[[0, len(vertices)//2, -1]]
+            simplified = vertices[[0, len(vertices) // 2, -1]]
         return simplified
+
+    def _decompose_into_h_monotonic_components(self, mask):
+        """
+        Decompose binary mask into horizontal-monotonic components.
+        For filled letters, we detect "waist" regions where the letter narrows,
+        then split components at those points to get separate stroke components.
+        """
+        h, w = mask.shape
+        if w == 0:
+            return []
+
+        # Step 1: Analyze the shape's width profile to detect narrowing
+        width_profile = []
+        column_intervals = []
+
+        for c in range(w):
+            intervals = []
+            in_interval = False
+            start = None
+
+            for r in range(h):
+                if mask[r, c] and not in_interval:
+                    start = r
+                    in_interval = True
+                elif not mask[r, c] and in_interval:
+                    intervals.append((start, r - 1))
+                    in_interval = False
+
+            if in_interval:
+                intervals.append((start, h - 1))
+
+            column_intervals.append(intervals)
+
+            # Calculate total width (height) for this column
+            total_width = sum(end - start + 1 for start, end in intervals)
+            width_profile.append(total_width)
+
+        if not any(width_profile):
+            return []
+
+        # Step 2: Detect waist points (local minima in width profile)
+        waist_points = self._find_waist_points(width_profile)
+
+        # Debug: Show width profile samples
+        non_zero_widths = [w for w in width_profile if w > 0]
+        if non_zero_widths:
+            avg_width = sum(non_zero_widths) / len(non_zero_widths)
+            min_width = min(non_zero_widths)
+            max_width = max(non_zero_widths)
+            print(
+                f"Width profile: min={min_width}, avg={avg_width:.1f}, max={max_width}"
+            )
+
+            # Sample some width values
+            samples = []
+            for i in range(0, len(width_profile), max(1, len(width_profile) // 10)):
+                samples.append(f"{i}:{width_profile[i]}")
+            print(f"Width samples: {' '.join(samples)}")
+
+        print(
+            f"Shape analysis: width range {min(width_profile)}-{max(width_profile)}, waists at columns: {waist_points}"
+        )
+
+        # Step 3: If no clear waists, treat as single component
+        if not waist_points:
+            # Single component approach
+            components = []
+            first_col = next((c for c in range(w) if column_intervals[c]), None)
+            if first_col is not None:
+                component = {}
+                for c in range(first_col, w):
+                    if column_intervals[c]:
+                        component[c] = column_intervals[c]
+                if len(component) >= 3:
+                    components.append(component)
+            return components
+
+        # Step 4: Split into components based on waist points
+        components = []
+        split_points = [0] + waist_points + [w]
+
+        for i in range(len(split_points) - 1):
+            start_col = split_points[i]
+            end_col = split_points[i + 1]
+
+            component = {}
+            for c in range(start_col, end_col):
+                if c < len(column_intervals) and column_intervals[c]:
+                    component[c] = column_intervals[c]
+
+            # Only keep components that span reasonable width
+            if len(component) >= max(3, (end_col - start_col) * 0.3):
+                components.append(component)
+                print(
+                    f"Component {len(components)}: columns {start_col}-{end_col}, width {len(component)}"
+                )
+
+        return components
+
+    def _find_waist_points(self, width_profile, min_prominence=0.1):
+        """
+        Find waist points (local minima) in the width profile.
+        These indicate where the letter narrows and might split into components.
+        """
+        if len(width_profile) < 5:
+            return []
+
+        # Smooth the profile to avoid noise
+        smoothed = self._smooth_1d(width_profile, window=5)
+
+        max_width = max(smoothed)
+        if max_width == 0:
+            return []
+
+        # Find local minima that are significant
+        waists = []
+        for i in range(2, len(smoothed) - 2):
+            current = smoothed[i]
+            if current == 0:  # Skip empty columns
+                continue
+
+            # Check if this is a local minimum
+            if current < smoothed[i - 1] and current < smoothed[i + 1]:
+                # Check prominence: how much narrower is it than nearby maxima?
+                left_range = smoothed[max(0, i - 15) : i]
+                right_range = smoothed[i + 1 : min(len(smoothed), i + 16)]
+
+                left_max = max(left_range) if left_range else current
+                right_max = max(right_range) if right_range else current
+                local_max = max(left_max, right_max)
+
+                if local_max > current:
+                    prominence = (local_max - current) / local_max
+                    print(
+                        f"  Potential waist at {i}: width={current}, local_max={local_max}, prominence={prominence:.2f}"
+                    )
+                    if prominence >= min_prominence:
+                        waists.append(i)
+
+        # Remove waists that are too close together
+        filtered_waists = []
+        min_separation = len(smoothed) // 8  # At least 12.5% of width apart
+
+        for waist in waists:
+            if not filtered_waists or (waist - filtered_waists[-1]) >= min_separation:
+                filtered_waists.append(waist)
+
+        return filtered_waists
+
+    def _smooth_1d(self, data, window=5):
+        """Simple 1D smoothing with moving average."""
+        if len(data) < window:
+            return data
+
+        smoothed = []
+        half_win = window // 2
+
+        for i in range(len(data)):
+            start = max(0, i - half_win)
+            end = min(len(data), i + half_win + 1)
+            smoothed.append(sum(data[start:end]) / (end - start))
+
+        return smoothed
+
+    def _interval_overlap(self, int1, int2):
+        """Calculate fractional overlap between two y-intervals."""
+        start1, end1 = int1
+        start2, end2 = int2
+
+        overlap_start = max(start1, start2)
+        overlap_end = min(end1, end2)
+
+        if overlap_end < overlap_start:
+            return 0.0
+
+        overlap_len = overlap_end - overlap_start + 1
+        total_len = min(end1 - start1 + 1, end2 - start2 + 1)
+
+        return overlap_len / max(total_len, 1)
+
+    def _generate_component_centerline(self, component, x_grid, y_grid, num_walks=50):
+        """
+        Generate centerline for a single component using random walks.
+
+        Args:
+            component: Dict mapping column indices to list of y-intervals
+            x_grid, y_grid: Coordinate grids from rasterization
+            num_walks: Number of random walks to average
+
+        Returns:
+            np.array: Centerline points in original coordinates
+        """
+        if not component:
+            return None
+
+        # Get sorted column indices for left-to-right traversal
+        columns = sorted(component.keys())
+        if len(columns) < 2:
+            return None
+
+        # Generate multiple random walks
+        walks = []
+        for _ in range(num_walks):
+            walk = self._generate_random_walk(component, columns)
+            if walk and len(walk) >= 3:
+                walks.append(walk)
+
+        if not walks:
+            return None
+
+        # Average the walks to get centerline
+        # All walks should have same length (one point per column)
+        walk_length = len(walks[0])
+        averaged_walk = []
+
+        for i in range(walk_length):
+            # Average y-coordinates at this column position
+            y_sum = sum(walk[i][1] for walk in walks)
+            y_avg = y_sum / len(walks)
+            col_idx = walks[0][i][0]  # Column index should be same for all walks
+            averaged_walk.append((col_idx, y_avg))
+
+        # Convert pixel coordinates back to original space
+        centerline_points = []
+        for col_idx, row_avg in averaged_walk:
+            # Clamp row_avg to valid range
+            h = y_grid.shape[0]
+            row_idx = int(np.clip(row_avg, 0, h - 1))
+
+            x = x_grid[0, col_idx]
+            y = y_grid[row_idx, 0]
+            centerline_points.append([x, y])
+
+        centerline = np.array(centerline_points)
+
+        # Additional verification: ensure all points are reasonable
+        if len(centerline) > 5:
+            # Remove any obvious outliers
+            x_min, x_max = centerline[:, 0].min(), centerline[:, 0].max()
+            y_min, y_max = centerline[:, 1].min(), centerline[:, 1].max()
+
+            # Filter out points that are way outside reasonable bounds
+            valid_mask = (
+                (centerline[:, 0] >= x_min - (x_max - x_min) * 0.1)
+                & (centerline[:, 0] <= x_max + (x_max - x_min) * 0.1)
+                & (centerline[:, 1] >= y_min - (y_max - y_min) * 0.1)
+                & (centerline[:, 1] <= y_max + (y_max - y_min) * 0.1)
+            )
+
+            if valid_mask.sum() >= 3:
+                centerline = centerline[valid_mask]
+
+        # Smooth the centerline gently
+        if len(centerline) >= 5:
+            centerline = self._smooth_polyline(centerline, window=5)
+        centerline = self._dedupe_close_points(centerline, tol=1e-3)
+
+        return centerline
+
+    def _generate_random_walk(self, component, columns):
+        """
+        Generate a single random left-to-right walk through the component.
+        Keep walks STRICTLY within the intervals to ensure they stay in the letter body.
+
+        Returns:
+            List of (column_idx, row_pos) tuples
+        """
+        walk = []
+
+        # Start from leftmost column - pick random y-position in first interval
+        first_col = columns[0]
+        first_intervals = component[first_col]
+
+        # Pick random interval and random position within it
+        interval_idx = np.random.randint(0, len(first_intervals))
+        start_row, end_row = first_intervals[interval_idx]
+
+        # Stay well within the interval bounds
+        margin = max(1, (end_row - start_row) * 0.1)  # 10% margin
+        safe_start = start_row + margin
+        safe_end = end_row - margin
+
+        if safe_start >= safe_end:
+            current_y = (start_row + end_row) / 2.0
+        else:
+            current_y = np.random.uniform(safe_start, safe_end)
+
+        walk.append((first_col, current_y))
+
+        # Continue walk through remaining columns
+        for col in columns[1:]:
+            intervals = component[col]
+
+            # Find best interval based on current y position
+            best_interval = None
+            best_distance = float("inf")
+
+            for start_row, end_row in intervals:
+                # Distance from current y to interval center
+                interval_center = (start_row + end_row) / 2
+                distance = abs(current_y - interval_center)
+
+                if distance < best_distance:
+                    best_distance = distance
+                    best_interval = (start_row, end_row)
+
+            if best_interval is None:
+                # This shouldn't happen, but fallback to first interval
+                best_interval = intervals[0]
+
+            start_row, end_row = best_interval
+            interval_size = end_row - start_row + 1
+
+            # Conservative approach: small brownian motion within interval
+            # Bias heavily toward staying near current y position
+            if interval_size <= 3:
+                # Very thin interval, just use center
+                next_y = (start_row + end_row) / 2.0
+            else:
+                # Add small amount of controlled randomness
+                target_y = current_y  # Start from current position
+                noise_scale = min(interval_size * 0.15, 3.0)  # Limit noise
+                noise = np.random.normal(0, noise_scale)
+                next_y = target_y + noise
+
+                # Enforce strict bounds with margins
+                margin = max(0.5, interval_size * 0.05)
+                safe_min = start_row + margin
+                safe_max = end_row - margin
+
+                if safe_min >= safe_max:
+                    next_y = (start_row + end_row) / 2.0
+                else:
+                    next_y = np.clip(next_y, safe_min, safe_max)
+
+            walk.append((col, next_y))
+            current_y = next_y
+
+        return walk
