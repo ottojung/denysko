@@ -52,7 +52,7 @@ class TextExtractor:
         """Build a Path from vertices/codes, extract skeleton, and resample to num_points."""
         if len(vertices) < 3:
             return vertices
-        
+
         temp = MPLPath(vertices, codes)
         skel = self.extract_skeleton_from_path(temp)
         if len(skel) < 3:
@@ -62,19 +62,21 @@ class TextExtractor:
             if len(simplified) < 3:
                 simplified = vertices[[0, len(vertices) // 2, -1]]
             skel = simplified
-            
+
         # Resample to target number of points
         if len(skel) >= num_points:
             idx = range(0, len(skel), max(1, len(skel) // num_points))
             return skel[list(idx)[:num_points]]
-        
+
         return upsample_centerline(skel, num_points)
 
     def upsample_centerline(self, points, target_count):
         """Upsample centerline to target_count via arc-length interpolation."""
         return upsample_centerline(points, target_count)
 
-    def preview_extracted_points(self, text, font_size=100, num_points=500, save_path=None):
+    def preview_extracted_points(
+        self, text, font_size=100, num_points=500, save_path=None
+    ):
         """Generate preview showing outline and centerline."""
         preview_extracted_points(self, text, font_size, num_points, save_path)
 
