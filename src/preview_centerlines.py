@@ -10,7 +10,8 @@ import os
 sys.path.append(os.path.dirname(__file__))
 
 try:
-    from text_extractor import TextExtractor
+    from .text_extractor import TextExtractor
+    from .preview_utils import plot_path_outline
     import matplotlib.pyplot as plt
     import matplotlib
 
@@ -79,7 +80,7 @@ def compare_different_approaches(text):
             path = paths[0]  # Use first character
 
             # Plot original outline faintly
-            extractor.plot_path_outline(ax, path, color="lightgray", alpha=0.5)
+            plot_path_outline(ax, path, color="lightgray", alpha=0.5)
 
             # Extract and plot centerline
             contours = extractor.extract_contour_points(path, num_points)
