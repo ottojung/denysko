@@ -22,7 +22,7 @@ def main():
     print(f"\nGenerated {len(functions)} functions for letter 'A':")
     print()
     for i, func in enumerate(functions, 1):
-        print(f" {func}")
+        print(f"{func}")
 
     print()
 
