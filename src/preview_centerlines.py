@@ -1,49 +1,23 @@
 #!/usr/bin/env python3
 """
-Preview script for visualizing extracted centerline point            # Extract and plot all traces
-            traces = extractor.extract_contour_points(path, num_points)
-
-            if traces:
-                colors = plt.cm.tab10(range(len(traces)))
-                for j, trace in enumerate(traces):
-                    if len(trace) > 0:
-                        color = colors[j % len(colors)]
-                        ax.plot(
-                            trace[:, 0],
-                            trace[:, 1],
-                            "o-",
-                            color=color,
-                            markersize=2,
-                            linewidth=1,
-                            alpha=0.8,
-                        )
-
-                # Mark start and end of first trace
-                if len(traces) > 0 and len(traces[0]) > 0:
-                    first_trace = traces[0]
-                    ax.plot(first_trace[0, 0], first_trace[0, 1], "go", markersize=8, label="Start")
-                    ax.plot(first_trace[-1, 0], first_trace[-1, 1], "ro", markersize=8, label="End")e how the zero-width skeleton extraction works.
+Preview script for visualizing extracted centerline points.
+Run with: python -m src.preview_centerlines "A"
 """
 
 import sys
 import os
 
-sys.path.append(os.path.dirname(__file__))
+import matplotlib
 
-try:
-    from .text_extractor import TextExtractor
-    from .preview_utils import plot_path_outline
-    import matplotlib.pyplot as plt
-    import matplotlib
+# Use non-interactive backend if no display available
+if not os.environ.get("DISPLAY"):
+    matplotlib.use("Agg")
 
-    # Use non-interactive backend if no display available
-    if not os.environ.get("DISPLAY"):
-        matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+from matplotlib.collections import LineCollection
 
-except ImportError as e:
-    print(f"Import error: {e}")
-    print("Make sure you're running this from the src/ directory")
-    sys.exit(1)
+from .text_extractor import TextExtractor
+from .preview_utils import _plot_outline_with_bounds
 
 
 def preview_text(text, font_size=100, num_points=500):
@@ -53,16 +27,16 @@ def preview_text(text, font_size=100, num_points=500):
     Args:
         text (str): Text to preview
         font_size (int): Font size for rendering
-        num_points (int): Number of centerline points to extract
+        num_points (int): Unused placeholder kept for CLI compatibility
     """
     print(f"=== Centerline Preview for '{text}' ===")
     print(f"Font size: {font_size}")
-    print(f"Points per character: {num_points}")
+    print(f"Points per character (ignored): {num_points}")
     print()
 
     extractor = TextExtractor()
 
-    # Basic preview
+    # Basic preview (per-character outline + all traces)
     print("Generating basic preview...")
     extractor.preview_extracted_points(
         text,
@@ -71,7 +45,7 @@ def preview_text(text, font_size=100, num_points=500):
         save_path=f"preview_basic_{text}.png",
     )
 
-    # Detailed skeleton preview
+    # Detailed skeleton preview (same drawing with different styling)
     print("Generating detailed skeleton extraction preview...")
     extractor.preview_skeleton_extraction_steps(
         text, font_size=font_size, save_path=f"preview_skeleton_{text}.png"
@@ -82,59 +56,54 @@ def preview_text(text, font_size=100, num_points=500):
 
 def compare_different_approaches(text):
     """
-    Compare different numbers of points to see the effect.
+    Simple comparison panel drawing the current extractor output multiple times.
+    Kept for parity with previous CLI; the numeric labels do not change behavior.
     """
-    print(f"=== Comparing Different Point Counts for '{text}' ===")
+    print(f"=== Comparison Panel for '{text}' ===")
 
     extractor = TextExtractor()
     point_counts = [50, 200, 500]
 
-    fig, axes = plt.subplots(1, len(point_counts), figsize=(15, 5))
+    n = len(point_counts)
+    fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
+    if n == 1:
+        axes = [axes]
+
+    paths = extractor.text_to_paths(text, font_size=100)
 
     for i, num_points in enumerate(point_counts):
         ax = axes[i]
-
-        # Extract paths
-        paths = extractor.text_to_paths(text, font_size=100)
+        ax.set_title(f"Panel {i+1} ({num_points} pts label)")
 
         if paths:
-            path = paths[0]  # Use first character
+            path = paths[0]  # Use first character only
 
-            # Plot original outline faintly
-            plot_path_outline(ax, path, color="lightgray", alpha=0.5)
+            # Plot original outline faintly and set bounds
+            _plot_outline_with_bounds(ax, path, color="lightgray", alpha=0.5, label="Outline")
 
-            # Extract and plot centerline
-            contours = extractor.extract_contour_points(path, num_points)
+            # Extract and plot all traces for this character
+            traces = extractor.extract_skeleton_from_path(path)
 
-            if contours and len(contours[0]) > 0:
-                contour = contours[0]
-                ax.plot(
-                    contour[:, 0],
-                    contour[:, 1],
-                    "ro-",
-                    markersize=2,
-                    linewidth=1,
-                    alpha=0.8,
-                )
-
-                # Mark start and end
-                ax.plot(contour[0, 0], contour[0, 1], "go", markersize=8, label="Start")
-                ax.plot(contour[-1, 0], contour[-1, 1], "bo", markersize=8, label="End")
+            segments = [t.astype(float) for t in traces if len(t) >= 2]
+            if segments:
+                cmap = plt.cm.get_cmap("tab20")
+                colors = [cmap(j % 20) for j in range(len(segments))]
+                lc = LineCollection(segments, colors=colors, linewidths=1.8, alpha=0.9, zorder=5)
+                ax.add_collection(lc)
+            else:
+                print("Warning: No trace segments with >=2 points to draw in comparison panel.")
 
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.3)
-        ax.set_title(f"{num_points} Points")
         ax.invert_yaxis()
 
-        if i == 0:
-            ax.legend()
-
     plt.tight_layout()
-    plt.suptitle(f"Point Count Comparison: '{text}'", fontsize=14, y=1.05)
-    plt.savefig(f"comparison_{text}.png", dpi=150, bbox_inches="tight")
-    plt.show()
+    plt.suptitle(f"Extractor comparison: '{text}'", fontsize=14, y=1.02)
+    out_path = f"comparison_{text}.png"
+    plt.savefig(out_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
 
-    print(f"Comparison saved as 'comparison_{text}.png'")
+    print(f"Comparison saved as '{out_path}'")
 
 
 if __name__ == "__main__":
@@ -146,5 +115,5 @@ if __name__ == "__main__":
     # Generate previews
     preview_text(text_to_preview, font_size, num_points)
 
-    # Also generate comparison
+    # Also generate comparison panel
     compare_different_approaches(text_to_preview)
