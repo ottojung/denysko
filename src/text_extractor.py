@@ -260,13 +260,18 @@ class TextExtractor:
         # Identify boundary pixels: inside with any 4-neighbor outside
         boundary = np.zeros_like(mask, dtype=bool)
         # Pad to handle edges
-        padded = np.pad(mask, 1, mode='constant', constant_values=False)
-        for r in range(1, h+1):
-            for c in range(1, w+1):
+        padded = np.pad(mask, 1, mode="constant", constant_values=False)
+        for r in range(1, h + 1):
+            for c in range(1, w + 1):
                 if not padded[r, c]:
                     continue
-                if not (padded[r-1, c] and padded[r+1, c] and padded[r, c-1] and padded[r, c+1]):
-                    boundary[r-1, c-1] = True
+                if not (
+                    padded[r - 1, c]
+                    and padded[r + 1, c]
+                    and padded[r, c - 1]
+                    and padded[r, c + 1]
+                ):
+                    boundary[r - 1, c - 1] = True
 
         inf = np.inf
         dist = np.full((h, w), inf, dtype=float)
@@ -280,37 +285,37 @@ class TextExtractor:
                     continue
                 best = dist[r, c]
                 # up
-                if r-1 >= 0:
-                    best = min(best, dist[r-1, c] + 1.0)
+                if r - 1 >= 0:
+                    best = min(best, dist[r - 1, c] + 1.0)
                 # left
-                if c-1 >= 0:
-                    best = min(best, dist[r, c-1] + 1.0)
+                if c - 1 >= 0:
+                    best = min(best, dist[r, c - 1] + 1.0)
                 # up-left
-                if r-1 >= 0 and c-1 >= 0:
-                    best = min(best, dist[r-1, c-1] + np.sqrt(2))
+                if r - 1 >= 0 and c - 1 >= 0:
+                    best = min(best, dist[r - 1, c - 1] + np.sqrt(2))
                 # up-right
-                if r-1 >= 0 and c+1 < w:
-                    best = min(best, dist[r-1, c+1] + np.sqrt(2))
+                if r - 1 >= 0 and c + 1 < w:
+                    best = min(best, dist[r - 1, c + 1] + np.sqrt(2))
                 dist[r, c] = best
 
         # Backward pass
-        for r in range(h-1, -1, -1):
-            for c in range(w-1, -1, -1):
+        for r in range(h - 1, -1, -1):
+            for c in range(w - 1, -1, -1):
                 if not mask[r, c] or dist[r, c] == 0.0:
                     continue
                 best = dist[r, c]
                 # down
-                if r+1 < h:
-                    best = min(best, dist[r+1, c] + 1.0)
+                if r + 1 < h:
+                    best = min(best, dist[r + 1, c] + 1.0)
                 # right
-                if c+1 < w:
-                    best = min(best, dist[r, c+1] + 1.0)
+                if c + 1 < w:
+                    best = min(best, dist[r, c + 1] + 1.0)
                 # down-right
-                if r+1 < h and c+1 < w:
-                    best = min(best, dist[r+1, c+1] + np.sqrt(2))
+                if r + 1 < h and c + 1 < w:
+                    best = min(best, dist[r + 1, c + 1] + np.sqrt(2))
                 # down-left
-                if r+1 < h and c-1 >= 0:
-                    best = min(best, dist[r+1, c-1] + np.sqrt(2))
+                if r + 1 < h and c - 1 >= 0:
+                    best = min(best, dist[r + 1, c - 1] + np.sqrt(2))
                 dist[r, c] = best
 
         # Keep distance only inside mask; zeros elsewhere
@@ -329,14 +334,14 @@ class TextExtractor:
             return ridge
         # Threshold to remove tiny spurs (2% of max radius)
         thr = max(0.75, 0.02 * max_d)
-        for r in range(1, h-1):
-            for c in range(1, w-1):
+        for r in range(1, h - 1):
+            for c in range(1, w - 1):
                 if not mask[r, c]:
                     continue
                 d = dist[r, c]
                 if d < thr:
                     continue
-                neighborhood = dist[r-1:r+2, c-1:c+2]
+                neighborhood = dist[r - 1 : r + 2, c - 1 : c + 2]
                 if d >= neighborhood.max() and (neighborhood == d).sum() <= 3:
                     ridge[r, c] = True
         return ridge
@@ -348,7 +353,16 @@ class TextExtractor:
         h, w = mask.shape
         visited = np.zeros_like(mask, dtype=bool)
         comps = []
-        neighbors = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+        neighbors = [
+            (-1, -1),
+            (-1, 0),
+            (-1, 1),
+            (0, -1),
+            (0, 1),
+            (1, -1),
+            (1, 0),
+            (1, 1),
+        ]
         for r in range(h):
             for c in range(w):
                 if not mask[r, c] or visited[r, c]:
@@ -361,8 +375,13 @@ class TextExtractor:
                     rr, cc = queue.pop(0)
                     comp.append((rr, cc))
                     for dr, dc in neighbors:
-                        nr, nc = rr+dr, cc+dc
-                        if 0 <= nr < h and 0 <= nc < w and mask[nr, nc] and not visited[nr, nc]:
+                        nr, nc = rr + dr, cc + dc
+                        if (
+                            0 <= nr < h
+                            and 0 <= nc < w
+                            and mask[nr, nc]
+                            and not visited[nr, nc]
+                        ):
                             visited[nr, nc] = True
                             queue.append((nr, nc))
                 comps.append(comp)
@@ -377,12 +396,12 @@ class TextExtractor:
         # Build set for fast lookup
         pix_set = set((int(r), int(c)) for r, c in comp_pixels)
         # Degree per pixel using 8-neighborhood
-        neighs = [(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+        neighs = [(-1, -1), (-1, 0), (-1, 1), (0, -1), (0, 1), (1, -1), (1, 0), (1, 1)]
         deg = {}
         for r, c in comp_pixels:
             d = 0
             for dr, dc in neighs:
-                if (r+dr, c+dc) in pix_set:
+                if (r + dr, c + dc) in pix_set:
                     d += 1
             deg[(r, c)] = d
         # Find endpoints (degree 1); if none (loop), pick arbitrary start
@@ -395,7 +414,7 @@ class TextExtractor:
         while True:
             candidates = []
             for dr, dc in neighs:
-                nxt = (current[0]+dr, current[1]+dc)
+                nxt = (current[0] + dr, current[1] + dc)
                 if nxt in pix_set and nxt not in visited:
                     candidates.append(nxt)
             if not candidates:
@@ -427,12 +446,12 @@ class TextExtractor:
 
     def _nearest_unvisited(self, current, pix_set, visited, radius=2):
         r0, c0 = current
-        for rad in range(1, radius+1):
-            for dr in range(-rad, rad+1):
-                for dc in range(-rad, rad+1):
+        for rad in range(1, radius + 1):
+            for dr in range(-rad, rad + 1):
+                for dc in range(-rad, rad + 1):
                     if dr == 0 and dc == 0:
                         continue
-                    cand = (r0+dr, c0+dc)
+                    cand = (r0 + dr, c0 + dc)
                     if cand in pix_set and cand not in visited:
                         return cand
         return None
@@ -440,12 +459,12 @@ class TextExtractor:
     def _smooth_polyline(self, pts, window=7):
         if len(pts) < 3 or window < 3:
             return pts
-        w = window if window % 2 == 1 else window+1
+        w = window if window % 2 == 1 else window + 1
         k = w // 2
         pad = np.vstack([pts[0:1].repeat(k, axis=0), pts, pts[-1:].repeat(k, axis=0)])
         sm = []
-        for i in range(k, k+len(pts)):
-            sm.append(pad[i-k:i+k+1].mean(axis=0))
+        for i in range(k, k + len(pts)):
+            sm.append(pad[i - k : i + k + 1].mean(axis=0))
         return np.array(sm)
 
     def _dedupe_close_points(self, pts, tol=1e-3):
@@ -487,7 +506,10 @@ class TextExtractor:
             n = np.array([-s, c], dtype=float)  # normal
 
             # Offsets along normal that cover the bbox corners
-            corners = np.array([[min_x, min_y], [min_x, max_y], [max_x, min_y], [max_x, max_y]], dtype=float)
+            corners = np.array(
+                [[min_x, min_y], [min_x, max_y], [max_x, min_y], [max_x, max_y]],
+                dtype=float,
+            )
             proj = (corners - center) @ n
             omin, omax = float(np.min(proj)), float(np.max(proj))
             offsets = np.arange(omin - spacing, omax + spacing, spacing)
