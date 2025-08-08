@@ -7,7 +7,6 @@ Only generates y = f(x) functions - no x = f(y) functions.
 from .text_extractor import TextExtractor
 from .polynomial_fitter import PolynomialFitter
 from .function_transformer import FunctionTransformer
-from .trig_fitter import TrigFitter
 
 
 class TextToDesmos:
@@ -16,12 +15,9 @@ class TextToDesmos:
     Generates ONLY y = f(x) functions.
     """
     
-    def __init__(self, origin=(0, 0), scale=1.0, mode: str = "trig"):
-        """mode: 'trig' for sin/cos exact fit (default), 'poly' to use polynomials."""
+    def __init__(self, origin=(0, 0), scale=1.0):
         self.extractor = TextExtractor()
-        self.fitter_poly = PolynomialFitter()
-        self.fitter_trig = TrigFitter()
-        self.mode = mode
+        self.fitter = PolynomialFitter()
         self.transformer = FunctionTransformer(origin=origin, scale=scale)
     
     def text_to_desmos_functions(self, text, font_size=100, points_per_char=500):
@@ -62,10 +58,7 @@ class TextToDesmos:
             # Fit functions to each contour - ONLY y = f(x)
             for j, contour in enumerate(contours):
                 print(f"  Processing contour {j + 1} with {len(contour)} centerline points...")
-                if self.mode == 'trig':
-                    functions = self.fitter_trig.fit_contour_functions(contour)
-                else:
-                    functions = self.fitter_poly.fit_contour_polynomials(contour)
+                functions = self.fitter.fit_contour_polynomials(contour)
                 
                 # Ensure all functions are y = f(x)
                 y_functions = [f for f in functions if f and f.startswith("y =")]  # type: ignore
