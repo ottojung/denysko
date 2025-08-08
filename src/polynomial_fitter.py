@@ -30,7 +30,7 @@ class PolynomialFitter:
         self.max_points_per_segment = 80
         self.min_seg_ratio = 0.08  # initial random window width as fraction of x-span
         self.max_seg_ratio = 0.18
-        self.seg_jitter_ratio = 0.02  # random start jitter as fraction of span
+        self.seg_jitter_ratio = 0.0  # no jitter
         self.r2_threshold = 0.97
         self.max_expand_steps = 8
         # Guarding to "go away" after the segment (small-weight penalties outside window)
@@ -326,13 +326,12 @@ class PolynomialFitter:
             # pick leftmost uncovered
             i = int(np.argmax(~covered))
             x0 = ux[i]
-            # random window width
+            # random window width (deterministic start, no jitter)
             w_ratio = float(rng.uniform(self.min_seg_ratio, self.max_seg_ratio))
             w = w_ratio * span
-            # random jitter of start
-            jitter = float(rng.uniform(-self.seg_jitter_ratio, self.seg_jitter_ratio)) * span
-            start = max(x_min, min(x0 + jitter, x_max))
-            end = min(start + w, x_max)
+            # deterministic start: clamp so window fits within [x_min, x_max]
+            start = min(max(x0, x_min), x_max - w)
+            end = start + w
             if end - start < (self.min_seg_ratio * span * 0.5):
                 end = min(x_max, start + self.min_seg_ratio * span)
 
