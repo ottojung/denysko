@@ -4,7 +4,9 @@ Preview and visualization utilities for centerline extraction.
 """
 
 
-def preview_extracted_points(extractor, text, font_size=100, num_points=500, save_path=None):
+def preview_extracted_points(
+    extractor, text, font_size=100, num_points=500, save_path=None
+):
     """Render outline and extracted centerline for each character and save image."""
     import matplotlib.pyplot as plt
 
@@ -13,12 +15,12 @@ def preview_extracted_points(extractor, text, font_size=100, num_points=500, sav
     if not paths:
         print("No paths generated for preview")
         return
-    
+
     n = len(paths)
     fig, axes = plt.subplots(1, max(1, n), figsize=(4 * n, 6))
     if n == 1:
         axes = [axes]
-    
+
     for i, path in enumerate(paths):
         ax = axes[i]
         plot_path_outline(ax, path, color="lightgray", alpha=0.8, label="Outline")
@@ -51,7 +53,7 @@ def preview_extracted_points(extractor, text, font_size=100, num_points=500, sav
         if i == 0:
             ax.legend()
         ax.invert_yaxis()
-    
+
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -68,12 +70,12 @@ def preview_skeleton_extraction_steps(extractor, text, font_size=100, save_path=
     if not paths:
         print("No paths generated for skeleton preview")
         return
-    
+
     n = len(paths)
     fig, axes = plt.subplots(1, max(1, n), figsize=(6 * n, 6))
     if n == 1:
         axes = [axes]
-    
+
     for i, path in enumerate(paths):
         ax = axes[i]
         plot_path_outline(ax, path, color="black", alpha=0.5, label="Outline")
@@ -92,7 +94,7 @@ def preview_skeleton_extraction_steps(extractor, text, font_size=100, save_path=
         if i == 0:
             ax.legend()
         ax.invert_yaxis()
-    
+
     plt.tight_layout()
     if save_path:
         plt.savefig(save_path, dpi=150, bbox_inches="tight")
@@ -107,7 +109,7 @@ def plot_path_outline(ax, path, color="blue", alpha=0.5, label="Outline"):
     if codes is None:
         ax.plot(vertices[:, 0], vertices[:, 1], color=color, alpha=alpha, label=label)
         return
-    
+
     from matplotlib.path import Path as MPLPath
 
     label_used = False
