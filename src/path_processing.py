@@ -40,25 +40,14 @@ def rasterize_path(path, resolution=400):
     return mask, x_grid, y_grid
 
 
-def decompose_into_h_monotonic_components(mask):
-    """
-    Decompose binary mask into horizontal-monotonic components.
-    For filled letters, we detect "waist" regions where the letter narrows,
-    then split components at those points to get separate stroke components.
-    """
+def column_intervals(mask):
+    """Compute list of intervals [(start_row, end_row), ...] for each column in mask."""
     h, w = mask.shape
-    if w == 0:
-        return []
-
-    # Step 1: Analyze the shape's width profile to detect narrowing
-    width_profile = []
-    column_intervals = []
-
+    all_cols = []
     for c in range(w):
         intervals = []
         in_interval = False
-        start = None
-
+        start = 0
         for r in range(h):
             if mask[r, c] and not in_interval:
                 start = r
@@ -66,55 +55,59 @@ def decompose_into_h_monotonic_components(mask):
             elif not mask[r, c] and in_interval:
                 intervals.append((start, r - 1))
                 in_interval = False
-
         if in_interval:
             intervals.append((start, h - 1))
+        all_cols.append(intervals)
+    return all_cols
 
-        column_intervals.append(intervals)
 
-        # Calculate total width (height) for this column
-        total_width = sum(end - start + 1 for start, end in intervals)
+def decompose_into_h_monotonic_components(mask):
+    """
+    Decompose binary mask into horizontal-monotonic components.
+    For filled letters, detect local-width minima ("waists") and split.
+    """
+    h, w = mask.shape
+    if w == 0:
+        return []
+
+    width_profile = []
+    cols = column_intervals(mask)
+
+    for c in range(w):
+        total_width = sum(end - start + 1 for start, end in cols[c])
         width_profile.append(total_width)
 
     if not any(width_profile):
         return []
 
-    # Step 2: Detect waist points (local minima in width profile)
     waist_points = _find_waist_points(width_profile)
 
-    print(f"Shape analysis: width range {min(width_profile)}-{max(width_profile)}, waists at columns: {waist_points}")
-
-    # Step 3: If no clear waists, treat as single component
     if not waist_points:
-        # Single component approach
+        # Single component: include all non-empty columns
         components = []
-        first_col = next((c for c in range(w) if column_intervals[c]), None)
+        first_col = next((c for c in range(w) if cols[c]), None)
         if first_col is not None:
-            component = {}
+            comp = {}
             for c in range(first_col, w):
-                if column_intervals[c]:
-                    component[c] = column_intervals[c]
-            if len(component) >= 3:
-                components.append(component)
+                if cols[c]:
+                    comp[c] = cols[c]
+            if len(comp) >= 3:
+                components.append(comp)
         return components
 
-    # Step 4: Split into components based on waist points
+    # Split into components based on waist points
     components = []
     split_points = [0] + waist_points + [w]
 
     for i in range(len(split_points) - 1):
         start_col = split_points[i]
         end_col = split_points[i + 1]
-
-        component = {}
+        comp = {}
         for c in range(start_col, end_col):
-            if c < len(column_intervals) and column_intervals[c]:
-                component[c] = column_intervals[c]
-
-        # Only keep components that span reasonable width
-        if len(component) >= max(3, (end_col - start_col) * 0.3):
-            components.append(component)
-            print(f"Component {len(components)}: columns {start_col}-{end_col}, width {len(component)}")
+            if c < w and cols[c]:
+                comp[c] = cols[c]
+        if len(comp) >= max(3, (end_col - start_col) * 0.3):
+            components.append(comp)
 
     return components
 
@@ -122,65 +115,51 @@ def decompose_into_h_monotonic_components(mask):
 def _find_waist_points(width_profile, min_prominence=0.1):
     """
     Find waist points (local minima) in the width profile.
-    These indicate where the letter narrows and might split into components.
     """
     if len(width_profile) < 5:
         return []
 
-    # Smooth the profile to avoid noise
     smoothed = _smooth_1d(width_profile, window=5)
 
     max_width = max(smoothed)
     if max_width == 0:
         return []
 
-    # Find local minima that are significant
     waists = []
     for i in range(2, len(smoothed) - 2):
         current = smoothed[i]
-        if current == 0:  # Skip empty columns
+        if current == 0:
             continue
-
-        # Check if this is a local minimum
         if current < smoothed[i - 1] and current < smoothed[i + 1]:
-            # Check prominence: how much narrower is it than nearby maxima?
             left_range = smoothed[max(0, i - 15) : i]
             right_range = smoothed[i + 1 : min(len(smoothed), i + 16)]
-
             left_max = max(left_range) if left_range else current
             right_max = max(right_range) if right_range else current
             local_max = max(left_max, right_max)
-
             if local_max > current:
                 prominence = (local_max - current) / local_max
-                print(f"  Potential waist at {i}: width={current}, local_max={local_max}, prominence={prominence:.2f}")
                 if prominence >= min_prominence:
                     waists.append(i)
 
-    # Remove waists that are too close together
-    filtered_waists = []
-    min_separation = len(smoothed) // 8  # At least 12.5% of width apart
-
-    for waist in waists:
-        if not filtered_waists or (waist - filtered_waists[-1]) >= min_separation:
-            filtered_waists.append(waist)
-
-    return filtered_waists
+    # Enforce minimum separation
+    filtered = []
+    min_sep = max(1, len(smoothed) // 8)
+    for wpt in waists:
+        if not filtered or (wpt - filtered[-1]) >= min_sep:
+            filtered.append(wpt)
+    return filtered
 
 
 def _smooth_1d(data, window=5):
-    """Simple 1D smoothing with moving average."""
+    """Simple 1D moving average smoothing."""
     if len(data) < window:
         return data
-
     smoothed = []
-    half_win = window // 2
-
+    half = window // 2
     for i in range(len(data)):
-        start = max(0, i - half_win)
-        end = min(len(data), i + half_win + 1)
-        smoothed.append(sum(data[start:end]) / (end - start))
-
+        s = max(0, i - half)
+        e = min(len(data), i + half + 1)
+        smoothed.append(sum(data[s:e]) / (e - s))
     return smoothed
 
 
@@ -188,14 +167,10 @@ def interval_overlap(int1, int2):
     """Calculate fractional overlap between two y-intervals."""
     start1, end1 = int1
     start2, end2 = int2
-
     overlap_start = max(start1, start2)
     overlap_end = min(end1, end2)
-
     if overlap_end < overlap_start:
         return 0.0
-
     overlap_len = overlap_end - overlap_start + 1
     total_len = min(end1 - start1 + 1, end2 - start2 + 1)
-
     return overlap_len / max(total_len, 1)
