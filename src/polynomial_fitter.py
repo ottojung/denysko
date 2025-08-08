@@ -203,10 +203,13 @@ class PolynomialFitter:
             return None
 
     def _encode_exponent(self, power):
-        """Return exponent as a standard integer string for Desmos.
-        Note: Desmos accepts multi-digit exponents directly as x^12. Avoid chaining carets.
+        """Encode multi-digit exponents by chaining digits with carets for Desmos.
+        Example: power=1234 -> '1^2^3^4'. Single-digit powers remain unchanged.
         """
-        return str(int(power))
+        p = int(power)
+        if p <= 9:
+            return str(p)
+        return "^".join(str(p))
 
     def _format_number(self, value, precision: int = 15) -> str:
         """Format a float without scientific notation (no 'e'/'E'), trimming trailing zeros.
