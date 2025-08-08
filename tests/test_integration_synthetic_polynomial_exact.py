@@ -105,7 +105,7 @@ def test_exact_fit_known_degree5():
     # Build contour (n,2)
     contour = np.column_stack([xs, ys])
 
-    fitter = PolynomialFitter(max_degree=None)
+    fitter = PolynomialFitter()
     # Fit directly; expect a single function, degree 5; no domains
     funcs = fitter.fit_contour_polynomials(contour)
 
@@ -146,7 +146,7 @@ def test_exact_fit_parabola():
     ys = np.array([_eval_poly_coeffs(true_coeffs, x) for x in xs])
     contour = np.column_stack([xs, ys])
 
-    fitter = PolynomialFitter(max_degree=None)
+    fitter = PolynomialFitter()
     funcs = fitter.fit_contour_polynomials(contour)
 
     assert funcs, "No function generated"

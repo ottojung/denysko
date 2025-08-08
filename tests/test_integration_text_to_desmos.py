@@ -182,7 +182,7 @@ def test_integration_letter_B(capfd=None):  # capfd is a pytest fixture, optiona
     assert len(all_points) >= 50, f"Insufficient points extracted: {len(all_points)}"
 
     # 2) Generate function descriptions using the full pipeline (no degree cap)
-    converter = TextToDesmos(origin=(0, 0), scale=1.0, max_degree=None)
+    converter = TextToDesmos(origin=(0, 0), scale=1.0)
     functions = converter.text_to_desmos_functions("B", font_size=100, points_per_char=500)
 
     # Ensure no domain ranges are present

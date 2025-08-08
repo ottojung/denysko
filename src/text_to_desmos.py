@@ -15,9 +15,9 @@ class TextToDesmos:
     Generates ONLY y = f(x) functions.
     """
     
-    def __init__(self, origin=(0, 0), scale=1.0, max_degree=8):
+    def __init__(self, origin=(0, 0), scale=1.0):
         self.extractor = TextExtractor()
-        self.fitter = PolynomialFitter(max_degree=max_degree)
+        self.fitter = PolynomialFitter()
         self.transformer = FunctionTransformer(origin=origin, scale=scale)
     
     def text_to_desmos_functions(self, text, font_size=100, points_per_char=500):
@@ -58,7 +58,7 @@ class TextToDesmos:
             # Fit polynomials to each contour - ONLY y = f(x)
             for j, contour in enumerate(contours):
                 print(f"  Processing contour {j + 1} with {len(contour)} centerline points...")
-                # Do not pass any degree cap; fitter performs exact interpolation
+                # Exact interpolation
                 functions = self.fitter.fit_contour_polynomials(contour)
                 
                 # Ensure all functions are y = f(x)

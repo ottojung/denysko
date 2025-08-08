@@ -8,35 +8,30 @@ Two guiding principles:
 
 Algorithm:
 - Detect horizontal overlap (multiple y values at similar x coordinates)
-- Split overlapping regions into separate curves  
-- Fit exact polynomial through ALL points in each curve
-- Use degree = n-1 for n points (exact interpolation) on each piece
+- Split overlapping regions into separate curves (vertical split: upper/lower)
+- Fit ONE exact polynomial through ALL points in each curve (no x-domain pieces)
+- Use degree = n - 1 for n points (exact interpolation)
 - IMPORTANT: No domain restrictions in the output; functions are for all real x
 """
 
 import numpy as np
-from numpy.polynomial import Polynomial as Poly
 from numpy.polynomial import polynomial as P  # for polyadd, polymul, polypow
 
 
 class PolynomialFitter:
     """Fits exact polynomials to letter coordinate points."""
     
-    def __init__(self, max_degree=None):
-        """Initialize (max_degree ignored to allow exact fitting)."""
-        self.max_degree = max_degree  # kept for compatibility; not used as a cap
-        # Piecewise control to maintain numerical stability while keeping exactness
-        self.min_points_per_piece = 5
-        self.max_points_per_piece = 12  # not a degree cap; we segment instead
-        self.max_x_span_ratio = 0.15  # each piece spans at most 15% of total x-range
+    def __init__(self):
+        """Initialize fitter for exact single-polynomial-per-stroke fitting."""
+        # Minimal points required to attempt a fit on a stroke/curve
+        self.min_points_per_stroke = 5
     
-    def fit_contour_polynomials(self, contour, max_degree=None):
+    def fit_contour_polynomials(self, contour):
         """
         Main fitting method - implements the two core principles.
         
         Args:
             contour: Array of (x, y) letter centerline points
-            max_degree: (ignored) kept for API compatibility
             
         Returns:
             list: Polynomial function strings that pass exactly through points
@@ -52,11 +47,11 @@ class PolynomialFitter:
         
         print(f"Found {len(curves)} separate curves")
         
-        # PRINCIPLE 1: Fit exact polynomials to each curve (piecewise if large)
+        # PRINCIPLE 1: Fit an exact polynomial to each curve using ALL its points
         functions = []
         for i, curve in enumerate(curves):
             print(f"Curve {i+1}: {len(curve)} points")
-            funcs = self._fit_exact_polynomial_piecewise(curve)
+            funcs = self._fit_exact_polynomial_single(curve)
             functions.extend(funcs)
         
         print(f"Generated {len(functions)} exact polynomials")
@@ -100,7 +95,7 @@ class PolynomialFitter:
             y_variation = np.max(seg_y) - np.min(seg_y)
             
             # If y varies significantly, we have overlapping strokes
-            if y_variation > x_span * 0.2:  # 20% threshold
+            if y_variation > x_span * 0.2:  # 20% threshold (heuristic)
                 overlap_found = True
                 break
         
@@ -114,16 +109,17 @@ class PolynomialFitter:
         lower = points[y_coords < y_median]
         
         strokes = []
-        if len(upper) >= self.min_points_per_piece:
+        if len(upper) >= self.min_points_per_stroke:
             strokes.append(upper)
-        if len(lower) >= self.min_points_per_piece:
+        if len(lower) >= self.min_points_per_stroke:
             strokes.append(lower)
         
         return strokes if strokes else [points]
 
-    def _fit_exact_polynomial_piecewise(self, points):
-        """Exact interpolation on one or more pieces to avoid numerical blowup.
-        Returns a list of function strings, each valid for all real x (no domain suffix).
+    def _fit_exact_polynomial_single(self, points):
+        """Exact interpolation on the entire curve (no x-domain split).
+        Returns a list with a single function string, valid for all real x.
+        The only allowed split is vertical (upper/lower strokes handled elsewhere).
         """
         # Sort by x and handle duplicates
         x_data, y_data = points[:, 0], points[:, 1]
@@ -135,40 +131,12 @@ class PolynomialFitter:
         unique_y = np.array([np.mean(y_sorted[inverse == i]) for i in range(len(unique_x))])
         
         n = len(unique_x)
-        if n < self.min_points_per_piece:
-            print(f"  Skipping: only {n} unique x-coordinates, need ≥{self.min_points_per_piece}")
+        if n < self.min_points_per_stroke:
+            print(f"  Skipping: only {n} unique x-coordinates, need ≥{self.min_points_per_stroke}")
             return []
         
-        funcs = []
-        total_span = float(np.max(unique_x) - np.min(unique_x)) if n > 1 else 0.0
-        max_span = self.max_x_span_ratio * total_span if total_span > 0 else float('inf')
-        
-        if n <= self.max_points_per_piece and (total_span <= max_span or not np.isfinite(max_span)):
-            func = self._fit_exact_single(unique_x, unique_y)
-            if func:
-                funcs.append(func)
-            return funcs
-        
-        # Segment into contiguous chunks by x with both point-count and x-span constraints
-        start = 0
-        while start < n:
-            # initial tentative end by count
-            tentative_end = min(start + self.max_points_per_piece, n)
-            end = tentative_end
-            # enforce x-span constraint by shrinking end if needed
-            while end - start >= self.min_points_per_piece and (unique_x[end - 1] - unique_x[start]) > max_span:
-                end -= 1
-            # if still violates (e.g., enormous gaps), force minimal viable chunk
-            if end - start < self.min_points_per_piece:
-                end = min(start + self.min_points_per_piece, n)
-            x_seg = unique_x[start:end]
-            y_seg = unique_y[start:end]
-            if len(x_seg) >= self.min_points_per_piece:
-                func = self._fit_exact_single(x_seg, y_seg)
-                if func:
-                    funcs.append(func)
-            start = end
-        return funcs
+        func = self._fit_exact_single(unique_x, unique_y)
+        return [func] if func else []
 
     def _fit_exact_single(self, x_vals, y_vals):
         """Fit a single exact polynomial of degree len(x_vals)-1 to the segment.
@@ -290,8 +258,8 @@ class PolynomialFitter:
         print(f"  Generated function: {result}")
         return result
     
-    def fit_contours_to_polynomials(self, contours, max_degree=None):
-        """Fit polynomials to multiple contours (exact fit; piecewise)."""
+    def fit_contours_to_polynomials(self, contours):
+        """Fit polynomials to multiple contours (exact fit; one per stroke)."""
         all_functions = []
         
         for i, contour in enumerate(contours):
