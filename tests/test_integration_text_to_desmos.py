@@ -119,6 +119,23 @@ def _parse_polynomial_from_function_string(func: str) -> Dict[int, float]:
     return power_to_coeff
 
 
+def _parse_domain(func: str) -> Tuple[float, float] | None:
+    """Parse an optional domain constraint of the form '{a <= x <= b}' at the end."""
+    s = func.strip()
+    if '{' not in s or '}' not in s:
+        return None
+    try:
+        brace = s[s.index('{') + 1 : s.rindex('}')]
+        # Expected like 'a <= x <= b'
+        parts = brace.replace(' ', '').split('<=x<=')
+        if len(parts) == 2:
+            a_str, b_str = parts
+            return float(a_str), float(b_str)
+    except Exception:
+        return None
+    return None
+
+
 def _eval_poly(power_to_coeff: Dict[int, float], x: float) -> float:
     return sum((c * (x ** p) for p, c in power_to_coeff.items()))
 
@@ -172,10 +189,12 @@ def test_integration_letter_B(capfd=None):  # capfd is a pytest fixture, optiona
 
     # 3) Interpret function strings into polynomials
     polynomials: List[Dict[int, float]] = []
+    domains: List[Tuple[float, float] | None] = []
     for fstr in y_functions:
         polynomials.append(_parse_polynomial_from_function_string(fstr))
+        domains.append(_parse_domain(fstr))
 
-    # 4) Assign points to the best-matching polynomial and compute errors
+    # 4) Assign points to the best-matching polynomial within domain and compute errors
     errors: List[float] = []
     assignments: List[int] = [0] * len(polynomials)
 
@@ -190,13 +209,19 @@ def test_integration_letter_B(capfd=None):  # capfd is a pytest fixture, optiona
         best_err = float("inf")
         best_idx = -1
         for idx, poly in enumerate(polynomials):
+            dom = domains[idx]
+            if dom is not None:
+                a, b = dom
+                if not (a - 1e-9 <= x <= b + 1e-9):
+                    continue  # outside domain, skip
             y_pred = _eval_poly(poly, x)
             err = abs(y_pred - y_true)
             if err < best_err:
                 best_err = err
                 best_idx = idx
-        errors.append(best_err)
-        if best_idx >= 0:
+        # Only count if some function covered this x
+        if best_idx >= 0 and best_err < float("inf"):
+            errors.append(best_err)
             assignments[best_idx] += 1
 
     stats = _summary_stats(errors)

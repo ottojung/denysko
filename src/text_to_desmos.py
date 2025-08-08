@@ -58,7 +58,8 @@ class TextToDesmos:
             # Fit polynomials to each contour - ONLY y = f(x)
             for j, contour in enumerate(contours):
                 print(f"  Processing contour {j + 1} with {len(contour)} centerline points...")
-                functions = self.fitter.fit_contour_polynomials(contour, self.fitter.max_degree)
+                # Do not pass any degree cap; fitter performs exact interpolation
+                functions = self.fitter.fit_contour_polynomials(contour)
                 
                 # Ensure all functions are y = f(x)
                 y_functions = [f for f in functions if f.startswith("y =")]

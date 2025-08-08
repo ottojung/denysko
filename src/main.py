@@ -16,7 +16,7 @@ def main():
     # Test with letter A
     print("Testing with letter 'A'...")
 
-    converter = TextToDesmos(origin=(0, 0), scale=1.0, max_degree=6)
+    converter = TextToDesmos(origin=(0, 0), scale=1.0)
     functions = converter.text_to_desmos_functions("A")
 
     print(f"\nGenerated {len(functions)} functions for letter 'A':")
