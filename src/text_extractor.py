@@ -63,10 +63,8 @@ class TextExtractor:
                 path = TextPath((x_offset, 0), char, size=font_size, prop=font_props)
 
                 if len(path.vertices) > 0:
-                    # Simplify the path to reduce thickness artifacts
-                    simplified_path = self.simplify_path_for_zero_stroke(path)
-                    if simplified_path is not None:
-                        paths.append(simplified_path)
+                    # Keep original outline path for preview; do not skeletonize here
+                    paths.append(path)
 
                 # Calculate character width for next character positioning
                 bbox = path.get_extents()
@@ -109,48 +107,62 @@ class TextExtractor:
 
     def extract_skeleton_from_path(self, path):
         """
-        Extract letter strokes using a SIMPLE STRUCTURAL ANALYSIS.
-        Instead of complex algorithms, focus on finding the key structural points of the letter.
-        
-        For letter 'A': Find the 4 key points (bottom-left, top, bottom-right, crossbar endpoints)
-        and create 3 clean line segments from them.
+        Extract letter centerline using a generic midpoint-based approach.
+        For each horizontal scanline across the glyph, find outline intersections
+        and take midpoints of opposing pairs to approximate the medial axis.
 
         Args:
             path: matplotlib Path object
 
         Returns:
-            np.array: Array of (x, y) points representing clean letter structure
+            np.array: Array of (x, y) points representing a centerline
         """
         vertices = path.vertices
-        
+
         if len(vertices) < 6:
             return vertices
-        
-        print(f"        STRUCTURAL EXTRACTION: Finding key structural points in {len(vertices)} vertices")
-        
-        # Step 1: Find the key structural points of the letter
-        key_points = self.find_letter_key_points(vertices)
-        
-        if len(key_points) < 3:
-            print("        FALLBACK: Using simplified vertex sampling")
+
+        # Bounding box
+        min_x, min_y = np.min(vertices, axis=0)
+        max_x, max_y = np.max(vertices, axis=0)
+        height = max(max_y - min_y, 1e-6)
+
+        # Choose number of scanlines proportional to height
+        resolution = int(max(100, min(400, height / 1.0)))
+
+        midpoints = []
+        for y in np.linspace(min_y, max_y, resolution):
+            x_hits = self.find_x_intersections_at_y(path, y)
+            if len(x_hits) < 2:
+                continue
+            x_hits = sorted(x_hits)
+
+            # Choose the widest pair (main stroke span)
+            widest_pair = None
+            widest_width = -1.0
+            for i in range(0, len(x_hits) - 1, 2):
+                if i + 1 >= len(x_hits):
+                    break
+                width = x_hits[i + 1] - x_hits[i]
+                if width > widest_width:
+                    widest_width = width
+                    widest_pair = (x_hits[i], x_hits[i + 1])
+
+            if widest_pair is not None:
+                x_mid = 0.5 * (widest_pair[0] + widest_pair[1])
+                midpoints.append([x_mid, y])
+
+        if len(midpoints) < 3:
+            # Fallback to simple sampling
             return self.create_simple_stroke_approximation(path)
-        
-        # Step 2: Create clean stroke lines connecting these key points
-        stroke_lines = self.create_structural_strokes(key_points)
-        
-        # Step 3: Connect strokes in a logical pen-drawing order to minimize unwanted lines
-        connected_points = self.connect_strokes_intelligently(stroke_lines)
-        
-        if len(connected_points) < 10:
-            return self.create_simple_stroke_approximation(path)
-        
-        result_points = np.array(connected_points)
-        print(f"        STRUCTURAL SUCCESS: Generated {len(result_points)} connected points from {len(stroke_lines)} strokes")
-        
-        return result_points
-        
-        return result_points
-    
+
+        # Sort by y (top-to-bottom) then by x to create a coherent path
+        midpoints = np.array(midpoints)
+        order = np.argsort(midpoints[:, 1])
+        midpoints = midpoints[order]
+
+        return midpoints
+
     def find_letter_key_points(self, vertices):
         """
         Find the key structural points that define the letter's main features.
@@ -208,7 +220,7 @@ class TextExtractor:
         
         print(f"            Found {len(key_points)} key structural points")
         return key_points
-    
+
     def create_structural_strokes(self, key_points):
         """
         Create clean stroke lines from key structural points.
@@ -267,7 +279,7 @@ class TextExtractor:
         
         print(f"            Created {len(strokes)} structural strokes")
         return strokes
-    
+
     def connect_strokes_intelligently(self, stroke_lines):
         """
         Connect stroke lines in a logical pen-drawing order to minimize unwanted connecting lines.
@@ -390,7 +402,7 @@ class TextExtractor:
         
         print(f"            Connected strokes into {len(connected_points)} points (avoided unwanted jumps)")
         return connected_points
-    
+
     def generate_line_points(self, start_point, end_point, num_points=20):
         """
         Generate evenly spaced points along a straight line.
@@ -416,7 +428,7 @@ class TextExtractor:
             points.append(point)
         
         return points
-    
+
     def create_simple_stroke_approximation(self, path):
         """
         Fallback method: Create a simple approximation when geometric detection fails.
