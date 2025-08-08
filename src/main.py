@@ -16,7 +16,7 @@ def main():
     # Test with letter C
     print("Testing with letter 'C'...")
 
-    converter = TextToDesmos(origin=(0, 0), scale=1.0)
+    converter = TextToDesmos(origin=(0, 0), scale=1.0, mode='trig')
     functions = converter.text_to_desmos_functions("C")
 
     print(f"\nGenerated {len(functions)} functions for letter 'C':")
@@ -42,7 +42,7 @@ def main():
         print("SUCCESS: All functions are y = f(x)")
 
     # Save to file
-    converter.save_functions(functions, "letter_A_functions.txt")
+    converter.save_functions(functions, "letter_C_functions.txt")
 
     return functions
 

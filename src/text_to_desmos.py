@@ -7,6 +7,7 @@ Only generates y = f(x) functions - no x = f(y) functions.
 from .text_extractor import TextExtractor
 from .polynomial_fitter import PolynomialFitter
 from .function_transformer import FunctionTransformer
+from .trig_fitter import TrigFitter
 
 
 class TextToDesmos:
@@ -15,14 +16,17 @@ class TextToDesmos:
     Generates ONLY y = f(x) functions.
     """
     
-    def __init__(self, origin=(0, 0), scale=1.0):
+    def __init__(self, origin=(0, 0), scale=1.0, mode: str = "trig"):
+        """mode: 'trig' for sin/cos exact fit (default), 'poly' to use polynomials."""
         self.extractor = TextExtractor()
-        self.fitter = PolynomialFitter()
+        self.fitter_poly = PolynomialFitter()
+        self.fitter_trig = TrigFitter()
+        self.mode = mode
         self.transformer = FunctionTransformer(origin=origin, scale=scale)
     
     def text_to_desmos_functions(self, text, font_size=100, points_per_char=500):
         """
-        Convert text to Desmos-compatible y = f(x) polynomial functions ONLY.
+        Convert text to Desmos-compatible y = f(x) functions ONLY.
         Uses HUNDREDS of centerline points for precise letter tracing.
         
         Args:
@@ -33,7 +37,7 @@ class TextToDesmos:
         Returns:
             list: List of Desmos function strings (y = f(x) ONLY)
         """
-        print(f"Converting text '{text}' to y = f(x) polynomial functions...")
+        print(f"Converting text '{text}' to y = f(x) functions...")
         print(f"Using {points_per_char} centerline points per character for high precision")
         print("Note: Only generating y = f(x) functions, no x = f(y)")
         
@@ -55,20 +59,22 @@ class TextToDesmos:
             contours = self.extractor.extract_contour_points(path, points_per_char)
             print(f"  Found {len(contours)} contours")
             
-            # Fit polynomials to each contour - ONLY y = f(x)
+            # Fit functions to each contour - ONLY y = f(x)
             for j, contour in enumerate(contours):
                 print(f"  Processing contour {j + 1} with {len(contour)} centerline points...")
-                # Exact interpolation
-                functions = self.fitter.fit_contour_polynomials(contour)
+                if self.mode == 'trig':
+                    functions = self.fitter_trig.fit_contour_functions(contour)
+                else:
+                    functions = self.fitter_poly.fit_contour_polynomials(contour)
                 
                 # Ensure all functions are y = f(x)
-                y_functions = [f for f in functions if f.startswith("y =")]
+                y_functions = [f for f in functions if f and f.startswith("y =")]  # type: ignore
                 
                 all_functions.extend(y_functions)
                 print(f"    Contour {j + 1}: generated {len(y_functions)} y = f(x) functions")
                 
                 # Report any non-y functions (should be none)
-                non_y = [f for f in functions if not f.startswith("y =")]
+                non_y = [f for f in functions if f and not f.startswith("y =")]  # type: ignore
                 if non_y:
                     print(f"    WARNING: Filtered out {len(non_y)} non-y functions")
         
