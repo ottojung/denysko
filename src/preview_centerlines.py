@@ -109,7 +109,7 @@ def compare_different_approaches(text):
 
 if __name__ == '__main__':
     # Parse command line arguments
-    text_to_preview = sys.argv[1] if len(sys.argv) > 1 else 'A'
+    text_to_preview = sys.argv[1] if len(sys.argv) > 1 else 'C'
     font_size = int(sys.argv[2]) if len(sys.argv) > 2 else 100
     num_points = int(sys.argv[3]) if len(sys.argv) > 3 else 500
     
