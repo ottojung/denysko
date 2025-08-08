@@ -699,3 +699,135 @@ class TextExtractor:
             elif c == MPLPath.CLOSEPOLY:
                 # Close back to last MOVETO
                 pass
+
+    def _zhang_suen_thinning(self, img):
+        """Zhang–Suen thinning on a binary mask. Returns boolean skeleton mask."""
+        bin_img = img.astype(np.uint8).copy()
+        changed = True
+        h, w = bin_img.shape
+        neighbors = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
+
+        def neighbor_vals(r, c):
+            return [bin_img[r + dr, c + dc] for dr, dc in neighbors]
+
+        def transitions(p):
+            c = 0
+            for i in range(8):
+                if p[i] == 0 and p[(i + 1) % 8] == 1:
+                    c += 1
+            return c
+
+        while changed:
+            changed = False
+            to_remove = []
+            # Sub-iteration 1
+            for r in range(1, h - 1):
+                for c in range(1, w - 1):
+                    if bin_img[r, c] == 0:
+                        continue
+                    p = neighbor_vals(r, c)
+                    nz = sum(p)
+                    if nz < 2 or nz > 6:
+                        continue
+                    if transitions(p) != 1:
+                        continue
+                    if p[0] * p[2] * p[4] != 0:
+                        continue
+                    if p[2] * p[4] * p[6] != 0:
+                        continue
+                    to_remove.append((r, c))
+            if to_remove:
+                for r, c in to_remove:
+                    bin_img[r, c] = 0
+                changed = True
+            to_remove = []
+            # Sub-iteration 2
+            for r in range(1, h - 1):
+                for c in range(1, w - 1):
+                    if bin_img[r, c] == 0:
+                        continue
+                    p = neighbor_vals(r, c)
+                    nz = sum(p)
+                    if nz < 2 or nz > 6:
+                        continue
+                    if transitions(p) != 1:
+                        continue
+                    if p[0] * p[2] * p[6] != 0:
+                        continue
+                    if p[0] * p[4] * p[6] != 0:
+                        continue
+                    to_remove.append((r, c))
+            if to_remove:
+                for r, c in to_remove:
+                    bin_img[r, c] = 0
+                changed = True
+        return bin_img.astype(bool)
+
+    def _intersections_with_infinite_line(self, vertices, p0, d):
+        """Parameters t where line p=p0+t d intersects polygon edges of vertices."""
+        ts = []
+        n = len(vertices)
+        if n < 2:
+            return ts
+        for i in range(n - 1):
+            a = vertices[i]
+            b = vertices[i + 1]
+            t = self._line_seg_intersection_param(p0, d, a, b)
+            if t is not None:
+                ts.append(t)
+        return ts
+
+    def _line_seg_intersection_param(self, p0, d, a, b, eps=1e-9):
+        """Solve a+u(b-a)=p0+t d with u in [0,1]. If intersect, return t; else None."""
+        ab = b - a
+        A = np.array([[ab[0], -d[0]], [ab[1], -d[1]]], dtype=float)
+        rhs = np.array([p0[0] - a[0], p0[1] - a[1]], dtype=float)
+        det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+        if abs(det) < eps:
+            return None
+        invA = np.array([[A[1, 1], -A[0, 1]], [-A[1, 0], A[0, 0]]], dtype=float) / det
+        u, t = invA @ rhs
+        if -eps <= u <= 1.0 + eps:
+            return float(t)
+        return None
+
+    def _order_points_nearest_neighbor(self, pts, start_idx=0):
+        """Greedy nearest-neighbor ordering starting from start_idx."""
+        if len(pts) <= 2:
+            return pts
+        used = np.zeros(len(pts), dtype=bool)
+        order = []
+        idx = start_idx
+        for _ in range(len(pts)):
+            order.append(idx)
+            used[idx] = True
+            diffs = pts - pts[idx]
+            d2 = np.sum(diffs * diffs, axis=1)
+            d2[used] = np.inf
+            if not np.isfinite(d2).any():
+                break
+            idx = int(np.argmin(d2))
+        return pts[order]
+
+    def remove_duplicate_points(self, points, tolerance=1e-6):
+        """Remove points closer than tolerance in sequence order."""
+        if len(points) <= 1:
+            return points
+        unique = [points[0]]
+        for p in points[1:]:
+            if np.linalg.norm(p - unique[-1]) >= tolerance:
+                unique.append(p)
+        return np.array(unique)
+
+    def create_simple_stroke_approximation(self, path):
+        """Fallback method: Create a simple approximation when geometric detection fails."""
+        vertices = path.vertices
+        if len(vertices) < 6:
+            return vertices
+        # Use every 10th vertex to create a simplified representation
+        step = max(1, len(vertices) // 10)
+        simplified = vertices[::step]
+        # Ensure we have at least a few points
+        if len(simplified) < 3:
+            simplified = vertices[[0, len(vertices)//2, -1]]
+        return simplified
