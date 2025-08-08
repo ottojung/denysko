@@ -5,7 +5,6 @@ Text extraction module - handles font path extraction and contour point sampling
 
 import numpy as np
 from matplotlib import font_manager
-from matplotlib.path import Path
 import matplotlib.pyplot as plt
 
 
@@ -447,6 +446,190 @@ class TextExtractor:
             if np.linalg.norm(p - out[-1]) > tol:
                 out.append(p)
         return np.array(out)
+
+    def _scanline_midpoint_skeleton(self, path, angles=(0.0, 45.0, 90.0, 135.0)):
+        """
+        Multi-angle scanline midpoint extraction. Returns ordered centerline points
+        or None if too few midpoints found.
+        """
+        vertices = path.vertices
+        if len(vertices) < 3:
+            return None
+        min_x, min_y = np.min(vertices, axis=0)
+        max_x, max_y = np.max(vertices, axis=0)
+        width = max_x - min_x
+        height = max_y - min_y
+        if width <= 0 or height <= 0:
+            return None
+
+        base = max(width, height)
+        spacing = max(base / 200.0, 0.5)
+        min_span = max(base * 0.01, spacing)
+
+        all_midpoints = []
+        center = np.array([(min_x + max_x) / 2.0, (min_y + max_y) / 2.0], dtype=float)
+        for ang in angles:
+            c = np.cos(np.deg2rad(ang))
+            s = np.sin(np.deg2rad(ang))
+            d = np.array([c, s], dtype=float)
+            n = np.array([-s, c], dtype=float)  # normal
+
+            # Offsets along normal that cover the bbox corners
+            corners = np.array([
+                [min_x, min_y], [min_x, max_y], [max_x, min_y], [max_x, max_y]
+            ], dtype=float)
+            proj = (corners - center) @ n
+            omin, omax = float(np.min(proj)), float(np.max(proj))
+            offsets = np.arange(omin - spacing, omax + spacing, spacing)
+
+            for off in offsets:
+                p0 = center + off * n
+                ts = self._intersections_with_infinite_line(vertices, p0, d)
+                if len(ts) < 2:
+                    continue
+                ts.sort()
+                for i in range(0, len(ts) - 1, 2):
+                    t1 = ts[i]
+                    t2 = ts[i + 1]
+                    if (t2 - t1) < min_span:
+                        continue
+                    m = p0 + 0.5 * (t1 + t2) * d
+                    if path.contains_point(m):
+                        all_midpoints.append(m)
+
+        if len(all_midpoints) < 10:
+            return None
+
+        pts = np.array(all_midpoints)
+        pts = self.remove_duplicate_points(pts, tolerance=1e-3)
+
+        # Order points via PCA axis then nearest-neighbor
+        mean = pts.mean(axis=0)
+        try:
+            _, _, Vt = np.linalg.svd(pts - mean, full_matrices=False)
+            axis = Vt[0]
+            proj = (pts - mean) @ axis
+            start_idx = int(np.argmin(proj))
+        except Exception:
+            start_idx = 0
+        ordered = self._order_points_nearest_neighbor(pts, start_idx)
+        ordered = self._smooth_polyline(ordered, window=7)
+        ordered = self._dedupe_close_points(ordered, tol=1e-2)
+        return ordered
+
+    def _intersections_with_infinite_line(self, vertices, p0, d):
+        """
+        Compute parameter t for intersections of line p = p0 + t d with polygon edges.
+        Returns list of t values where the infinite line crosses each segment.
+        """
+        ts = []
+        n = len(vertices)
+        if n < 2:
+            return ts
+        for i in range(n - 1):
+            a = vertices[i]
+            b = vertices[i + 1]
+            t = self._line_seg_intersection_param(p0, d, a, b)
+            if t is not None:
+                ts.append(t)
+        return ts
+
+    def _line_seg_intersection_param(self, p0, d, a, b, eps=1e-9):
+        """
+        Solve for t,u in a + u(b-a) = p0 + t d with u in [0,1]. If intersect, return t.
+        """
+        ab = b - a
+        A = np.array([[ab[0], -d[0]], [ab[1], -d[1]]], dtype=float)
+        rhs = np.array([p0[0] - a[0], p0[1] - a[1]], dtype=float)
+        det = A[0, 0] * A[1, 1] - A[0, 1] * A[1, 0]
+        if abs(det) < eps:
+            return None
+        invA = np.array([[A[1, 1], -A[0, 1]], [-A[1, 0], A[0, 0]]], dtype=float) / det
+        u, t = invA @ rhs
+        if -eps <= u <= 1.0 + eps:
+            return float(t)
+        return None
+
+    def _order_points_nearest_neighbor(self, pts, start_idx=0):
+        if len(pts) <= 2:
+            return pts
+        used = np.zeros(len(pts), dtype=bool)
+        order = []
+        idx = start_idx
+        for _ in range(len(pts)):
+            order.append(idx)
+            used[idx] = True
+            diffs = pts - pts[idx]
+            d2 = np.sum(diffs * diffs, axis=1)
+            d2[used] = np.inf
+            if not np.isfinite(d2).any():
+                break
+            idx = int(np.argmin(d2))
+        return pts[order]
+
+    def _zhang_suen_thinning(self, img):
+        """
+        Perform Zhang-Suen thinning on a binary mask. Returns a boolean skeleton mask.
+        img: boolean or 0/1 numpy array, True/1 for foreground.
+        """
+        bin_img = img.astype(np.uint8).copy()
+        changed = True
+        h, w = bin_img.shape
+        neighbors = [(-1, 0), (-1, 1), (0, 1), (1, 1), (1, 0), (1, -1), (0, -1), (-1, -1)]
+        def neighbor_vals(r, c):
+            return [bin_img[r+dr, c+dc] for dr, dc in neighbors]
+        def transitions(p):
+            # number of 0->1 transitions in circular sequence p2..p9..p2
+            c = 0
+            for i in range(8):
+                if p[i] == 0 and p[(i+1) % 8] == 1:
+                    c += 1
+            return c
+        while changed:
+            changed = False
+            to_remove = []
+            # Sub-iteration 1
+            for r in range(1, h-1):
+                for c in range(1, w-1):
+                    if bin_img[r, c] == 0:
+                        continue
+                    p = neighbor_vals(r, c)
+                    nz = sum(p)
+                    if nz < 2 or nz > 6:
+                        continue
+                    if transitions(p) != 1:
+                        continue
+                    if p[0] * p[2] * p[4] != 0:
+                        continue
+                    if p[2] * p[4] * p[6] != 0:
+                        continue
+                    to_remove.append((r, c))
+            if to_remove:
+                for r, c in to_remove:
+                    bin_img[r, c] = 0
+                changed = True
+            to_remove = []
+            # Sub-iteration 2
+            for r in range(1, h-1):
+                for c in range(1, w-1):
+                    if bin_img[r, c] == 0:
+                        continue
+                    p = neighbor_vals(r, c)
+                    nz = sum(p)
+                    if nz < 2 or nz > 6:
+                        continue
+                    if transitions(p) != 1:
+                        continue
+                    if p[0] * p[2] * p[6] != 0:
+                        continue
+                    if p[0] * p[4] * p[6] != 0:
+                        continue
+                    to_remove.append((r, c))
+            if to_remove:
+                for r, c in to_remove:
+                    bin_img[r, c] = 0
+                changed = True
+        return bin_img.astype(bool)
 
     def find_letter_key_points(self, vertices):
         """
