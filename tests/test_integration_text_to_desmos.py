@@ -39,8 +39,11 @@ def _parse_polynomial_from_function_string(func: str) -> Dict[int, float]:
     Supports:
     - optional leading sign for each term
     - omitted coefficient for x terms (e.g., "-x^3" => -1)
+    - explicit multiplication (e.g., "-0.5*x^3")
     - integer powers (x, x^2, x^3, ...)
-    - scientific notation coefficients (e.g., 1.2e-3x^2)
+    - scientific notation coefficients (e.g., 1.2e-3*x^2)
+    - optional surrounding parentheses around the polynomial
+    - optional domain constraints appended with "{a <= x <= b}"
     - whitespace agnostic
 
     Returns a dict mapping power -> coefficient. E.g., {3: -0.5, 2: 2.0, 1: -3.4, 0: 5.0}
@@ -49,6 +52,15 @@ def _parse_polynomial_from_function_string(func: str) -> Dict[int, float]:
     if not s.lower().startswith("y ="):
         raise ValueError(f"Not a y = f(x) function: {func}")
     expr = s.split("=", 1)[1].strip().replace(" ", "")
+
+    # Strip any domain constraints and surrounding parentheses
+    if "{" in expr:
+        expr = expr.split("{", 1)[0]
+    # Remove optional wrapping parentheses around the entire expression
+    if expr.startswith("(") and expr.endswith(")"):
+        expr = expr[1:-1]
+    # Also tolerate stray parentheses
+    expr = expr.replace("(", "").replace(")", "")
 
     # Split into terms while respecting scientific notation exponents (e.g., e-5)
     terms: List[str] = []
@@ -75,6 +87,9 @@ def _parse_polynomial_from_function_string(func: str) -> Dict[int, float]:
         if "x" in term:
             # Split into coefficient part and power part
             coeff_part, _, power_part = term.partition("x")
+            # Allow explicit multiplication (e.g., '1.2e-3*x^2')
+            if coeff_part.endswith("*"):
+                coeff_part = coeff_part[:-1]
             # Determine coefficient
             if coeff_part in ("", "+"):
                 coeff = 1.0
@@ -85,6 +100,11 @@ def _parse_polynomial_from_function_string(func: str) -> Dict[int, float]:
             # Determine power
             if power_part.startswith("^"):
                 pow_str = power_part[1:]
+                # Trim any stray characters
+                j = 0
+                while j < len(pow_str) and (pow_str[j].isdigit() or pow_str[j] in "+-"):
+                    j += 1
+                pow_str = pow_str[:j] if j else pow_str
                 power = int(pow_str)
             else:
                 power = 1
