@@ -73,13 +73,15 @@ def compare_different_approaches(text):
 
     for i, num_points in enumerate(point_counts):
         ax = axes[i]
-        ax.set_title(f"Panel {i+1} ({num_points} pts label)")
+        ax.set_title(f"Panel {i + 1} ({num_points} pts label)")
 
         if paths:
             path = paths[0]  # Use first character only
 
             # Plot original outline faintly and set bounds
-            _plot_outline_with_bounds(ax, path, color="lightgray", alpha=0.5, label="Outline")
+            _plot_outline_with_bounds(
+                ax, path, color="lightgray", alpha=0.5, label="Outline"
+            )
 
             # Extract and plot all traces for this character
             traces = extractor.extract_skeleton_from_path(path)
@@ -88,10 +90,14 @@ def compare_different_approaches(text):
             if segments:
                 cmap = plt.cm.get_cmap("tab20")
                 colors = [cmap(j % 20) for j in range(len(segments))]
-                lc = LineCollection(segments, colors=colors, linewidths=1.8, alpha=0.9, zorder=5)
+                lc = LineCollection(
+                    segments, colors=colors, linewidths=1.8, alpha=0.9, zorder=5
+                )
                 ax.add_collection(lc)
             else:
-                print("Warning: No trace segments with >=2 points to draw in comparison panel.")
+                print(
+                    "Warning: No trace segments with >=2 points to draw in comparison panel."
+                )
 
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.3)
