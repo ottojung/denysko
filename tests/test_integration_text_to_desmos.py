@@ -8,6 +8,7 @@ Steps:
 - fit the curves and generate function descriptions (y = f(x))
 - interpret those functions symbolically to generate polynomials
 - check how close the interpreted functions are to the target points
+- ensure functions have NO domain ranges (valid for all real x)
 
 This test uses only the project code and the Python standard library for parsing
 and error metrics. It is written to work with pytest, but can also be run as a
@@ -180,9 +181,12 @@ def test_integration_letter_B(capfd=None):  # capfd is a pytest fixture, optiona
 
     assert len(all_points) >= 50, f"Insufficient points extracted: {len(all_points)}"
 
-    # 2) Generate function descriptions using the full pipeline
-    converter = TextToDesmos(origin=(0, 0), scale=1.0, max_degree=6)
+    # 2) Generate function descriptions using the full pipeline (no degree cap)
+    converter = TextToDesmos(origin=(0, 0), scale=1.0, max_degree=None)
     functions = converter.text_to_desmos_functions("B", font_size=100, points_per_char=500)
+
+    # Ensure no domain ranges are present
+    assert all('{' not in f and '}' not in f for f in functions), "Functions must not contain domain ranges"
 
     y_functions = [f for f in functions if f.strip().lower().startswith("y =")]
     assert y_functions, "No y = f(x) functions generated"

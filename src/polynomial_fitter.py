@@ -11,6 +11,7 @@ Algorithm:
 - Split overlapping regions into separate curves  
 - Fit exact polynomial through ALL points in each curve (piecewise if needed)
 - Use degree = n-1 for n points (exact interpolation) on each piece
+- IMPORTANT: No domain restrictions in the output; functions are for all real x
 """
 
 import numpy as np
@@ -19,7 +20,7 @@ import numpy as np
 class PolynomialFitter:
     """Fits exact polynomials to letter coordinate points."""
     
-    def __init__(self, max_degree=25):
+    def __init__(self, max_degree=None):
         """Initialize (max_degree ignored to allow exact fitting)."""
         self.max_degree = max_degree  # kept for compatibility; not used as a cap
         # Piecewise control to maintain numerical stability while keeping exactness
@@ -119,7 +120,7 @@ class PolynomialFitter:
 
     def _fit_exact_polynomial_piecewise(self, points):
         """Exact interpolation on one or more pieces to avoid numerical blowup.
-        Returns a list of function strings, each valid over its x-domain.
+        Returns a list of function strings, each valid for all real x (no domain suffix).
         """
         # Sort by x and handle duplicates
         x_data, y_data = points[:, 0], points[:, 1]
@@ -158,7 +159,7 @@ class PolynomialFitter:
 
     def _fit_exact_single(self, x_vals, y_vals):
         """Fit a single exact polynomial of degree len(x_vals)-1 to the segment.
-        Produces a function string with a domain constraint matching the segment x-range.
+        Produces a function string with NO domain constraint.
         """
         n_points = len(x_vals)
         degree = max(2, n_points - 1)
@@ -173,13 +174,11 @@ class PolynomialFitter:
             print(f"  Max error = {max_err:.8e}")
             if max_err > 1e-9:
                 print("  WARNING: Residual detected; expected exact fit")
-            # Build function string and append domain constraint
+            # Build function string (no domain constraint)
             func = self._coeffs_to_string(coeffs)
             if func is None:
                 return None
-            x_min, x_max = float(np.min(x_vals)), float(np.max(x_vals))
-            func = f"{func} {{{x_min:.6f} <= x <= {x_max:.6f}}}"
-            print(f"  Generated piecewise function with domain [{x_min:.3f}, {x_max:.3f}]")
+            print("  Generated function (no domain)")
             return func
         except np.linalg.LinAlgError as e:
             print(f"  Linear solve failed: {e}. Falling back to least squares (still exact within segment).")
@@ -187,14 +186,13 @@ class PolynomialFitter:
             func = self._coeffs_to_string(coeffs)
             if func is None:
                 return None
-            x_min, x_max = float(np.min(x_vals)), float(np.max(x_vals))
-            return f"{func} {{{x_min:.6f} <= x <= {x_max:.6f}}}"
+            return func
         except Exception as e:
             print(f"  Error: {e}")
             return None
-    
+
     def _coeffs_to_string(self, coeffs):
-        """Convert coefficients to clean function string."""
+        """Convert coefficients to clean function string (no domain constraints)."""
         if len(coeffs) < 3:
             print(f"  Error: Polynomial degree too low - got {len(coeffs)-1}, need ≥ 2")
             return None
