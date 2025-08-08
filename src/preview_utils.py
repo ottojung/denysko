@@ -9,6 +9,8 @@ def preview_extracted_points(
 ):
     """Render outline and extracted centerline for each character and save image."""
     import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.collections import LineCollection
 
     print(f"Generating preview for text: '{text}'")
     paths = extractor.text_to_paths(text, font_size)
@@ -23,36 +25,38 @@ def preview_extracted_points(
 
     for i, path in enumerate(paths):
         ax = axes[i]
-        plot_path_outline(ax, path, color="lightgray", alpha=0.8, label="Outline")
-        
+        # Draw outline and set axis limits from glyph bounds
+        _plot_outline_with_bounds(ax, path, color="lightgray", alpha=0.8, label="Outline")
+
         # Get all traces
         traces = extractor.extract_skeleton_from_path(path)
         print(f"Character {i}: {len(traces)} separate traces")
-        
-        # Plot each trace with a different color
-        colors = plt.cm.tab10(range(len(traces)))
-        for j, trace in enumerate(traces):
-            if len(trace) > 0:
-                color = colors[j % len(colors)]
-                ax.plot(
-                    trace[:, 0],
-                    trace[:, 1],
-                    "-",
-                    color=color,
-                    linewidth=1.5,
-                    label=f"Trace {j+1}" if j < 5 else None,  # Only label first 5 for readability
-                    alpha=0.8
-                )
-                # Mark start point
-                ax.plot(
-                    trace[0, 0],
-                    trace[0, 1],
-                    "o",
-                    color=color,
-                    markersize=4,
-                    alpha=0.9
-                )
-        
+
+        # Debug stats: trace lengths
+        lengths = []
+        for t in traces:
+            if len(t) >= 2:
+                seg = np.sqrt(np.sum((t[1:] - t[:-1]) ** 2, axis=1))
+                lengths.append(float(seg.sum()))
+            else:
+                lengths.append(0.0)
+        if lengths:
+            arr = np.array(lengths)
+            print(
+                f"Trace length stats -> min: {arr.min():.3f}, med: {np.median(arr):.3f}, max: {arr.max():.3f}, total: {arr.sum():.3f}"
+            )
+
+        # Build a LineCollection from all traces
+        segments = [t.astype(float) for t in traces if len(t) >= 2]
+        if segments:
+            # Color by index to distinguish paths
+            cmap = plt.cm.get_cmap("tab20")
+            colors = [cmap(j % 20) for j in range(len(segments))]
+            lc = LineCollection(segments, colors=colors, linewidths=1.8, alpha=0.9, zorder=5)
+            ax.add_collection(lc)
+        else:
+            print("Warning: No trace segments with >=2 points to draw.")
+
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.3)
         if i == 0:
@@ -69,6 +73,8 @@ def preview_extracted_points(
 def preview_skeleton_extraction_steps(extractor, text, font_size=100, save_path=None):
     """Minimal step preview: show outline and final skeleton per character."""
     import matplotlib.pyplot as plt
+    import numpy as np
+    from matplotlib.collections import LineCollection
 
     print(f"Generating detailed skeleton preview for: '{text}'")
     paths = extractor.text_to_paths(text, font_size)
@@ -83,29 +89,37 @@ def preview_skeleton_extraction_steps(extractor, text, font_size=100, save_path=
 
     for i, path in enumerate(paths):
         ax = axes[i]
-        plot_path_outline(ax, path, color="black", alpha=0.5, label="Outline")
-        
+        # Draw outline and set axis limits from glyph bounds
+        _plot_outline_with_bounds(ax, path, color="black", alpha=0.5, label="Outline")
+
         # Get all traces for detailed view
         traces = extractor.extract_skeleton_from_path(path)
         print(f"Character {i}: {len(traces)} separate traces")
-        
-        # Plot each trace with a different color and style
-        colors = plt.cm.Set1(range(len(traces)))
-        for j, trace in enumerate(traces):
-            if len(trace) > 0:
-                color = colors[j % len(colors)]
-                ax.plot(
-                    trace[:, 0],
-                    trace[:, 1],
-                    "-",
-                    color=color,
-                    linewidth=2,
-                    label=f"Trace {j+1}" if j < 8 else None,
-                    alpha=0.9
-                )
-                # Mark endpoints
-                ax.plot(trace[0, 0], trace[0, 1], "o", color=color, markersize=6, alpha=0.9)
-                ax.plot(trace[-1, 0], trace[-1, 1], "s", color=color, markersize=5, alpha=0.9)
+
+        # Debug stats: trace lengths
+        lengths = []
+        for t in traces:
+            if len(t) >= 2:
+                seg = np.sqrt(np.sum((t[1:] - t[:-1]) ** 2, axis=1))
+                lengths.append(float(seg.sum()))
+            else:
+                lengths.append(0.0)
+        if lengths:
+            arr = np.array(lengths)
+            print(
+                f"Trace length stats -> min: {arr.min():.3f}, med: {np.median(arr):.3f}, max: {arr.max():.3f}, total: {arr.sum():.3f}"
+            )
+
+        # Plot each trace via a LineCollection (better for many polylines)
+        segments = [t.astype(float) for t in traces if len(t) >= 2]
+        if segments:
+            cmap = plt.cm.get_cmap("Set3")
+            colors = [cmap(j % cmap.N) for j in range(len(segments))]
+            lc = LineCollection(segments, colors=colors, linewidths=2.2, alpha=0.95, zorder=6)
+            ax.add_collection(lc)
+        else:
+            print("Warning: No trace segments with >=2 points to draw.")
+
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.3)
         if i == 0:
@@ -119,33 +133,21 @@ def preview_skeleton_extraction_steps(extractor, text, font_size=100, save_path=
     plt.close("all")
 
 
-def plot_path_outline(ax, path, color="blue", alpha=0.5, label="Outline"):
-    """Plot the outline of a Path on provided axes, honoring codes if present."""
+def _plot_outline_with_bounds(ax, path, color="blue", alpha=0.5, label="Outline"):
+    """Plot the outline as a PathPatch and set axis limits from bounding box."""
+    import numpy as np
+    from matplotlib.patches import PathPatch
+
+    # Add the path as a patch (handles Beziers correctly)
+    patch = PathPatch(path, facecolor="none", edgecolor=color, alpha=alpha, linewidth=1, label=label, zorder=3)
+    ax.add_patch(patch)
+
+    # Set limits based on path bounding box with padding
     vertices = path.vertices
-    codes = path.codes
-    if codes is None:
-        ax.plot(vertices[:, 0], vertices[:, 1], color=color, alpha=alpha, label=label)
-        return
-
-    from matplotlib.path import Path as MPLPath
-
-    label_used = False
-    current = None
-    for v, c in zip(vertices, codes):
-        if c == MPLPath.MOVETO:
-            current = v
-        elif c == MPLPath.LINETO:
-            if current is not None:
-                ax.plot(
-                    [current[0], v[0]],
-                    [current[1], v[1]],
-                    color=color,
-                    alpha=alpha,
-                    linewidth=1,
-                    label=(label if not label_used else None),
-                )
-                label_used = True
-            current = v
-        elif c == MPLPath.CLOSEPOLY:
-            # Close back to last MOVETO
-            pass
+    min_x, min_y = np.min(vertices, axis=0)
+    max_x, max_y = np.max(vertices, axis=0)
+    w = max_x - min_x
+    h = max_y - min_y
+    pad = 0.05 * max(w, h) if max(w, h) > 0 else 1.0
+    ax.set_xlim(min_x - pad, max_x + pad)
+    ax.set_ylim(min_y - pad, max_y + pad)
