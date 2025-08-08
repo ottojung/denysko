@@ -22,9 +22,20 @@ class PolynomialFitter:
     """Fits exact polynomials to letter coordinate points."""
 
     def __init__(self):
-        """Initialize fitter for exact single-polynomial-per-stroke fitting."""
-        # Minimal points required to attempt a fit on a stroke/curve
+        """Initialize fitter with piecewise LS configuration (no domain restrictions)."""
+        # Stroke split
         self.min_points_per_stroke = 5
+        # Segmenting & fitting
+        self.min_points_per_segment = 10
+        self.max_points_per_segment = 80
+        self.min_seg_ratio = 0.08  # initial random window width as fraction of x-span
+        self.max_seg_ratio = 0.18
+        self.seg_jitter_ratio = 0.02  # random start jitter as fraction of span
+        self.r2_threshold = 0.97
+        self.max_expand_steps = 8
+        # Guarding to "go away" after the segment (small-weight penalties outside window)
+        self.guard_weight = 0.05
+        self.guard_margin_ratio = 0.03  # how far from window edges to place guard x's
 
     def fit_contour_polynomials(self, contour):
         """
@@ -34,7 +45,7 @@ class PolynomialFitter:
             contour: Array of (x, y) letter centerline points
 
         Returns:
-            list: Polynomial function strings that pass exactly through points
+            list: Polynomial function strings (global, no domain restrictions)
         """
         if len(contour) < 10:  # Require many points for quality fitting
             print(
@@ -44,19 +55,17 @@ class PolynomialFitter:
 
         print(f"Fitting {len(contour)} letter points...")
 
-        # PRINCIPLE 2: Detect and separate overlapping horizontal strokes
+        # Split overlapping horizontal strokes (e.g., crossbars)
         curves = self._detect_overlapping_strokes(contour)
-
         print(f"Found {len(curves)} separate curves")
 
-        # PRINCIPLE 1: Fit an exact polynomial to each curve using ALL its points
         functions = []
         for i, curve in enumerate(curves):
             print(f"Curve {i + 1}: {len(curve)} points")
-            funcs = self._fit_exact_polynomial_single(curve)
+            funcs = self._fit_piecewise_poly_segments(curve)
             functions.extend(funcs)
 
-        print(f"Generated {len(functions)} exact polynomials")
+        print(f"Generated {len(functions)} polynomials (piecewise, global)")
         return functions
 
     def _detect_overlapping_strokes(self, points):
@@ -285,3 +294,179 @@ class PolynomialFitter:
             all_functions.extend(functions)
 
         return all_functions
+
+    def _fit_piecewise_poly_segments(self, points):
+        """Fit degree-2..4 polynomials to random local segments, ensuring coverage.
+        Returns a list of function strings (each global; no domain suffix).
+        """
+        # Sort and deduplicate x by averaging y at duplicates
+        x, y = points[:, 0], points[:, 1]
+        order = np.argsort(x)
+        x, y = x[order], y[order]
+        ux, inv = np.unique(x, return_inverse=True)
+        uy = np.array([np.mean(y[inv == i]) for i in range(len(ux))])
+
+        n = len(ux)
+        if n < self.min_points_per_segment:
+            print(
+                f"  Skipping: only {n} unique x-coordinates, need ≥{self.min_points_per_segment}"
+            )
+            return []
+
+        x_min, x_max = float(np.min(ux)), float(np.max(ux))
+        span = max(x_max - x_min, 1e-9)
+        total_y_range = float(np.max(uy) - np.min(uy)) if n > 1 else 1.0
+        covered = np.zeros(n, dtype=bool)
+        result = []
+
+        rng = np.random.default_rng()
+
+        i = 0
+        while not np.all(covered):
+            # pick leftmost uncovered
+            i = int(np.argmax(~covered))
+            x0 = ux[i]
+            # random window width
+            w_ratio = float(rng.uniform(self.min_seg_ratio, self.max_seg_ratio))
+            w = w_ratio * span
+            # random jitter of start
+            jitter = float(rng.uniform(-self.seg_jitter_ratio, self.seg_jitter_ratio)) * span
+            start = max(x_min, min(x0 + jitter, x_max))
+            end = min(start + w, x_max)
+            if end - start < (self.min_seg_ratio * span * 0.5):
+                end = min(x_max, start + self.min_seg_ratio * span)
+
+            seg_mask = (ux >= start) & (ux <= end)
+            # ensure we have enough points; if not, expand rightwards
+            expand_steps = 0
+            while np.sum(seg_mask) < self.min_points_per_segment and expand_steps < self.max_expand_steps:
+                end = min(x_max, end + 0.5 * w)
+                seg_mask = (ux >= start) & (ux <= end)
+                expand_steps += 1
+            indices = np.where(seg_mask)[0]
+            if len(indices) < self.min_points_per_segment:
+                # fallback: take next block of min points
+                j2 = min(i + self.min_points_per_segment, n)
+                indices = np.arange(i, j2)
+                start, end = ux[indices[0]], ux[indices[-1]]
+
+            best = self._fit_best_degree_window(
+                ux[indices], uy[indices], x_min, x_max, total_y_range
+            )
+            # try expanding to cover more points if R^2 stays high
+            expand_steps = 0
+            while expand_steps < self.max_expand_steps:
+                # attempt to extend right by a small block
+                j_end = indices[-1]
+                block = min(self.min_points_per_segment // 2, n - j_end - 1)
+                if block <= 0:
+                    break
+                cand_idx = np.arange(indices[0], j_end + 1 + block)
+                cand = self._fit_best_degree_window(
+                    ux[cand_idx], uy[cand_idx], x_min, x_max, total_y_range
+                )
+                if cand and cand["r2"] >= self.r2_threshold:
+                    indices = cand_idx
+                    best = cand
+                    expand_steps += 1
+                else:
+                    break
+
+            if best is None:
+                print("  WARNING: could not fit a satisfactory segment; proceeding")
+            else:
+                result.append(best["func"])  # already formatted
+
+            # mark covered
+            covered[indices] = True
+
+        return result
+
+    def _fit_best_degree_window(self, xw, yw, x_min, x_max, total_y_range):
+        """Fit degrees 2..4 by weighted LS in normalized z, pick best by R^2.
+        Adds low-weight guard points just outside window to discourage overlap.
+        Returns dict with {func, r2} or None.
+        """
+        if len(xw) < self.min_points_per_segment:
+            return None
+        # normalize to z = a*x + b mapping x in [x_min,x_max] to roughly [-1,1]
+        span = max(x_max - x_min, 1e-9)
+        a = 2.0 / span
+        b = -(x_max + x_min) / span
+        zw = a * xw + b
+
+        # Build guards (left and right of window)
+        left_edge, right_edge = float(xw[0]), float(xw[-1])
+        margin = self.guard_margin_ratio * span
+        guard_x = []
+        if left_edge - margin > x_min:
+            guard_x.extend(np.linspace(x_min, left_edge - margin, 3))
+        if right_edge + margin < x_max:
+            guard_x.extend(np.linspace(right_edge + margin, x_max, 3))
+        guard_x = np.array(guard_x, dtype=float) if guard_x else np.array([], dtype=float)
+        zg = a * guard_x + b if guard_x.size else guard_x
+        # push predictions away from stroke y-range (repulsion)
+        if total_y_range <= 0:
+            y_center = float(np.mean(yw))
+            y_far = y_center + 10.0
+        else:
+            y_mid = 0.5 * (float(np.min(yw)) + float(np.max(yw)))
+            y_far = y_mid + 5.0 * total_y_range
+        yg = np.full_like(guard_x, y_far)
+
+        best = None
+        for deg in (2, 3, 4):
+            # Design matrices in ascending powers of z
+            Vw = np.vander(zw, N=deg + 1, increasing=True)
+            if zg.size:
+                Vg = np.vander(zg, N=deg + 1, increasing=True)
+                V = np.vstack([Vw, Vg])
+                y_all = np.concatenate([yw, yg])
+                weights = np.concatenate([
+                    np.ones_like(yw),
+                    self.guard_weight * np.ones_like(yg),
+                ])
+            else:
+                V = Vw
+                y_all = yw
+                weights = np.ones_like(yw)
+
+            # Apply weights via row scaling
+            Wsqrt = np.sqrt(weights)[:, None]
+            Vwtd = V * Wsqrt
+            ywtd = y_all * np.sqrt(weights)
+
+            try:
+                cz, *_ = np.linalg.lstsq(Vwtd, ywtd, rcond=None)
+            except np.linalg.LinAlgError as e:
+                print(f"  LS failed (deg={deg}): {e}")
+                continue
+
+            # Compose cz in z back to x coefficients px (ascending)
+            z_poly = np.array([b, a], dtype=float)
+            px = np.array([0.0], dtype=float)
+            for k, ck in enumerate(cz):
+                if abs(ck) < 1e-18:
+                    continue
+                zk = P.polypow(z_poly, k)
+                px = P.polyadd(px, zk * ck)
+
+            # Evaluate R^2 on the real window points only
+            y_pred = P.polyval(xw, px)
+            y_mean = float(np.mean(yw))
+            ss_res = float(np.sum((yw - y_pred) ** 2))
+            ss_tot = float(np.sum((yw - y_mean) ** 2)) if len(yw) > 1 else 0.0
+            r2 = 1.0 - (ss_res / ss_tot) if ss_tot > 0 else 1.0
+
+            func = self._coeffs_to_string(px[::-1])  # high->low for string
+            if func is None:
+                continue
+            cand = {"func": func, "r2": r2, "deg": deg}
+            if (best is None) or (cand["r2"] > best["r2"]) or (
+                abs(cand["r2"] - best["r2"]) < 1e-6 and cand["deg"] < best["deg"]
+            ):
+                best = cand
+
+        if best and best["r2"] >= self.r2_threshold:
+            return best
+        return best  # might be below threshold; caller may still accept
