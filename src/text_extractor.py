@@ -36,43 +36,16 @@ class TextExtractor:
         return MPLPath(skeleton_points, codes)
 
     def extract_skeleton_from_path(self, path):
-        """Extract skeleton from a path, returning combined traces for backward compatibility."""
+        """Extract skeleton from a path, returning list of separate traces."""
         return extract_skeleton_from_path(path)
 
-    def extract_separate_traces_from_path(self, path):
-        """Extract skeleton from a path, returning list of separate traces."""
-        return extract_skeleton_from_path(path, return_separate_traces=True)
-
     def extract_contour_points(self, path, num_points=500):
-        """Extract centerline points and resample to num_points."""
+        """Extract centerline traces from path."""
         if not path or len(path.vertices) == 0:
             return []
-        vertices = path.vertices
-        codes = path.codes
-        pts = self.extract_centerline_from_path(vertices, codes, num_points)
-        return [pts] if len(pts) > 0 else []
-
-    def extract_centerline_from_path(self, vertices, codes, num_points=500):
-        """Build a Path from vertices/codes, extract skeleton, and resample to num_points."""
-        if len(vertices) < 3:
-            return vertices
-
-        temp = MPLPath(vertices, codes)
-        skel = self.extract_skeleton_from_path(temp)
-        if len(skel) < 3:
-            # Fallback to simple approximation
-            step = max(1, len(vertices) // 10)
-            simplified = vertices[::step]
-            if len(simplified) < 3:
-                simplified = vertices[[0, len(vertices) // 2, -1]]
-            skel = simplified
-
-        # Resample to target number of points
-        if len(skel) >= num_points:
-            idx = range(0, len(skel), max(1, len(skel) // num_points))
-            return skel[list(idx)[:num_points]]
-
-        return upsample_centerline(skel, num_points)
+        
+        traces = self.extract_skeleton_from_path(path)
+        return traces
 
     def upsample_centerline(self, points, target_count):
         """Upsample centerline to target_count via arc-length interpolation."""

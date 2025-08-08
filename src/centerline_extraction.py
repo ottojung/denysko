@@ -7,31 +7,19 @@ import numpy as np
 from .path_processing import rasterize_path
 
 
-def extract_skeleton_from_path(path, return_separate_traces=False):
+def extract_skeleton_from_path(path):
     """
     Extract multiple centerlines that trace all strokes of the letter.
-    
-    Args:
-        path: matplotlib Path object representing the letter
-        return_separate_traces: If True, return list of individual traces.
-                               If False, return combined path for backward compatibility.
-    
-    Returns:
-        If return_separate_traces=True: List of numpy arrays, each representing a trace
-        If return_separate_traces=False: Single numpy array with combined traces
+    Returns list of numpy arrays, each representing a separate trace.
     """
     vertices = path.vertices
     if len(vertices) < 6:
-        if return_separate_traces:
-            return [vertices]
-        return vertices
+        return [vertices]
 
     # Rasterize the path to work with pixels
     mask, x_grid, y_grid = rasterize_path(path, resolution=300)
     if mask.sum() == 0:
-        if return_separate_traces:
-            return [vertices]
-        return vertices
+        return [vertices]
 
     # Generate multiple stroke traces
     all_traces = []
@@ -49,20 +37,10 @@ def extract_skeleton_from_path(path, return_separate_traces=False):
     all_traces.extend(diag_traces)
 
     if not all_traces:
-        fallback = _create_simple_stroke_approximation(path)
-        if return_separate_traces:
-            return [fallback]
-        return fallback
+        return [_create_simple_stroke_approximation(path)]
 
     print(f"Generated {len(all_traces)} stroke traces")
-    
-    if return_separate_traces:
-        return all_traces
-    else:
-        # For backward compatibility, concatenate all traces into one path
-        combined_trace = _combine_traces(all_traces)
-        print(f"Combined length: {len(combined_trace)}")
-        return combined_trace
+    return all_traces
 
 
 def _extract_top_to_bottom_traces(mask, x_grid, y_grid, original_path):
@@ -205,53 +183,6 @@ def _extract_diagonal_traces(mask, x_grid, y_grid, original_path):
             traces.append(np.array(trace_points))
     
     return traces
-
-
-def _combine_traces(traces):
-    """Combine multiple traces into a single path for backward compatibility."""
-    if not traces:
-        return np.array([])
-    
-    if len(traces) == 1:
-        return traces[0]
-    
-    # Concatenate all traces with small gaps between them
-    combined_points = []
-    
-    for i, trace in enumerate(traces):
-        combined_points.extend(trace.tolist())
-        
-        # Add a small gap between traces (move slightly away from last point)
-        if i < len(traces) - 1 and len(trace) > 0:
-            last_point = trace[-1]
-            gap_point = last_point + np.array([1.0, 1.0])  # Small offset
-            combined_points.append(gap_point.tolist())
-    
-    return np.array(combined_points)
-
-
-def _smooth_polyline(pts, window=5):
-    """Smooth a polyline using moving average."""
-    if len(pts) < 3 or window < 3:
-        return pts
-    w = window if window % 2 == 1 else window + 1
-    k = w // 2
-    pad = np.vstack([pts[0:1].repeat(k, axis=0), pts, pts[-1:].repeat(k, axis=0)])
-    sm = []
-    for i in range(k, k + len(pts)):
-        sm.append(pad[i - k : i + k + 1].mean(axis=0))
-    return np.array(sm)
-
-
-def _dedupe_close_points(pts, tol=1e-3):
-    """Remove consecutive points that are too close."""
-    if len(pts) <= 1:
-        return pts
-    out = [pts[0]]
-    for p in pts[1:]:
-        if np.linalg.norm(p - out[-1]) > tol:
-            out.append(p)
-    return np.array(out)
 
 
 def _create_simple_stroke_approximation(path):

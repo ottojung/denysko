@@ -1,7 +1,28 @@
 #!/usr/bin/env python3
 """
-Preview script for visualizing extracted centerline points.
-Run this to see how the zero-width skeleton extraction works.
+Preview script for visualizing extracted centerline point            # Extract and plot all traces
+            traces = extractor.extract_contour_points(path, num_points)
+
+            if traces:
+                colors = plt.cm.tab10(range(len(traces)))
+                for j, trace in enumerate(traces):
+                    if len(trace) > 0:
+                        color = colors[j % len(colors)]
+                        ax.plot(
+                            trace[:, 0],
+                            trace[:, 1],
+                            "o-",
+                            color=color,
+                            markersize=2,
+                            linewidth=1,
+                            alpha=0.8,
+                        )
+
+                # Mark start and end of first trace
+                if len(traces) > 0 and len(traces[0]) > 0:
+                    first_trace = traces[0]
+                    ax.plot(first_trace[0, 0], first_trace[0, 1], "go", markersize=8, label="Start")
+                    ax.plot(first_trace[-1, 0], first_trace[-1, 1], "ro", markersize=8, label="End")e how the zero-width skeleton extraction works.
 """
 
 import sys

@@ -25,8 +25,8 @@ def preview_extracted_points(
         ax = axes[i]
         plot_path_outline(ax, path, color="lightgray", alpha=0.8, label="Outline")
         
-        # Get separate traces instead of combined traces
-        traces = extractor.extract_separate_traces_from_path(path)
+        # Get all traces
+        traces = extractor.extract_skeleton_from_path(path)
         print(f"Character {i}: {len(traces)} separate traces")
         
         # Plot each trace with a different color
@@ -85,8 +85,8 @@ def preview_skeleton_extraction_steps(extractor, text, font_size=100, save_path=
         ax = axes[i]
         plot_path_outline(ax, path, color="black", alpha=0.5, label="Outline")
         
-        # Get separate traces for detailed view
-        traces = extractor.extract_separate_traces_from_path(path)
+        # Get all traces for detailed view
+        traces = extractor.extract_skeleton_from_path(path)
         print(f"Character {i}: {len(traces)} separate traces")
         
         # Plot each trace with a different color and style
