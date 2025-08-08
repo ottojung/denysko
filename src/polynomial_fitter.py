@@ -224,6 +224,24 @@ class PolynomialFitter:
             print(f"  Error: {e}")
             return None
 
+    def _encode_exponent(self, power):
+        """Encode multi-digit exponents as concatenated single-digit powers for Desmos compatibility.
+        
+        Desmos treats x^2^3 as x^23, so we can break multi-digit exponents into individual digits.
+        
+        Args:
+            power: Integer exponent to encode
+            
+        Returns:
+            str: Encoded exponent (e.g., "1^2" for power=12, "2^5^6" for power=256)
+        """
+        if power <= 9:
+            return str(power)
+        
+        # Break the multi-digit number into individual digits
+        digits = str(power)
+        return "^".join(digits)
+
     def _coeffs_to_string(self, coeffs):
         """Convert coefficients (high->low) to clean function string (no domain constraints)."""
         if len(coeffs) < 3:
@@ -244,6 +262,7 @@ class PolynomialFitter:
                 c_str = f"{c:.6g}"
             else:
                 c_str = f"{c:.10g}"
+            
             if power == 0:
                 terms.append(c_str)
             elif power == 1:
@@ -254,12 +273,15 @@ class PolynomialFitter:
                 else:
                     terms.append(f"{c_str}*x")
             else:
+                # Encode multi-digit exponents for Desmos compatibility
+                power_str = self._encode_exponent(power)
                 if abs(c - 1.0) < 1e-15:
-                    terms.append(f"x^{power}")
+                    terms.append(f"x^{power_str}")
                 elif abs(c + 1.0) < 1e-15:
-                    terms.append(f"-x^{power}")
+                    terms.append(f"-x^{power_str}")
                 else:
-                    terms.append(f"{c_str}*x^{power}")
+                    terms.append(f"{c_str}*x^{power_str}")
+        
         if not terms:
             print("  Warning: All coefficients were essentially zero")
             return "y = 0"
