@@ -225,22 +225,23 @@ class PolynomialFitter:
             return None
 
     def _encode_exponent(self, power):
-        """Encode multi-digit exponents as concatenated single-digit powers for Desmos compatibility.
-        
-        Desmos treats x^2^3 as x^23, so we can break multi-digit exponents into individual digits.
-        
-        Args:
-            power: Integer exponent to encode
-            
-        Returns:
-            str: Encoded exponent (e.g., "1^2" for power=12, "2^5^6" for power=256)
+        """Return exponent as a standard integer string for Desmos.
+        Note: Desmos accepts multi-digit exponents directly as x^12. Avoid chaining carets.
         """
-        if power <= 9:
-            return str(power)
-        
-        # Break the multi-digit number into individual digits
-        digits = str(power)
-        return "^".join(digits)
+        return str(int(power))
+
+    def _format_number(self, value, precision: int = 15) -> str:
+        """Format a float without scientific notation (no 'e'/'E'), trimming trailing zeros.
+        Ensures outputs like 0.0000001 instead of 1e-7 for better Desmos compatibility.
+        """
+        try:
+            s = np.format_float_positional(float(value), precision=precision, unique=False, trim='-')
+            # Normalize negative zero to plain zero
+            if s.startswith('-0') and float(value) == 0.0:
+                return '0'
+            return s
+        except Exception:
+            return str(value)
 
     def _coeffs_to_string(self, coeffs):
         """Convert coefficients (high->low) to clean function string (no domain constraints)."""
@@ -254,16 +255,9 @@ class PolynomialFitter:
             power = degree - i
             if not np.isfinite(c) or abs(c) < 1e-15:
                 continue
-            c_abs = abs(c)
-            # Precision heuristics
-            if c_abs < 1e-6:
-                c_str = f"{c:.15g}"
-            elif c_abs > 1e6:
-                c_str = f"{c:.6g}"
-            else:
-                c_str = f"{c:.10g}"
             
             if power == 0:
+                c_str = self._format_number(c, precision=15)
                 terms.append(c_str)
             elif power == 1:
                 if abs(c - 1.0) < 1e-15:
@@ -271,15 +265,16 @@ class PolynomialFitter:
                 elif abs(c + 1.0) < 1e-15:
                     terms.append("-x")
                 else:
+                    c_str = self._format_number(c, precision=15)
                     terms.append(f"{c_str}*x")
             else:
-                # Encode multi-digit exponents for Desmos compatibility
                 power_str = self._encode_exponent(power)
                 if abs(c - 1.0) < 1e-15:
                     terms.append(f"x^{power_str}")
                 elif abs(c + 1.0) < 1e-15:
                     terms.append(f"-x^{power_str}")
                 else:
+                    c_str = self._format_number(c, precision=15)
                     terms.append(f"{c_str}*x^{power_str}")
         
         if not terms:
