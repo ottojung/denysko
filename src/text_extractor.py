@@ -36,8 +36,12 @@ class TextExtractor:
         return MPLPath(skeleton_points, codes)
 
     def extract_skeleton_from_path(self, path):
-        """Extract centerline using horizontal-monotonic component decomposition."""
+        """Extract skeleton from a path, returning combined traces for backward compatibility."""
         return extract_skeleton_from_path(path)
+
+    def extract_separate_traces_from_path(self, path):
+        """Extract skeleton from a path, returning list of separate traces."""
+        return extract_skeleton_from_path(path, return_separate_traces=True)
 
     def extract_contour_points(self, path, num_points=500):
         """Extract centerline points and resample to num_points."""

@@ -7,18 +7,30 @@ import numpy as np
 from .path_processing import rasterize_path
 
 
-def extract_skeleton_from_path(path):
+def extract_skeleton_from_path(path, return_separate_traces=False):
     """
     Extract multiple centerlines that trace all strokes of the letter.
-    Returns multiple paths that may overlap but stay within letter boundaries.
+    
+    Args:
+        path: matplotlib Path object representing the letter
+        return_separate_traces: If True, return list of individual traces.
+                               If False, return combined path for backward compatibility.
+    
+    Returns:
+        If return_separate_traces=True: List of numpy arrays, each representing a trace
+        If return_separate_traces=False: Single numpy array with combined traces
     """
     vertices = path.vertices
     if len(vertices) < 6:
+        if return_separate_traces:
+            return [vertices]
         return vertices
 
     # Rasterize the path to work with pixels
     mask, x_grid, y_grid = rasterize_path(path, resolution=300)
     if mask.sum() == 0:
+        if return_separate_traces:
+            return [vertices]
         return vertices
 
     # Generate multiple stroke traces
@@ -37,14 +49,20 @@ def extract_skeleton_from_path(path):
     all_traces.extend(diag_traces)
 
     if not all_traces:
-        return _create_simple_stroke_approximation(path)
+        fallback = _create_simple_stroke_approximation(path)
+        if return_separate_traces:
+            return [fallback]
+        return fallback
 
-    # For backward compatibility, concatenate all traces into one path
-    # TODO: Later modify interface to return multiple separate paths
-    combined_trace = _combine_traces(all_traces)
+    print(f"Generated {len(all_traces)} stroke traces")
     
-    print(f"Generated {len(all_traces)} stroke traces, combined length: {len(combined_trace)}")
-    return combined_trace
+    if return_separate_traces:
+        return all_traces
+    else:
+        # For backward compatibility, concatenate all traces into one path
+        combined_trace = _combine_traces(all_traces)
+        print(f"Combined length: {len(combined_trace)}")
+        return combined_trace
 
 
 def _extract_top_to_bottom_traces(mask, x_grid, y_grid, original_path):

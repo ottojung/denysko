@@ -24,30 +24,35 @@ def preview_extracted_points(
     for i, path in enumerate(paths):
         ax = axes[i]
         plot_path_outline(ax, path, color="lightgray", alpha=0.8, label="Outline")
-        contours = extractor.extract_contour_points(path, num_points)
-        for j, contour in enumerate(contours):
-            if len(contour) > 0:
+        
+        # Get separate traces instead of combined traces
+        traces = extractor.extract_separate_traces_from_path(path)
+        print(f"Character {i}: {len(traces)} separate traces")
+        
+        # Plot each trace with a different color
+        colors = plt.cm.tab10(range(len(traces)))
+        for j, trace in enumerate(traces):
+            if len(trace) > 0:
+                color = colors[j % len(colors)]
                 ax.plot(
-                    contour[:, 0],
-                    contour[:, 1],
-                    "r-",
-                    linewidth=1.2,
-                    label="Centerline" if j == 0 else None,
+                    trace[:, 0],
+                    trace[:, 1],
+                    "-",
+                    color=color,
+                    linewidth=1.5,
+                    label=f"Trace {j+1}" if j < 5 else None,  # Only label first 5 for readability
+                    alpha=0.8
                 )
+                # Mark start point
                 ax.plot(
-                    contour[0, 0],
-                    contour[0, 1],
-                    "go",
-                    markersize=6,
-                    label="Start" if j == 0 else None,
+                    trace[0, 0],
+                    trace[0, 1],
+                    "o",
+                    color=color,
+                    markersize=4,
+                    alpha=0.9
                 )
-                ax.plot(
-                    contour[-1, 0],
-                    contour[-1, 1],
-                    "bo",
-                    markersize=6,
-                    label="End" if j == 0 else None,
-                )
+        
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.3)
         if i == 0:
@@ -79,16 +84,28 @@ def preview_skeleton_extraction_steps(extractor, text, font_size=100, save_path=
     for i, path in enumerate(paths):
         ax = axes[i]
         plot_path_outline(ax, path, color="black", alpha=0.5, label="Outline")
-        skel = extractor.extract_skeleton_from_path(path)
-        if len(skel) > 0:
-            ax.plot(
-                skel[:, 0],
-                skel[:, 1],
-                "r.-",
-                markersize=3,
-                linewidth=1.2,
-                label="Skeleton",
-            )
+        
+        # Get separate traces for detailed view
+        traces = extractor.extract_separate_traces_from_path(path)
+        print(f"Character {i}: {len(traces)} separate traces")
+        
+        # Plot each trace with a different color and style
+        colors = plt.cm.Set1(range(len(traces)))
+        for j, trace in enumerate(traces):
+            if len(trace) > 0:
+                color = colors[j % len(colors)]
+                ax.plot(
+                    trace[:, 0],
+                    trace[:, 1],
+                    "-",
+                    color=color,
+                    linewidth=2,
+                    label=f"Trace {j+1}" if j < 8 else None,
+                    alpha=0.9
+                )
+                # Mark endpoints
+                ax.plot(trace[0, 0], trace[0, 1], "o", color=color, markersize=6, alpha=0.9)
+                ax.plot(trace[-1, 0], trace[-1, 1], "s", color=color, markersize=5, alpha=0.9)
         ax.set_aspect("equal")
         ax.grid(True, alpha=0.3)
         if i == 0:
