@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """
-Genetic algorithm-based polynomial fitter for letter shapes.
-Finds the minimum number of low-degree polynomials that fit a letter shape with high accuracy.
+Genetic algorithm-based polynomial fitter for letter sha    def __init__(
+        self,
+        population_size=100,
+        generations=150,
+        tournament_size=5,
+        crossover_rate=0.8,
+        mutation_rate=0.3,
+        max_polynomials=2,  # Constrain to exactly 2 polynomials for letter structure
+        max_degree=6,
+        fitness_weights=None,
+    ):the minimum number of low-degree polynomials that fit a letter shape with high accuracy.
 """
 
 import numpy as np
@@ -128,11 +137,119 @@ class GeneticPolynomialFitter:
             polynomials.append(poly)
 
         return Individual(polynomials)
+    
+    def _create_letter_structure_individual(self, x_points, y_points):
+        """Create an individual with exactly 2 polynomials optimized for letter structure."""
+        polynomials = []
+        
+        x_min, x_max = float(np.min(x_points)), float(np.max(x_points))
+        x_span = x_max - x_min
+        
+        # Strategy: Create 2 overlapping polynomials with different domain emphasis
+        if random.random() < 0.5:
+            # Strategy 1: Left-heavy and right-heavy polynomials
+            
+            # First polynomial: emphasizes left 70% of the domain
+            left_start = x_min
+            left_end = x_min + 0.8 * x_span  # 80% coverage from left
+            poly1 = self._create_smart_polynomial_for_region(
+                x_points, y_points, left_start, left_end
+            )
+            
+            # Second polynomial: emphasizes right 70% of the domain  
+            right_start = x_min + 0.2 * x_span  # Start at 20% point
+            right_end = x_max
+            poly2 = self._create_smart_polynomial_for_region(
+                x_points, y_points, right_start, right_end
+            )
+            
+            polynomials = [poly1, poly2]
+        
+        else:
+            # Strategy 2: Upper/lower region emphasis (for crossbar separation)
+            
+            # Analyze y-distribution to find potential crossbar region
+            y_points_sorted = np.sort(y_points)
+            y_median = float(np.median(y_points_sorted))
+            
+            # First polynomial: covers full x-range but optimized for upper region
+            poly1 = self._create_smart_polynomial_for_region(
+                x_points, y_points, x_min, x_max, y_bias="upper", y_center=y_median
+            )
+            
+            # Second polynomial: covers full x-range but optimized for lower region
+            poly2 = self._create_smart_polynomial_for_region(
+                x_points, y_points, x_min, x_max, y_bias="lower", y_center=y_median
+            )
+            
+            polynomials = [poly1, poly2]
+        
+        return Individual(polynomials)
+    
+    def _create_smart_polynomial_for_region(self, x_points, y_points, x_region_min, x_region_max, y_bias=None, y_center=None):
+        """Create a polynomial optimized for a specific region with optional y-bias."""
+        # Ensure valid region
+        x_region_min = max(x_region_min, float(np.min(x_points)))
+        x_region_max = min(x_region_max, float(np.max(x_points)))
+        
+        if x_region_max <= x_region_min:
+            x_region_min = float(np.min(x_points))
+            x_region_max = float(np.max(x_points))
+        
+        # Get points in this region for analysis
+        region_mask = (x_points >= x_region_min) & (x_points <= x_region_max)
+        
+        # Apply y-bias filtering if specified
+        if y_bias == "upper" and y_center is not None:
+            upper_mask = y_points >= y_center
+            region_mask = region_mask & upper_mask
+        elif y_bias == "lower" and y_center is not None:
+            lower_mask = y_points < y_center
+            region_mask = region_mask & lower_mask
+        
+        if np.sum(region_mask) > 10:  # Need sufficient points
+            region_x = x_points[region_mask]
+            region_y = y_points[region_mask]
+            
+            # Fit a simple polynomial to these points to get good initial coefficients
+            try:
+                degree = min(3, len(region_x) - 1, self.max_degree)
+                if degree >= 1:
+                    coeffs = np.polyfit(region_x, region_y, degree)
+                    # Convert to ascending order (constant, linear, quadratic, ...)
+                    coeffs = coeffs[::-1].tolist()
+                else:
+                    coeffs = [float(np.mean(region_y))]
+            except Exception:
+                # Fallback to mean
+                coeffs = [float(np.mean(region_y))]
+        else:
+            # Fallback: use overall data statistics
+            y_mean = float(np.mean(y_points))
+            coeffs = [y_mean]
+        
+        # Add some randomness to avoid identical polynomials
+        for i in range(len(coeffs)):
+            coeffs[i] += random.gauss(0, abs(coeffs[i]) * 0.1 + 0.1)
+        
+        # Ensure minimum degree
+        while len(coeffs) < 3:  # At least quadratic
+            coeffs.append(random.gauss(0, 0.1))
+        
+        return Polynomial(
+            coefficients=coeffs,
+            x_min=x_region_min,
+            x_max=x_region_max
+        )
 
     def _evaluate_fitness(self, individual, x_points, y_points):
-        """Evaluate the fitness of an individual as a holistic polynomial set."""
+        """Evaluate the fitness of an individual as a holistic polynomial set - optimized for letter structure."""
         if not individual.polynomials:
             return 0.0
+        
+        # HEAVILY penalize if not exactly 2 polynomials
+        if len(individual.polynomials) != 2:
+            return 0.01  # Almost zero fitness
             
         # Holistic evaluation: for each point, find the BEST prediction across ALL polynomials
         total_squared_error = 0.0
@@ -166,42 +283,60 @@ class GeneticPolynomialFitter:
         # Coverage ratio (what percentage of points are covered)
         coverage_ratio = covered_points / len(x_points)
         
-        # Multiple accuracy metrics
+        # Domain coverage: ensure the polynomials together cover the full x-range
+        x_min_data, x_max_data = float(np.min(x_points)), float(np.max(x_points))
+        x_span_data = x_max_data - x_min_data
+        
+        # Find the union of polynomial domains
+        union_x_min = min(poly.x_min for poly in individual.polynomials)
+        union_x_max = max(poly.x_max for poly in individual.polynomials)
+        union_span = union_x_max - union_x_min
+        
+        # Domain coverage ratio
+        domain_coverage = min(1.0, union_span / x_span_data) if x_span_data > 0 else 1.0
+        
+        # RMSE calculation
         rmse = (total_squared_error / covered_points) ** 0.5
-        mean_absolute_error = total_squared_error ** 0.5 / covered_points  # Approximate MAE
         
-        # EXTREMELY harsh penalties for poor accuracy
-        # Exponentially penalize any significant error
-        accuracy_penalty = 0.0
+        # Fitness calculation - heavily focused on coverage and accuracy
+        fitness = 0.0
         
-        # Penalty for RMSE - exponential growth
-        if rmse > 0.1:  # Any RMSE above 0.1 is severely penalized
-            accuracy_penalty += (rmse * 1000.0) ** 2
+        # 1. Coverage bonus (exponential reward for high coverage)
+        if coverage_ratio >= 0.98:  # 98%+ coverage gets huge bonus
+            coverage_bonus = 10000.0 * (coverage_ratio ** 4)
+        elif coverage_ratio >= 0.90:  # 90-98% gets good bonus
+            coverage_bonus = 1000.0 * (coverage_ratio ** 2)
+        else:  # <90% coverage is severely penalized
+            coverage_bonus = 10.0 * coverage_ratio
+        
+        fitness += coverage_bonus
+        
+        # 2. Domain coverage bonus
+        if domain_coverage >= 0.95:
+            domain_bonus = 1000.0 * domain_coverage
         else:
-            accuracy_penalty += rmse * 100.0
+            domain_bonus = 10.0 * domain_coverage
         
-        # Penalty for maximum error - no single point should have large error
-        if max_error > 0.5:  # Any single point with error > 0.5 is catastrophic
-            accuracy_penalty += (max_error * 2000.0) ** 2
-        else:
-            accuracy_penalty += max_error * 500.0
+        fitness += domain_bonus
         
-        # Coverage penalty - incomplete coverage is catastrophic
-        if coverage_ratio < 0.98:  # Demand 98% coverage minimum
-            coverage_penalty = (1.0 - coverage_ratio) * 10000.0
-        else:
-            coverage_penalty = (1.0 - coverage_ratio) * 100.0
+        # 3. Accuracy bonus (inverse of RMSE)
+        if rmse < 0.5:  # Very accurate fits get exponential bonus
+            accuracy_bonus = 5000.0 / (1.0 + rmse ** 2)
+        else:  # Poor fits get heavily penalized
+            accuracy_bonus = 100.0 / (1.0 + rmse)
         
-        # Total accuracy score (higher is better, but penalties reduce it)
-        accuracy_score = 10000.0 / (1.0 + accuracy_penalty + coverage_penalty)
+        fitness += accuracy_bonus
         
-        # Minimal simplicity component - almost irrelevant
-        num_polys_penalty = individual.num_polynomials() * 0.0001
-        degree_penalty = individual.total_degree() * 0.00001
-        simplicity_score = 10.0 / (1.0 + num_polys_penalty + degree_penalty)
+        # 4. Max error penalty
+        if max_error > 2.0:  # Any point with huge error is catastrophic
+            fitness *= 0.1  # Severe penalty
+        elif max_error > 1.0:
+            fitness *= 0.5  # Moderate penalty
         
-        # Final fitness: accuracy dominates completely (1000:1 ratio)
-        fitness = accuracy_score * 1000.0 + simplicity_score * 1.0
+        # 5. Tiny simplicity bonus (almost irrelevant)
+        total_degree = sum(p.degree() for p in individual.polynomials)
+        if total_degree <= 8:  # Reasonable complexity
+            fitness += 10.0
         
         return fitness
 
@@ -211,51 +346,49 @@ class GeneticPolynomialFitter:
         return max(tournament, key=lambda ind: ind.fitness)
 
     def _crossover(self, parent1, parent2):
-        """Create offspring by crossing over two parents."""
-        # Combine polynomials from both parents
-        all_polys = parent1.polynomials + parent2.polynomials
-
-        # Randomly select polynomials for offspring
-        num_polys = random.randint(1, min(self.max_polynomials, len(all_polys)))
-        selected_polys = random.sample(all_polys, num_polys)
-
-        return Individual(selected_polys)
+        """Create offspring by crossing over two parents - maintain exactly 2 polynomials."""
+        # Since both parents have exactly 2 polynomials, create new combinations
+        
+        # Strategy: Mix polynomials from both parents
+        if random.random() < 0.5:
+            # Take first polynomial from parent1, second from parent2
+            poly1 = parent1.polynomials[0]
+            poly2 = parent2.polynomials[1] if len(parent2.polynomials) > 1 else parent2.polynomials[0]
+        else:
+            # Take first polynomial from parent2, second from parent1
+            poly1 = parent2.polynomials[0]
+            poly2 = parent1.polynomials[1] if len(parent1.polynomials) > 1 else parent1.polynomials[0]
+        
+        return Individual([poly1, poly2])
 
     def _mutate(self, individual, x_points, y_points):
-        """Mutate an individual."""
+        """Mutate an individual - maintain exactly 2 polynomials."""
         if random.random() < self.mutation_rate:
-            mutation_type = random.choice(
-                ["modify_coeff", "modify_domain", "add_poly", "remove_poly"]
-            )
-
+            mutation_type = random.choice(["modify_coeff", "modify_domain"])
+            
             if mutation_type == "modify_coeff" and individual.polynomials:
                 # Modify coefficients of a random polynomial
                 poly = random.choice(individual.polynomials)
                 coeff_idx = random.randint(0, len(poly.coefficients) - 1)
-                poly.coefficients[coeff_idx] += random.gauss(0, 1.0)
-
+                # Smaller mutations for stability
+                poly.coefficients[coeff_idx] += random.gauss(0, 0.5)
+                
             elif mutation_type == "modify_domain" and individual.polynomials:
                 # Modify domain of a random polynomial
                 poly = random.choice(individual.polynomials)
-                x_min, x_max = np.min(x_points), np.max(x_points)
+                x_min, x_max = float(np.min(x_points)), float(np.max(x_points))
+                x_span = x_max - x_min
+                
+                # Small domain adjustments to maintain coverage
                 domain_size = poly.x_max - poly.x_min
-                new_start = random.uniform(x_min, x_max - domain_size)
-                poly.x_min = new_start
-                poly.x_max = new_start + domain_size
-
-            elif (
-                mutation_type == "add_poly"
-                and len(individual.polynomials) < self.max_polynomials
-            ):
-                # Add a new random polynomial
-                new_poly = self._create_random_polynomial(x_points, y_points)
-                individual.polynomials.append(new_poly)
-
-            elif mutation_type == "remove_poly" and len(individual.polynomials) > 1:
-                # Remove a random polynomial
-                individual.polynomials.pop(
-                    random.randint(0, len(individual.polynomials) - 1)
-                )
+                max_shift = min(x_span * 0.1, domain_size * 0.2)  # Limit shifts
+                
+                shift = random.gauss(0, max_shift)
+                new_x_min = max(x_min, min(x_max - domain_size, poly.x_min + shift))
+                new_x_max = new_x_min + domain_size
+                
+                poly.x_min = new_x_min
+                poly.x_max = new_x_max
 
         return individual
 
@@ -276,10 +409,10 @@ class GeneticPolynomialFitter:
         print(f"x range: [{np.min(x_points):.3f}, {np.max(x_points):.3f}]")
         print(f"y range: [{np.min(y_points):.3f}, {np.max(y_points):.3f}]")
 
-        # Initialize population
+        # Initialize population - each individual has exactly 2 polynomials for letter structure
         population = []
         for _ in range(self.population_size):
-            individual = self._create_random_individual(x_points, y_points)
+            individual = self._create_letter_structure_individual(x_points, y_points)
             individual.fitness = self._evaluate_fitness(individual, x_points, y_points)
             population.append(individual)
 

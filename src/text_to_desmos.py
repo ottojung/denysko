@@ -8,9 +8,10 @@ TextToDesmos: minimal end-to-end pipeline (from text to Desmos-ready functions).
 """
 
 from typing import List, Tuple, Optional
+import numpy as np
 
 from .text_extractor import TextExtractor
-from .polynomial_fitter_genetic import PolynomialFitter
+from .polynomial_fitter_genetic import PolynomialFitter  # Switch back to genetic algorithm
 from .function_transformer import FunctionTransformer
 
 
@@ -65,7 +66,7 @@ class TextToDesmos:
         if not contours_all:
             return []
 
-        # 3) Fit polynomials using genetic algorithm (y=f(x) only)
+        # 3) Fit polynomials using genetic algorithm optimized for letter structure
         y_functions: List[str] = []
         for contour in contours_all:
             funcs = self.fitter.fit_all_traces([contour])
