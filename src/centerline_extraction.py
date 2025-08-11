@@ -41,7 +41,7 @@ class CenterlineExtractor:
         from .path_processing import rasterize_path
         
         # Rasterize the path to get a binary mask
-        mask = rasterize_path(path, resolution=resolution)
+        mask, x_grid, y_grid = rasterize_path(path, resolution=resolution)
         
         # Find all filled pixels and convert to integer coordinates
         y_coords, x_coords = np.where(mask)
@@ -139,7 +139,7 @@ class CenterlineExtractor:
         
         # Generate mask for boundary checking
         from .path_processing import rasterize_path
-        mask = rasterize_path(path, resolution=200)
+        mask, _, _ = rasterize_path(path, resolution=200)
         
         # Generate random starting points
         num_starts = min(num_walks, len(letter_points) // 2)
