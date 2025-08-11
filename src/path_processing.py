@@ -80,6 +80,12 @@ def rasterize_path(path, resolution=400):
                 new_mask[i, j] = mask[old_i, old_j]
         mask = new_mask
     
+    # Ensure coordinate grids match the final mask dimensions exactly
+    if x_grid.shape != (res, res) or y_grid.shape != (res, res):
+        xs = np.linspace(min_x, max_x, res)
+        ys = np.linspace(min_y, max_y, res) 
+        x_grid, y_grid = np.meshgrid(xs, ys)
+    
     plt.close(fig)
     
     # Don't flip the mask or coordinate grids - keep them in matplotlib's coordinate system
