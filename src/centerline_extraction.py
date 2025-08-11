@@ -36,7 +36,7 @@ def upsample_centerline(points, target_count):
 class CenterlineExtractor:
     """Class for extracting centerlines using integer point jumping algorithm."""
 
-    def _generate_letter_points(self, path, resolution=200):
+    def _generate_letter_points(self, path, resolution=400):
         """Generate integer coordinate points from the letter path."""
         from .path_processing import rasterize_path
         
