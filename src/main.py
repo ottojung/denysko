@@ -30,7 +30,7 @@ def main():
     print()
 
     # Save to file
-    converter.save_functions(functions, "letter_C_functions.txt")
+    converter.save_functions(functions, f"letter_{text}_functions.txt")
 
     return functions
 
