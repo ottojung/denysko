@@ -11,13 +11,13 @@ class PolynomialFitter:
     """Fit polynomials to extracted centerlines using genetic algorithm."""
 
     def __init__(self):
-        # Create genetic algorithm fitter optimized for letter structure (exactly 2 polynomials)
+        # Create genetic algorithm fitter optimized for stable letter structure fitting
         self.ga_fitter = GeneticPolynomialFitter(
-            population_size=100,
-            generations=150,
-            max_polynomials=2,  # Exactly 2 polynomials for letter structure
-            max_degree=6,
-            mutation_rate=0.3,
+            population_size=50,
+            generations=100,
+            max_polynomials=2,    # Exactly 2 polynomials for letter structure
+            max_degree=3,         # Lower degree for stability
+            mutation_rate=0.4,    # Higher mutation for exploration
         )
 
     def fit_polynomial_to_trace(self, trace, target_degree=3):

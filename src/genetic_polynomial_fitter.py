@@ -2,13 +2,13 @@
 """
 Genetic algorithm-based polynomial fitter for letter sha    def __init__(
         self,
-        population_size=100,
-        generations=150,
-        tournament_size=5,
+        population_size=50,   # Smaller population for faster iterations
+        generations=100,      # Fewer generations, focus on quality initialization
+        tournament_size=3,
         crossover_rate=0.8,
-        mutation_rate=0.3,
-        max_polynomials=2,  # Constrain to exactly 2 polynomials for letter structure
-        max_degree=6,
+        mutation_rate=0.4,    # Higher mutation for more exploration
+        max_polynomials=2,    # Constrain to exactly 2 polynomials for letter structure
+        max_degree=3,         # Lower degree to prevent instability - cubic max
         fitness_weights=None,
     ):the minimum number of low-degree polynomials that fit a letter shape with high accuracy.
 """
@@ -28,13 +28,17 @@ class Polynomial:
     x_max: float
 
     def evaluate(self, x):
-        """Evaluate polynomial at x."""
+        """Evaluate polynomial at x using normalized coordinates to prevent overflow."""
         if x < self.x_min or x > self.x_max:
             return None  # Outside domain
 
+        # Normalize x to [-1, 1] range to prevent coefficient explosion
+        # This maps domain [x_min, x_max] to [-1, 1]
+        x_normalized = 2.0 * (x - self.x_min) / (self.x_max - self.x_min) - 1.0
+        
         result = 0.0
         for i, coeff in enumerate(self.coefficients):
-            result += coeff * (x**i)
+            result += coeff * (x_normalized**i)
         return result
 
     def degree(self):
@@ -112,18 +116,36 @@ class GeneticPolynomialFitter:
     def _create_random_polynomial(self, x_points, y_points):
         """Create a random polynomial that covers some portion of the data."""
         # Choose random domain within the data range
-        x_min, x_max = np.min(x_points), np.max(x_points)
-        domain_size = (x_max - x_min) * random.uniform(0.1, 0.8)
-        start = random.uniform(x_min, x_max - domain_size)
+        x_min_data, x_max_data = float(np.min(x_points)), float(np.max(x_points))
+        x_span = x_max_data - x_min_data
 
-        poly_x_min = start
-        poly_x_max = start + domain_size
+        # Random domain size (30% to 100% of data range)
+        domain_size = random.uniform(0.3, 1.0) * x_span
+        max_start = x_max_data - domain_size
+        poly_x_min = random.uniform(x_min_data, max_start)
+        poly_x_max = poly_x_min + domain_size
 
-        # Choose random degree
-        degree = random.randint(1, self.max_degree)
+        # Random degree (2 to max_degree)
+        degree = random.randint(2, self.max_degree)
 
-        # Generate random coefficients
-        coefficients = [random.uniform(-10, 10) for _ in range(degree + 1)]
+        # Generate coefficients for NORMALIZED coordinates [-1, 1]
+        # Initialize coefficients to produce values close to the actual y data
+        y_min, y_max = float(np.min(y_points)), float(np.max(y_points))
+        y_mean = float(np.mean(y_points))
+        y_range = y_max - y_min
+        
+        coefficients = []
+        for i in range(degree + 1):
+            if i == 0:  # Constant term - MUST be in actual data range
+                # Sample directly from the y data to ensure realistic values
+                coeff = random.uniform(y_min * 0.8, y_max * 1.2)  # Slight expansion of range
+            elif i == 1:  # Linear term - moderate slope
+                coeff = random.gauss(0, y_range * 0.2)  # Can change by 20% of y_range across [-1,1]
+            else:  # Higher-order terms - very small since x is normalized
+                # Each higher power contributes progressively less
+                coeff = random.gauss(0, y_range * 0.05 / i)  # Very small contributions
+            
+            coefficients.append(coeff)
 
         return Polynomial(coefficients, poly_x_min, poly_x_max)
 
@@ -215,26 +237,45 @@ class GeneticPolynomialFitter:
             try:
                 degree = min(3, len(region_x) - 1, self.max_degree)
                 if degree >= 1:
+                    # Use numpy polyfit but with much more conservative approach
                     coeffs = np.polyfit(region_x, region_y, degree)
                     # Convert to ascending order (constant, linear, quadratic, ...)
                     coeffs = coeffs[::-1].tolist()
+                    
+                    # Scale down high-degree coefficients to prevent explosive growth
+                    for i in range(len(coeffs)):
+                        if i > 1:  # For quadratic and higher terms
+                            coeffs[i] *= 0.1 ** (i-1)  # Increasingly smaller coefficients
+                            
                 else:
                     coeffs = [float(np.mean(region_y))]
             except Exception:
                 # Fallback to mean
                 coeffs = [float(np.mean(region_y))]
         else:
-            # Fallback: use overall data statistics
-            y_mean = float(np.mean(y_points))
-            coeffs = [y_mean]
+            # Fallback: use overall data statistics with reasonable coefficients
+            y_min, y_max = float(np.min(y_points)), float(np.max(y_points))
+            
+            # Create a simple polynomial with values in the right range
+            # Since we use normalized coordinates, coefficients are more predictable
+            coeffs = [
+                random.uniform(y_min, y_max),  # Constant term - in actual data range
+                random.gauss(0, 5.0),          # Linear term for normalized x in [-1,1]
+                random.gauss(0, 2.0)           # Quadratic term
+            ]
         
-        # Add some randomness to avoid identical polynomials
+        # Add VERY small randomness to avoid identical polynomials
         for i in range(len(coeffs)):
-            coeffs[i] += random.gauss(0, abs(coeffs[i]) * 0.1 + 0.1)
+            noise_scale = max(0.01, abs(coeffs[i]) * 0.01)  # 1% noise
+            coeffs[i] += random.gauss(0, noise_scale)
         
-        # Ensure minimum degree
+        # Ensure minimum degree but with small coefficients
         while len(coeffs) < 3:  # At least quadratic
-            coeffs.append(random.gauss(0, 0.1))
+            coeffs.append(random.gauss(0, 0.001))  # Very small higher-order terms
+        
+        # Limit degree to prevent instability
+        if len(coeffs) > 4:  # Max degree 3
+            coeffs = coeffs[:4]
         
         return Polynomial(
             coefficients=coeffs,
@@ -255,6 +296,7 @@ class GeneticPolynomialFitter:
         total_squared_error = 0.0
         covered_points = 0
         max_error = 0.0
+        sum_absolute_error = 0.0
         
         for x, y in zip(x_points, y_points):
             best_prediction = None
@@ -275,6 +317,7 @@ class GeneticPolynomialFitter:
                 # Track maximum error for additional penalty
                 error = abs(best_prediction - y)
                 max_error = max(max_error, error)
+                sum_absolute_error += error
         
         # Calculate holistic accuracy metrics
         if covered_points == 0:
@@ -295,48 +338,70 @@ class GeneticPolynomialFitter:
         # Domain coverage ratio
         domain_coverage = min(1.0, union_span / x_span_data) if x_span_data > 0 else 1.0
         
-        # RMSE calculation
+        # RMSE and MAE calculation
         rmse = (total_squared_error / covered_points) ** 0.5
+        mae = sum_absolute_error / covered_points
         
-        # Fitness calculation - heavily focused on coverage and accuracy
-        fitness = 0.0
+        # Debug print for the first few evaluations to see what's happening
+        debug_fitness = hasattr(self, '_debug_count')
+        if not debug_fitness:
+            self._debug_count = 0
         
-        # 1. Coverage bonus (exponential reward for high coverage)
-        if coverage_ratio >= 0.98:  # 98%+ coverage gets huge bonus
-            coverage_bonus = 10000.0 * (coverage_ratio ** 4)
-        elif coverage_ratio >= 0.90:  # 90-98% gets good bonus
-            coverage_bonus = 1000.0 * (coverage_ratio ** 2)
-        else:  # <90% coverage is severely penalized
-            coverage_bonus = 10.0 * coverage_ratio
+        if self._debug_count < 3:  # Only print first 3 evaluations
+            print(f"\n=== Fitness Debug {self._debug_count} ===")
+            print(f"Coverage: {covered_points}/{len(x_points)} = {coverage_ratio:.3f}")
+            print(f"RMSE: {rmse:.3f}, MAE: {mae:.3f}, Max error: {max_error:.3f}")
+            print(f"Domain coverage: {domain_coverage:.3f}")
+            
+            # Show some example predictions
+            for i, (x, y) in enumerate(zip(x_points[:3], y_points[:3])):
+                for j, poly in enumerate(individual.polynomials):
+                    pred = poly.evaluate(x)
+                    if pred is not None:
+                        error = abs(pred - y)
+                        print(f"  Point {i}: x={x:.2f}, y_actual={y:.2f}, poly{j}_pred={pred:.2f}, error={error:.2f}")
+            self._debug_count += 1
         
-        fitness += coverage_bonus
+        # PROGRESSIVE FITNESS CALCULATION - allow gradual improvement
+        # Instead of catastrophic penalties, use progressive scaling
         
-        # 2. Domain coverage bonus
-        if domain_coverage >= 0.95:
-            domain_bonus = 1000.0 * domain_coverage
+        # Base fitness from inverse RMSE
+        if rmse > 200:
+            fitness = 0.001  # Truly catastrophic
+        elif rmse > 100:
+            fitness = 0.1 / rmse  # Very poor but distinguishable
+        elif rmse > 50:
+            fitness = 1.0 / rmse  # Poor but can improve
+        elif rmse > 20:
+            fitness = 10.0 / rmse  # Getting better
+        elif rmse > 10:
+            fitness = 50.0 / rmse  # Good
+        elif rmse > 5:
+            fitness = 100.0 / rmse  # Very good
         else:
-            domain_bonus = 10.0 * domain_coverage
+            fitness = 1000.0 / (1.0 + rmse)  # Excellent
         
-        fitness += domain_bonus
+        # 2. Progressive coverage bonuses/penalties
+        if coverage_ratio >= 0.95:
+            fitness *= 2.0   # Good coverage bonus
+        elif coverage_ratio >= 0.80:
+            fitness *= 1.5   # Decent coverage bonus
+        elif coverage_ratio < 0.50:
+            fitness *= 0.5   # Coverage penalty, but not catastrophic
         
-        # 3. Accuracy bonus (inverse of RMSE)
-        if rmse < 0.5:  # Very accurate fits get exponential bonus
-            accuracy_bonus = 5000.0 / (1.0 + rmse ** 2)
-        else:  # Poor fits get heavily penalized
-            accuracy_bonus = 100.0 / (1.0 + rmse)
+        # 3. Progressive max error penalties
+        if max_error > 100.0:
+            fitness *= 0.1   # Large error penalty
+        elif max_error > 50.0:
+            fitness *= 0.3   # Medium error penalty
+        elif max_error > 20.0:
+            fitness *= 0.7   # Small error penalty
         
-        fitness += accuracy_bonus
-        
-        # 4. Max error penalty
-        if max_error > 2.0:  # Any point with huge error is catastrophic
-            fitness *= 0.1  # Severe penalty
-        elif max_error > 1.0:
-            fitness *= 0.5  # Moderate penalty
-        
-        # 5. Tiny simplicity bonus (almost irrelevant)
-        total_degree = sum(p.degree() for p in individual.polynomials)
-        if total_degree <= 8:  # Reasonable complexity
-            fitness += 10.0
+        # 4. Progressive domain coverage
+        if domain_coverage < 0.60:
+            fitness *= 0.3   # Domain penalty, but not catastrophic
+        elif domain_coverage >= 0.90:
+            fitness *= 1.5   # Domain bonus
         
         return fitness
 
