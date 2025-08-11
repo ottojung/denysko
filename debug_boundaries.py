@@ -40,7 +40,8 @@ def debug_boundary_checking(text="A"):
     vertices = path.vertices
     min_x, min_y = np.min(vertices, axis=0)
     max_x, max_y = np.max(vertices, axis=0)
-    bounds = (min_x, max_x, min_y, max_y)
+    padding = 0.05 * max(max_x - min_x, max_y - min_y)
+    bounds = (min_x - padding, min_y - padding, max_x + padding, max_y + padding)
     clean_mask = _create_clean_mask(path, bounds)
     print(f"Clean mask: {clean_mask.shape}, filled pixels: {clean_mask.sum()}")
     
@@ -100,14 +101,15 @@ def debug_boundary_checking(text="A"):
             x, y = point
             
             # Get bounds from clean mask
-            vertices = path.vertices
             min_x, min_y = np.min(vertices, axis=0)
             max_x, max_y = np.max(vertices, axis=0)
+            padding = 0.05 * max(max_x - min_x, max_y - min_y)
+            min_x_bound, min_y_bound, max_x_bound, max_y_bound = (min_x - padding, min_y - padding, max_x + padding, max_y + padding)
             h, w = clean_mask.shape
             
-            if min_x <= x <= max_x and min_y <= y <= max_y:
-                col = int((x - min_x) / (max_x - min_x) * (w - 1))
-                row = int((y - min_y) / (max_y - min_y) * (h - 1))
+            if min_x_bound <= x <= max_x_bound and min_y_bound <= y <= max_y_bound:
+                col = int((x - min_x_bound) / (max_x_bound - min_x_bound) * (w - 1))
+                row = int((y - min_y_bound) / (max_y_bound - min_y_bound) * (h - 1))
                 col = max(0, min(w - 1, col))
                 row = max(0, min(h - 1, row))
                 
