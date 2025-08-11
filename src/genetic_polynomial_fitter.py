@@ -3,7 +3,17 @@
 Genetic algorithm-based polynomial fitter for letter sha    def __init__(
         self,
         population_size=50,   # Smaller population for faster iterations
-        generations=100,      # Fewer generations, focus on quality initialization
+        generations=100,      # Fewer generations, focus on quality i        else:
+            # Fallback: use actual data statistics for better initialization
+            y_min, y_max = float(np.min(y_points)), float(np.max(y_points))
+            y_median = float(np.median(y_points))
+            
+            # Create a polynomial that starts near actual data values
+            coeffs = [
+                y_median + random.gauss(0, (y_max - y_min) * 0.2),  # Near median with variation
+                random.gauss(0, 3.0),  # Small linear term for normalized coordinates
+                random.gauss(0, 1.0)   # Small quadratic term
+            ]on
         tournament_size=3,
         crossover_rate=0.8,
         mutation_rate=0.4,    # Higher mutation for more exploration
@@ -136,14 +146,17 @@ class GeneticPolynomialFitter:
         
         coefficients = []
         for i in range(degree + 1):
-            if i == 0:  # Constant term - MUST be in actual data range
-                # Sample directly from the y data to ensure realistic values
-                coeff = random.uniform(y_min * 0.8, y_max * 1.2)  # Slight expansion of range
-            elif i == 1:  # Linear term - moderate slope
-                coeff = random.gauss(0, y_range * 0.2)  # Can change by 20% of y_range across [-1,1]
-            else:  # Higher-order terms - very small since x is normalized
-                # Each higher power contributes progressively less
-                coeff = random.gauss(0, y_range * 0.05 / i)  # Very small contributions
+            if i == 0:  # Constant term - MUST be close to actual data
+                # Sample actual y values from the data as starting points
+                sample_y_values = np.random.choice(y_points, size=min(10, len(y_points)), replace=True)
+                coeff = float(np.random.choice(sample_y_values))  # Pick actual y value
+                # Add small random variation
+                coeff += random.gauss(0, y_range * 0.1)  # 10% variation
+                coeff = max(y_min * 0.5, min(y_max * 1.5, coeff))  # Clamp to reasonable range
+            elif i == 1:  # Linear term - small slope
+                coeff = random.gauss(0, y_range * 0.1)  # Small slope across normalized [-1,1]
+            else:  # Higher-order terms - very small
+                coeff = random.gauss(0, y_range * 0.02 / i)  # Very small contributions
             
             coefficients.append(coeff)
 
@@ -362,24 +375,49 @@ class GeneticPolynomialFitter:
                         print(f"  Point {i}: x={x:.2f}, y_actual={y:.2f}, poly{j}_pred={pred:.2f}, error={error:.2f}")
             self._debug_count += 1
         
-        # PROGRESSIVE FITNESS CALCULATION - allow gradual improvement
-        # Instead of catastrophic penalties, use progressive scaling
+        # RANGE-AWARE FITNESS CALCULATION
+        # Heavily penalize predictions outside the expected y-range
+        y_data_min, y_data_max = min(y_points), max(y_points)
+        y_data_center = (y_data_min + y_data_max) / 2
         
-        # Base fitness from inverse RMSE
+        # Count how many predictions are in reasonable range
+        in_range_count = 0
+        way_off_count = 0
+        
+        for x, y in zip(x_points, y_points):
+            for poly in individual.polynomials:
+                pred = poly.evaluate(x)
+                if pred is not None:
+                    if y_data_min <= pred <= y_data_max * 1.2:  # Allow slight overshoot
+                        in_range_count += 1
+                    elif pred < 0 or pred > y_data_max * 2:  # Way off
+                        way_off_count += 1
+        
+        range_ratio = in_range_count / max(1, in_range_count + way_off_count)
+        
+        # Base fitness from RMSE with range bonus
         if rmse > 200:
-            fitness = 0.001  # Truly catastrophic
+            fitness = 0.001
         elif rmse > 100:
-            fitness = 0.1 / rmse  # Very poor but distinguishable
+            fitness = 0.1 / rmse
         elif rmse > 50:
-            fitness = 1.0 / rmse  # Poor but can improve
+            fitness = 1.0 / rmse
         elif rmse > 20:
-            fitness = 10.0 / rmse  # Getting better
+            fitness = 10.0 / rmse
         elif rmse > 10:
-            fitness = 50.0 / rmse  # Good
+            fitness = 50.0 / rmse
         elif rmse > 5:
-            fitness = 100.0 / rmse  # Very good
+            fitness = 100.0 / rmse
         else:
-            fitness = 1000.0 / (1.0 + rmse)  # Excellent
+            fitness = 1000.0 / (1.0 + rmse)
+        
+        # MASSIVE bonus for predictions in correct range
+        if range_ratio > 0.8:
+            fitness *= 10.0  # 10x bonus for mostly correct range
+        elif range_ratio > 0.5:
+            fitness *= 3.0   # 3x bonus for half in range
+        elif range_ratio < 0.1:
+            fitness *= 0.01  # Severe penalty for mostly wrong range
         
         # 2. Progressive coverage bonuses/penalties
         if coverage_ratio >= 0.95:
@@ -427,16 +465,35 @@ class GeneticPolynomialFitter:
         return Individual([poly1, poly2])
 
     def _mutate(self, individual, x_points, y_points):
-        """Mutate an individual - maintain exactly 2 polynomials."""
+        """Mutate an individual with range-aware mutations."""
         if random.random() < self.mutation_rate:
-            mutation_type = random.choice(["modify_coeff", "modify_domain"])
+            mutation_type = random.choice(["modify_coeff", "modify_domain", "range_correct"])
             
             if mutation_type == "modify_coeff" and individual.polynomials:
                 # Modify coefficients of a random polynomial
                 poly = random.choice(individual.polynomials)
                 coeff_idx = random.randint(0, len(poly.coefficients) - 1)
-                # Smaller mutations for stability
-                poly.coefficients[coeff_idx] += random.gauss(0, 0.5)
+                
+                if coeff_idx == 0:  # Constant term - keep in reasonable range
+                    y_min, y_max = min(y_points), max(y_points)
+                    # Small mutation but ensure it stays somewhat reasonable
+                    mutation = random.gauss(0, (y_max - y_min) * 0.1)
+                    new_coeff = poly.coefficients[coeff_idx] + mutation
+                    # Clamp to expanded range
+                    poly.coefficients[coeff_idx] = max(y_min * 0.5, min(y_max * 1.5, new_coeff))
+                else:  # Higher-order terms
+                    poly.coefficients[coeff_idx] += random.gauss(0, 0.5)
+                    
+            elif mutation_type == "range_correct" and individual.polynomials:
+                # Specifically correct polynomials that are way off range
+                poly = random.choice(individual.polynomials)
+                y_min, y_max = min(y_points), max(y_points)
+                
+                # If constant term is negative or way too large, fix it
+                if poly.coefficients[0] < 0 or poly.coefficients[0] > y_max * 2:
+                    # Set to a random value in the correct range
+                    poly.coefficients[0] = random.uniform(y_min, y_max)
+                    print(f"  Range correction: fixed constant term to {poly.coefficients[0]:.2f}")
                 
             elif mutation_type == "modify_domain" and individual.polynomials:
                 # Modify domain of a random polynomial
