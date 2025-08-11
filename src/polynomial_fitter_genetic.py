@@ -11,12 +11,13 @@ class PolynomialFitter:
     """Fit polynomials to extracted centerlines using genetic algorithm."""
     
     def __init__(self):
-        self.genetic_fitter = GeneticPolynomialFitter(
-            population_size=50,
-            max_generations=100,
-            max_degree=5,
-            max_polynomials=15,
-            fitness_weights={'accuracy': 20.0, 'simplicity': 0.1}  # Heavily favor accuracy
+        # Create genetic algorithm fitter with extreme accuracy focus
+        self.ga_fitter = GeneticPolynomialFitter(
+            population_size=200,
+            generations=300,
+            max_polynomials=12,
+            max_degree=6,
+            mutation_rate=0.3,
         )
     
     def fit_polynomial_to_trace(self, trace, target_degree=3):
@@ -42,7 +43,7 @@ class PolynomialFitter:
         print(f"Fitting genetic polynomials to {len(trace)} points")
         
         # Use genetic algorithm to find optimal polynomials
-        polynomials = self.genetic_fitter.fit(trace)
+        polynomials = self.ga_fitter.fit(trace)
         
         # Convert to Desmos format strings
         result = []

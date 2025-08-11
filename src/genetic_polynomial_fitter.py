@@ -83,16 +83,17 @@ class GeneticPolynomialFitter:
 
     def __init__(
         self,
-        population_size=100,
-        max_generations=200,
-        mutation_rate=0.1,
+        population_size=200,  # Increased population for better exploration
+        generations=300,  # More generations for convergence
+        tournament_size=5,  # Slightly larger tournaments
         crossover_rate=0.8,
+        mutation_rate=0.3,  # Higher mutation for diversity
+        max_polynomials=10,
         max_degree=6,
-        max_polynomials=20,
-        fitness_weights={"accuracy": 10.0, "simplicity": 0.1},  # Much higher accuracy weight
+        fitness_weights=None,
     ):
         self.population_size = population_size
-        self.max_generations = max_generations
+        self.max_generations = generations  # Fixed parameter name
         self.mutation_rate = mutation_rate
         self.crossover_rate = crossover_rate
         self.max_degree = max_degree
@@ -129,50 +130,57 @@ class GeneticPolynomialFitter:
         return Individual(polynomials)
 
     def _evaluate_fitness(self, individual, x_points, y_points):
-        """Evaluate the fitness of an individual."""
-        # Accuracy component: how well the polynomials fit the data
-        total_error = 0.0
+        """Evaluate the fitness of an individual as a holistic polynomial set."""
+        if not individual.polynomials:
+            return 0.0
+
+        # Holistic evaluation: for each point, find the BEST prediction across ALL polynomials
+        total_squared_error = 0.0
         covered_points = 0
 
         for x, y in zip(x_points, y_points):
             best_prediction = None
-            min_error = float("inf")
+            min_squared_error = float("inf")
 
-            # Find the best polynomial prediction for this point
+            # Find the best polynomial prediction for this point across the entire set
             for poly in individual.polynomials:
                 pred = poly.evaluate(x)
                 if pred is not None:  # Point is in polynomial domain
-                    error = abs(pred - y)
-                    if error < min_error:
-                        min_error = error
+                    squared_error = (pred - y) ** 2
+                    if squared_error < min_squared_error:
+                        min_squared_error = squared_error
                         best_prediction = pred
 
             if best_prediction is not None:
-                total_error += min_error
+                total_squared_error += min_squared_error
                 covered_points += 1
 
-        # Penalize uncovered points heavily
+        # Calculate holistic accuracy
         if covered_points == 0:
-            accuracy = 0.0
-        else:
-            mean_error = total_error / covered_points
-            uncovered_penalty = (len(x_points) - covered_points) * 50.0  # Much heavier penalty
-            # Scale accuracy to be much more sensitive to error
-            accuracy = 1.0 / (1.0 + mean_error * 10.0 + uncovered_penalty)
+            return 0.0  # No coverage = zero fitness
 
-        # Simplicity component: prefer fewer polynomials and lower degrees
-        num_polys_penalty = individual.num_polynomials() * 0.01  # Reduced penalty
-        degree_penalty = individual.total_degree() * 0.005  # Reduced penalty
+        # Root mean squared error for covered points
+        rmse = (total_squared_error / covered_points) ** 0.5
+
+        # Coverage ratio (what percentage of points are covered)
+        coverage_ratio = covered_points / len(x_points)
+
+        # Heavily penalize incomplete coverage
+        if coverage_ratio < 0.95:  # If less than 95% coverage
+            coverage_penalty = (1.0 - coverage_ratio) * 1000.0
+        else:
+            coverage_penalty = 0.0
+
+        # Accuracy component: heavily weight RMSE and coverage
+        accuracy = 1.0 / (1.0 + rmse * 100.0 + coverage_penalty)
+
+        # Simplicity component: much smaller influence
+        num_polys_penalty = individual.num_polynomials() * 0.001
+        degree_penalty = individual.total_degree() * 0.0001
         simplicity = 1.0 / (1.0 + num_polys_penalty + degree_penalty)
 
-        # Combined fitness with MUCH higher accuracy weight
-        fitness = (
-            self.fitness_weights["accuracy"] * accuracy
-            + self.fitness_weights["simplicity"] * simplicity
-        )
-
-        # Exponential amplification for better solutions - but more extreme for accuracy
-        fitness = accuracy**3 * simplicity**0.5
+        # Fitness is almost entirely accuracy-driven
+        fitness = accuracy * 1000.0 + simplicity * 1.0
 
         return fitness
 
