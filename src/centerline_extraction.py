@@ -47,7 +47,7 @@ def extract_skeleton_from_path(path):
 
     # Generate monotonic walks from each starting point
     all_walks = []
-    step_distance = 2.0  # Distance "C" between steps
+    step_distance = 1.0  # Smaller step distance for better boundary adherence
     
     for i, start_point in enumerate(start_points):
         # Left-to-right walk
@@ -177,7 +177,6 @@ def _is_point_inside_mask(point, mask, x_grid, y_grid):
     x, y = point
     h, w = mask.shape
     
-    # Find the closest mask pixel to this real-world coordinate
     # Get the bounds of the coordinate system
     x_min, x_max = x_grid[0, 0], x_grid[0, -1]
     y_min, y_max = y_grid[0, 0], y_grid[-1, 0]
@@ -187,15 +186,34 @@ def _is_point_inside_mask(point, mask, x_grid, y_grid):
         return False
     
     # Convert world coordinates to pixel indices
-    col = int((x - x_min) / (x_max - x_min) * (w - 1))
-    row = int((y - y_min) / (y_max - y_min) * (h - 1))
+    col = (x - x_min) / (x_max - x_min) * (w - 1)
+    row = (y - y_min) / (y_max - y_min) * (h - 1)
+    
+    # Use bilinear sampling for more accurate boundary detection
+    # Get the four surrounding pixels
+    col_floor = int(np.floor(col))
+    col_ceil = int(np.ceil(col))
+    row_floor = int(np.floor(row))
+    row_ceil = int(np.ceil(row))
     
     # Clamp to valid indices
-    col = max(0, min(w - 1, col))
-    row = max(0, min(h - 1, row))
+    col_floor = max(0, min(w - 1, col_floor))
+    col_ceil = max(0, min(w - 1, col_ceil))
+    row_floor = max(0, min(h - 1, row_floor))
+    row_ceil = max(0, min(h - 1, row_ceil))
     
-    # Check if this pixel is inside the letter shape (handles holes correctly)
-    return mask[row, col]
+    # Check all four surrounding pixels - point is only valid if ALL are inside
+    # This is more conservative and should prevent boundary crossing
+    pixels = [
+        mask[row_floor, col_floor],
+        mask[row_floor, col_ceil], 
+        mask[row_ceil, col_floor],
+        mask[row_ceil, col_ceil]
+    ]
+    
+    # Point is only valid if all surrounding pixels are valid
+    # This creates a safety margin that should prevent holes from being crossed
+    return all(pixels)
 
 
 def _create_simple_stroke_approximation(path):
