@@ -5,6 +5,7 @@ Only generates y = f(x) functions.
 """
 
 from .text_to_desmos import TextToDesmos
+import json
 
 
 def main():
@@ -13,8 +14,10 @@ def main():
     print("This program generates ONLY y = f(x) functions")
     print()
 
+    text = "A"
+
     # Test with letter C
-    print("Testing with letter 'C'...")
+    print(f"Testing with letter {json.dumps(text)}...")
 
     converter = TextToDesmos(origin=(0, 0), scale=1.0)
     functions = converter.text_to_desmos_functions("C")
