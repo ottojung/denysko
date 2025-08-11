@@ -62,7 +62,7 @@ def compare_different_approaches(text):
     print(f"=== Comparison Panel for '{text}' ===")
 
     extractor = TextExtractor()
-    point_counts = [50, 200, 500]
+    point_counts = [50, 200, 5000]
 
     n = len(point_counts)
     fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
