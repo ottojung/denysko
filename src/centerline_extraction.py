@@ -170,7 +170,7 @@ class CenterlineExtractor:
         
         # Generate mask for boundary checking
         from .path_processing import rasterize_path
-        mask, _, _ = rasterize_path(path, resolution=200)
+        mask, _, _ = rasterize_path(path, resolution=400)
         
         # Generate random starting points
         num_starts = min(num_walks, len(letter_points) // 2)
