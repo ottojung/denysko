@@ -60,8 +60,8 @@ class Polynomial:
             return "y = 0"
 
         result = " + ".join(terms).replace(" + -", " - ")
-        domain = f"{{x: {self.x_min:.3f} ≤ x ≤ {self.x_max:.3f}}}"
-        return f"y = {result} {domain}"
+        domain = f"\\ \\left\\{{{self.x_min:.3f}\\le x\\le{self.x_max:.3f}\\right\\}}"
+        return f"y = {result}{domain}"
 
 
 @dataclass
