@@ -51,12 +51,14 @@ def extract_skeleton_from_path(path):
     
     for i, start_point in enumerate(start_points):
         # Left-to-right walk
-        lr_walk = _monotonic_random_walk(start_point, path, step_distance, direction='left-to-right')
+        lr_walk = _monotonic_random_walk(start_point, path, step_distance, direction='left-to-right', 
+                                       mask=mask, x_grid=x_grid, y_grid=y_grid)
         if len(lr_walk) >= 3:
             all_walks.append(lr_walk)
             
         # Right-to-left walk  
-        rl_walk = _monotonic_random_walk(start_point, path, step_distance, direction='right-to-left')
+        rl_walk = _monotonic_random_walk(start_point, path, step_distance, direction='right-to-left',
+                                       mask=mask, x_grid=x_grid, y_grid=y_grid)
         if len(rl_walk) >= 3:
             all_walks.append(rl_walk)
 
