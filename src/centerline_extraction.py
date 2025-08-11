@@ -148,6 +148,9 @@ def _monotonic_random_walk(start_point, original_path, step_distance, direction=
         
         # Use more accurate boundary checking with rasterized mask
         if not _is_point_inside_mask(next_point, mask, x_grid, y_grid):
+            # Debug: Track when walks are stopped by boundary detection
+            if step < 3:  # Very short walk, might indicate starting near boundary
+                pass  # Don't report very short boundary stops
             break
             
         walk.append(next_point.copy())
