@@ -65,10 +65,10 @@ class TextToDesmos:
         if not contours_all:
             return []
 
-        # 3) Fit polynomials (y=f(x) only)
+        # 3) Fit polynomials using genetic algorithm (y=f(x) only)
         y_functions: List[str] = []
         for contour in contours_all:
-            funcs = self.fitter.fit_contour_polynomials(contour)
+            funcs = self.fitter.fit_all_traces([contour])
             # keep only y = ...
             for f in funcs:
                 if isinstance(f, str) and f.startswith("y ="):

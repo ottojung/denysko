@@ -33,6 +33,12 @@ class PolynomialFitter:
         if len(trace) < 4:  # Need minimum points for fitting
             return []
         
+        # Sample points if too many (genetic algorithm works better with fewer points)
+        if len(trace) > 500:
+            print(f"Sampling {len(trace)} points down to 500 for genetic algorithm")
+            indices = np.linspace(0, len(trace)-1, 500, dtype=int)
+            trace = trace[indices]
+        
         print(f"Fitting genetic polynomials to {len(trace)} points")
         
         # Use genetic algorithm to find optimal polynomials
