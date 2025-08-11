@@ -146,11 +146,22 @@ def _monotonic_random_walk(start_point, original_path, step_distance, direction=
             
         next_point = current_point + np.array([dx, dy])
         
-        # Use more accurate boundary checking with rasterized mask
+        # Check if next point is valid AND the path between current and next is valid
         if not _is_point_inside_mask(next_point, mask, x_grid, y_grid):
-            # Debug: Track when walks are stopped by boundary detection
-            if step < 3:  # Very short walk, might indicate starting near boundary
-                pass  # Don't report very short boundary stops
+            break
+            
+        # Additional check: validate intermediate points along the step
+        # This prevents visual boundary crossing due to straight line rendering
+        intermediate_valid = True
+        num_checks = 3  # Check 3 intermediate points along the step
+        for check_i in range(1, num_checks):
+            t = check_i / num_checks
+            intermediate_point = current_point + t * np.array([dx, dy])
+            if not _is_point_inside_mask(intermediate_point, mask, x_grid, y_grid):
+                intermediate_valid = False
+                break
+        
+        if not intermediate_valid:
             break
             
         walk.append(next_point.copy())
