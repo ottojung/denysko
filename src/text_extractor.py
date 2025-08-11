@@ -35,9 +35,9 @@ class TextExtractor:
         codes = [MPLPath.MOVETO] + [MPLPath.LINETO] * (len(skeleton_points) - 1)
         return MPLPath(skeleton_points, codes)
 
-    def extract_skeleton_from_path(self, path):
+    def extract_skeleton_from_path(self, path, num_walks=25, step_distance=3, max_steps=100):
         """Extract skeleton from a path, returning list of separate traces."""
-        return extract_skeleton_from_path(path)
+        return extract_skeleton_from_path(path, num_walks, step_distance, max_steps)
 
     def extract_contour_points(self, path, num_points=500):
         """Extract centerline traces from path."""
