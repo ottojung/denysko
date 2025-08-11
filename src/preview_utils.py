@@ -151,3 +151,7 @@ def _plot_outline_with_bounds(ax, path, color="blue", alpha=0.5, label="Outline"
     pad = 0.05 * max(w, h) if max(w, h) > 0 else 1.0
     ax.set_xlim(min_x - pad, max_x + pad)
     ax.set_ylim(min_y - pad, max_y + pad)
+    
+    # Ensure consistent coordinate system - prevent y-axis inversion
+    ax.set_aspect('equal')
+    ax.grid(True, alpha=0.3)

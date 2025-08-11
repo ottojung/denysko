@@ -79,9 +79,9 @@ class CenterlineExtractor:
         letter_points = []
         for px, py in pixel_points:
             # Convert pixel indices to letter coordinates
-            # Note: y-axis is flipped in mask (top-down) vs letter coords (bottom-up)
+            # The mask has already been flipped in rasterize_path, so py=0 corresponds to max_y
             letter_x = min_x + (px / (mask_w - 1)) * (max_x - min_x)
-            letter_y = max_y - (py / (mask_h - 1)) * (max_y - min_y)  # Flip y-axis
+            letter_y = min_y + (py / (mask_h - 1)) * (max_y - min_y)  # Direct mapping since mask is already flipped
             letter_points.append([letter_x, letter_y])
         
         return np.array(letter_points)
