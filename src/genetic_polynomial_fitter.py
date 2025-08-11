@@ -133,15 +133,16 @@ class GeneticPolynomialFitter:
         """Evaluate the fitness of an individual as a holistic polynomial set."""
         if not individual.polynomials:
             return 0.0
-
+            
         # Holistic evaluation: for each point, find the BEST prediction across ALL polynomials
         total_squared_error = 0.0
         covered_points = 0
-
+        max_error = 0.0
+        
         for x, y in zip(x_points, y_points):
             best_prediction = None
             min_squared_error = float("inf")
-
+            
             # Find the best polynomial prediction for this point across the entire set
             for poly in individual.polynomials:
                 pred = poly.evaluate(x)
@@ -150,38 +151,58 @@ class GeneticPolynomialFitter:
                     if squared_error < min_squared_error:
                         min_squared_error = squared_error
                         best_prediction = pred
-
+            
             if best_prediction is not None:
                 total_squared_error += min_squared_error
                 covered_points += 1
-
-        # Calculate holistic accuracy
+                # Track maximum error for additional penalty
+                error = abs(best_prediction - y)
+                max_error = max(max_error, error)
+        
+        # Calculate holistic accuracy metrics
         if covered_points == 0:
             return 0.0  # No coverage = zero fitness
-
-        # Root mean squared error for covered points
-        rmse = (total_squared_error / covered_points) ** 0.5
-
+        
         # Coverage ratio (what percentage of points are covered)
         coverage_ratio = covered_points / len(x_points)
-
-        # Heavily penalize incomplete coverage
-        if coverage_ratio < 0.95:  # If less than 95% coverage
-            coverage_penalty = (1.0 - coverage_ratio) * 1000.0
+        
+        # Multiple accuracy metrics
+        rmse = (total_squared_error / covered_points) ** 0.5
+        mean_absolute_error = total_squared_error ** 0.5 / covered_points  # Approximate MAE
+        
+        # EXTREMELY harsh penalties for poor accuracy
+        # Exponentially penalize any significant error
+        accuracy_penalty = 0.0
+        
+        # Penalty for RMSE - exponential growth
+        if rmse > 0.1:  # Any RMSE above 0.1 is severely penalized
+            accuracy_penalty += (rmse * 1000.0) ** 2
         else:
-            coverage_penalty = 0.0
-
-        # Accuracy component: heavily weight RMSE and coverage
-        accuracy = 1.0 / (1.0 + rmse * 100.0 + coverage_penalty)
-
-        # Simplicity component: much smaller influence
-        num_polys_penalty = individual.num_polynomials() * 0.001
-        degree_penalty = individual.total_degree() * 0.0001
-        simplicity = 1.0 / (1.0 + num_polys_penalty + degree_penalty)
-
-        # Fitness is almost entirely accuracy-driven
-        fitness = accuracy * 1000.0 + simplicity * 1.0
-
+            accuracy_penalty += rmse * 100.0
+        
+        # Penalty for maximum error - no single point should have large error
+        if max_error > 0.5:  # Any single point with error > 0.5 is catastrophic
+            accuracy_penalty += (max_error * 2000.0) ** 2
+        else:
+            accuracy_penalty += max_error * 500.0
+        
+        # Coverage penalty - incomplete coverage is catastrophic
+        if coverage_ratio < 0.98:  # Demand 98% coverage minimum
+            coverage_penalty = (1.0 - coverage_ratio) * 10000.0
+        else:
+            coverage_penalty = (1.0 - coverage_ratio) * 100.0
+        
+        # Total accuracy score (higher is better, but penalties reduce it)
+        accuracy_score = 10000.0 / (1.0 + accuracy_penalty + coverage_penalty)
+        
+        # Minimal simplicity component - almost irrelevant
+        num_polys_penalty = individual.num_polynomials() * 0.0001
+        degree_penalty = individual.total_degree() * 0.00001
+        simplicity_score = 10.0 / (1.0 + num_polys_penalty + degree_penalty)
+        
+        # Final fitness: accuracy dominates completely (1000:1 ratio)
+        fitness = accuracy_score * 1000.0 + simplicity_score * 1.0
+        
         return fitness
 
     def _tournament_selection(self, population, tournament_size=3):
