@@ -9,8 +9,13 @@ import numpy as np
 def rasterize_path(path, resolution=400):
     """
     Rasterize a Path to a binary mask with given resolution.
+    Properly handles holes in the path using matplotlib's PathPatch rendering.
     Returns (mask, x_grid, y_grid).
     """
+    import matplotlib.pyplot as plt
+    import matplotlib.patches as patches
+    from matplotlib.backends.backend_agg import FigureCanvasAgg
+    
     vertices = path.vertices
     min_x, min_y = np.min(vertices, axis=0)
     max_x, max_y = np.max(vertices, axis=0)
@@ -29,14 +34,57 @@ def rasterize_path(path, resolution=400):
     # Scale resolution to size (cap between 200 and 600)
     res = int(np.clip((resolution * base / max(base, 1e-6)), 200, 600))
     
-    # Create grid
+    # Create coordinate grids
     xs = np.linspace(min_x, max_x, res)
     ys = np.linspace(min_y, max_y, res)
     x_grid, y_grid = np.meshgrid(xs, ys)
-    pts = np.stack([x_grid.ravel(), y_grid.ravel()], axis=1)
-
-    inside = path.contains_points(pts)
-    mask = inside.reshape(res, res)
+    
+    # Use matplotlib's rendering to properly handle holes
+    fig = plt.figure(figsize=(8, 8))
+    ax = fig.add_subplot(111)
+    
+    # Create a PathPatch that will respect holes in the path
+    patch = patches.PathPatch(path, facecolor='white', edgecolor='none')
+    ax.add_patch(patch)
+    
+    # Set the exact bounds we want
+    ax.set_xlim(min_x, max_x)
+    ax.set_ylim(min_y, max_y)
+    ax.set_aspect('equal')
+    ax.axis('off')
+    
+    # Render to a bitmap at the desired resolution
+    fig.patch.set_facecolor('black')  # Background = False
+    canvas = FigureCanvasAgg(fig)
+    canvas.draw()
+    
+    # Get the rendered image
+    buf = canvas.buffer_rgba()
+    img = np.asarray(buf).copy()
+    
+    # Convert to binary mask (white areas = True, black areas = False)
+    # Use the alpha channel or brightness to determine inside/outside
+    mask = img[:, :, 0] > 128  # White pixels = inside the path
+    
+    # Resize to exactly the resolution we want using simple interpolation
+    if mask.shape != (res, res):
+        # Simple nearest neighbor resize
+        old_h, old_w = mask.shape
+        new_mask = np.zeros((res, res), dtype=bool)
+        for i in range(res):
+            for j in range(res):
+                old_i = int(i * old_h / res)
+                old_j = int(j * old_w / res)
+                old_i = min(old_i, old_h - 1)
+                old_j = min(old_j, old_w - 1)
+                new_mask[i, j] = mask[old_i, old_j]
+        mask = new_mask
+    
+    plt.close(fig)
+    
+    # Flip vertically to match coordinate system (matplotlib renders top-down, we want bottom-up)
+    mask = np.flipud(mask)
+    
     return mask, x_grid, y_grid
 
 
