@@ -62,7 +62,7 @@ def compare_different_approaches(text):
     print(f"=== Comparison Panel for '{text}' ===")
 
     extractor = TextExtractor()
-    walk_counts = [10, 25, 50]  # Different numbers of walks to generate
+    walk_counts = [10, 25, 300]  # Different numbers of walks to generate
 
     n = len(walk_counts)
     fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
