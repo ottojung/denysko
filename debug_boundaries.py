@@ -35,6 +35,15 @@ def debug_boundary_checking(text="A"):
     mask, x_grid, y_grid = rasterize_path(path, resolution=400)
     print(f"Mask shape: {mask.shape}, filled pixels: {mask.sum()}")
     
+    # Get the clean mask from our implementation
+    from src.centerline_extraction import _create_clean_mask
+    vertices = path.vertices
+    min_x, min_y = np.min(vertices, axis=0)
+    max_x, max_y = np.max(vertices, axis=0)
+    bounds = (min_x, max_x, min_y, max_y)
+    clean_mask = _create_clean_mask(path, bounds)
+    print(f"Clean mask: {clean_mask.shape}, filled pixels: {clean_mask.sum()}")
+    
     # Get walk paths from extractor
     walks = extractor.extract_skeleton_from_path(path)
     print(f"Generated {len(walks)} walks")
@@ -82,24 +91,27 @@ def debug_boundary_checking(text="A"):
     
     print(f"Debug visualization saved as 'debug_boundary_{text}.png'")
     
-    # Additional check: verify all walk points are within the mask
+    # Additional check: verify all walk points are within the clean mask
     total_violations = 0
     for i, walk in enumerate(walks):
         violations = 0
         for point in walk:
-            # Check each point against the mask
+            # Check each point against the clean mask using the same method as our implementation
             x, y = point
-            h, w = mask.shape
-            x_min, x_max = x_grid[0, 0], x_grid[0, -1]
-            y_min, y_max = y_grid[0, 0], y_grid[-1, 0]
             
-            if x_min <= x <= x_max and y_min <= y <= y_max:
-                col = int((x - x_min) / (x_max - x_min) * (w - 1))
-                row = int((y - y_min) / (y_max - y_min) * (h - 1))
+            # Get bounds from clean mask
+            vertices = path.vertices
+            min_x, min_y = np.min(vertices, axis=0)
+            max_x, max_y = np.max(vertices, axis=0)
+            h, w = clean_mask.shape
+            
+            if min_x <= x <= max_x and min_y <= y <= max_y:
+                col = int((x - min_x) / (max_x - min_x) * (w - 1))
+                row = int((y - min_y) / (max_y - min_y) * (h - 1))
                 col = max(0, min(w - 1, col))
                 row = max(0, min(h - 1, row))
                 
-                if not mask[row, col]:
+                if not clean_mask[row, col]:
                     violations += 1
         
         if violations > 0:
