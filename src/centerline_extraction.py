@@ -70,6 +70,12 @@ class CenterlineExtractor:
         x_grid = coord_info['x_grid']
         y_grid = coord_info['y_grid']
         
+        # Debug: print coordinate ranges
+        print(f"DEBUG: x_grid range: {np.min(x_grid):.3f} to {np.max(x_grid):.3f}")
+        print(f"DEBUG: y_grid range: {np.min(y_grid):.3f} to {np.max(y_grid):.3f}")
+        print(f"DEBUG: x_grid shape: {x_grid.shape}")
+        print(f"DEBUG: y_grid shape: {y_grid.shape}")
+        
         letter_coords = []
         for px, py in pixel_coords:
             # Use the 2D coordinate grids for transformation

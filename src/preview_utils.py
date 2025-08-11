@@ -149,6 +149,11 @@ def _plot_outline_with_bounds(ax, path, color="blue", alpha=0.5, label="Outline"
     w = max_x - min_x
     h = max_y - min_y
     pad = 0.05 * max(w, h) if max(w, h) > 0 else 1.0
+    
+    # Debug: print PathPatch coordinate ranges
+    print(f"DEBUG: PathPatch bounds: x=[{min_x:.3f}, {max_x:.3f}], y=[{min_y:.3f}, {max_y:.3f}]")
+    print(f"DEBUG: PathPatch size: w={w:.3f}, h={h:.3f}")
+    
     ax.set_xlim(min_x - pad, max_x + pad)
     ax.set_ylim(min_y - pad, max_y + pad)
     
