@@ -77,6 +77,13 @@ class CenterlineExtractor:
             # y_grid[py, px] gives the letter y-coordinate at pixel (px, py)
             letter_x = x_grid[py, px]  # y index first, then x index (row, col)
             letter_y = y_grid[py, px]
+            
+            # Invert y-coordinate to match the inverted y-axis in preview
+            # Find the y-range to perform the inversion
+            min_y = np.min(y_grid)
+            max_y = np.max(y_grid)
+            letter_y = min_y + max_y - letter_y  # Flip y within its range
+            
             letter_coords.append((letter_x, letter_y))
         
         return letter_coords
