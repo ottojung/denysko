@@ -1,356 +1,157 @@
 #!/usr/bin/env python3
 """
-Centerline extraction using horizontal monotonic decomposition and random walks.
+Centerline extraction using random starting points and monotonic random walks.
 """
 
 import numpy as np
-from .path_processing import rasterize_path, decompose_into_h_monotonic_components
+from .path_processing import rasterize_path
 
 
 def extract_skeleton_from_path(path):
     """
     Extract centerlines by:
-    1. Decomposing letter into horizontal monotonic components
-    2. Generating random left-to-right walks through each component  
-    3. Averaging walks to get centerline for each component
+    1. Choosing random points on the letter shape
+    2. From each point, doing two monotonic random walks (left-to-right and right-to-left)
+    3. Returning all walk paths
     
-    Returns list of numpy arrays, each representing a centerline trace.
+    Returns list of numpy arrays, each representing a walk path.
     """
     vertices = path.vertices
     if len(vertices) < 6:
         return [vertices]
 
-    # Rasterize at high resolution for better component detection
+    # Rasterize at high resolution to get valid interior points
     mask, x_grid, y_grid = rasterize_path(path, resolution=400)
     if mask.sum() == 0:
         return [vertices]
 
     print(f"Rasterized shape: {mask.shape}, filled pixels: {mask.sum()}")
 
-    # Decompose into horizontal monotonic components
-    raw_components = decompose_into_h_monotonic_components(mask)
-    print(f"Found {len(raw_components)} horizontal monotonic components")
-    
-    if not raw_components:
-        print("Warning: No components found, using fallback")
+    # Get all valid points inside the letter shape (in real coordinates)
+    valid_points = _get_valid_interior_points(mask, x_grid, y_grid, path)
+    if len(valid_points) == 0:
+        print("Warning: No valid interior points found")
         return [_create_simple_stroke_approximation(path)]
 
-    # Convert raw components to format needed for centerline extraction
-    components = []
-    for comp_dict in raw_components:
-        # Find bounding box of this component
-        cols = list(comp_dict.keys())
-        if not cols:
-            continue
-        x_min_col, x_max_col = min(cols), max(cols)
-        
-        # Create submask for this component
-        component_mask = np.zeros_like(mask)
-        for col, intervals in comp_dict.items():
-            for start_row, end_row in intervals:
-                component_mask[start_row:end_row+1, col] = mask[start_row:end_row+1, col]
-        
-        component = {
-            'mask': component_mask,
-            'x_grid': x_grid,
-            'y_grid': y_grid, 
-            'x_min': x_grid[0, x_min_col],
-            'x_max': x_grid[0, x_max_col]
-        }
-        components.append(component)
+    print(f"Found {len(valid_points)} valid interior points")
 
-    # Extract centerline for each component
-    centerlines = []
-    for i, component in enumerate(components):
-        print(f"Processing component {i+1}/{len(components)}")
-        centerline = _extract_centerline_from_component(component, path)
-        if centerline is not None and len(centerline) >= 3:
-            centerlines.append(centerline)
-            print(f"  Generated centerline with {len(centerline)} points")
+    # Choose random starting points
+    num_starts = 15  # Number of random starting points
+    if len(valid_points) < num_starts:
+        start_points = valid_points
+    else:
+        start_indices = np.random.choice(len(valid_points), num_starts, replace=False)
+        start_points = valid_points[start_indices]
+
+    print(f"Using {len(start_points)} random starting points")
+
+    # Generate monotonic walks from each starting point
+    all_walks = []
+    step_distance = 2.0  # Distance "C" between steps
     
-    if not centerlines:
-        print("Warning: No centerlines extracted, using fallback")
+    for i, start_point in enumerate(start_points):
+        # Left-to-right walk
+        lr_walk = _monotonic_random_walk(start_point, path, step_distance, direction='left-to-right')
+        if len(lr_walk) >= 3:
+            all_walks.append(lr_walk)
+            
+        # Right-to-left walk  
+        rl_walk = _monotonic_random_walk(start_point, path, step_distance, direction='right-to-left')
+        if len(rl_walk) >= 3:
+            all_walks.append(rl_walk)
+
+    if not all_walks:
+        print("Warning: No valid walks generated")
         return [_create_simple_stroke_approximation(path)]
 
-    print(f"Generated {len(centerlines)} centerline traces")
-    return centerlines
+    print(f"Generated {len(all_walks)} walk paths")
+    return all_walks
 
 
-def _extract_centerline_from_component(component, original_path):
+def _get_valid_interior_points(mask, x_grid, y_grid, original_path):
     """
-    Extract centerline from a horizontal monotonic component using random walks.
+    Get all valid points inside the letter shape as real coordinates.
+    Sample from the rasterized mask and convert to world coordinates.
+    """
+    h, w = mask.shape
+    valid_points = []
+    
+    # Sample every few pixels to get a good distribution of interior points
+    sample_step = 3  # Sample every 3rd pixel
+    
+    for row in range(0, h, sample_step):
+        for col in range(0, w, sample_step):
+            if mask[row, col]:
+                # Convert pixel coordinates to world coordinates
+                x = x_grid[0, col]
+                y = y_grid[row, 0]
+                point = np.array([x, y])
+                
+                # Double-check that point is within original path
+                if original_path.contains_point(point):
+                    valid_points.append(point)
+    
+    return np.array(valid_points)
+
+
+def _monotonic_random_walk(start_point, original_path, step_distance, direction='left-to-right'):
+    """
+    Generate a monotonic random walk from a starting point.
     
     Args:
-        component: Dict with 'mask', 'x_grid', 'y_grid', 'x_min', 'x_max'
-        original_path: Original path for boundary validation
+        start_point: Starting coordinates [x, y]
+        original_path: Original letter path for boundary checking
+        step_distance: Distance between consecutive steps
+        direction: 'left-to-right' or 'right-to-left'
     
     Returns:
-        numpy array representing the centerline trace
+        numpy array of walk coordinates
     """
-    mask = component['mask']
-    x_grid = component['x_grid'] 
-    y_grid = component['y_grid']
-    x_min = component['x_min']
-    x_max = component['x_max']
+    walk = [start_point.copy()]
+    current_point = start_point.copy()
+    max_steps = 200  # Prevent infinite walks
     
-    h, w = mask.shape
+    x_direction = 1.0 if direction == 'left-to-right' else -1.0
     
-    # Generate multiple random left-to-right walks through the component
-    num_walks = 10  # Number of random walks to average
-    walks = []
-    
-    for walk_i in range(num_walks):
-        walk = _generate_random_walk(mask, x_grid, y_grid, original_path)
-        if len(walk) >= 3:
-            walks.append(walk)
-    
-    if not walks:
-        return None
-    
-    print(f"    Generated {len(walks)} valid random walks")
-    
-    # Average the walks to get the centerline
-    centerline = _average_walks_to_centerline(walks, x_min, x_max)
-    
-    return centerline
-
-
-def _generate_random_walk(mask, x_grid, y_grid, original_path):
-    """
-    Generate a single random left-to-right walk through the component.
-    Walk is brownian but constrained to move left-to-right overall.
-    """
-    h, w = mask.shape
-    
-    # Find leftmost column with pixels
-    left_col = None
-    for col in range(w):
-        if np.any(mask[:, col]):
-            left_col = col
-            break
-    
-    if left_col is None:
-        return []
-    
-    # Start at a random valid pixel in the leftmost column
-    left_pixels = np.where(mask[:, left_col])[0]
-    if len(left_pixels) == 0:
-        return []
-    
-    start_row = np.random.choice(left_pixels)
-    
-    # Random walk from left to right
-    walk = []
-    current_row = start_row
-    
-    for col in range(left_col, w):
-        # Find valid pixels in current column
-        valid_rows = np.where(mask[:, col])[0]
-        if len(valid_rows) == 0:
+    for step in range(max_steps):
+        # Generate next point with monotonic constraint
+        # x must increase/decrease monotonically
+        # y can vary randomly within bounds
+        
+        # Random angle bias towards the monotonic direction
+        if direction == 'left-to-right':
+            # Bias angle towards rightward (0 to π/2 and 3π/2 to 2π)
+            if np.random.random() < 0.7:  # 70% chance of rightward bias
+                angle = np.random.uniform(-np.pi/3, np.pi/3)  # -60° to +60°
+            else:
+                angle = np.random.uniform(0, 2*np.pi)  # Any direction
+        else:  # right-to-left
+            # Bias angle towards leftward (π/2 to 3π/2)
+            if np.random.random() < 0.7:  # 70% chance of leftward bias
+                angle = np.random.uniform(2*np.pi/3, 4*np.pi/3)  # 120° to 240°
+            else:
+                angle = np.random.uniform(0, 2*np.pi)  # Any direction
+        
+        # Calculate next point
+        dx = step_distance * np.cos(angle)
+        dy = step_distance * np.sin(angle)
+        
+        # Ensure monotonic constraint
+        if direction == 'left-to-right' and dx < 0:
+            dx = abs(dx)  # Force rightward
+        elif direction == 'right-to-left' and dx > 0:
+            dx = -abs(dx)  # Force leftward
+            
+        next_point = current_point + np.array([dx, dy])
+        
+        # Check if next point is still within the letter boundary
+        if not original_path.contains_point(next_point):
             break
             
-        # Brownian motion: prefer staying near current row, but allow drift
-        if col > left_col:
-            # Weight rows by distance from current position (closer = higher weight)
-            distances = np.abs(valid_rows - current_row)
-            max_dist = max(distances.max(), 1)
-            weights = np.exp(-2 * distances / max_dist)  # Exponential falloff
-            weights /= weights.sum()
-            
-            current_row = np.random.choice(valid_rows, p=weights)
-        else:
-            current_row = start_row
-        
-        # Convert to world coordinates
-        x = x_grid[0, col]
-        y = y_grid[current_row, 0]
-        point = np.array([x, y])
-        
-        # Verify point is within original letter boundary
-        if original_path.contains_point(point):
-            walk.append(point)
+        walk.append(next_point.copy())
+        current_point = next_point
     
-    return np.array(walk) if walk else np.array([])
-
-
-def _average_walks_to_centerline(walks, x_min, x_max):
-    """
-    Average multiple walks to produce a smooth centerline.
-    Samples walks at regular x intervals and averages y coordinates.
-    """
-    if not walks:
-        return None
-    
-    # Sample at regular x intervals
-    num_samples = 50  # Number of points in final centerline
-    x_samples = np.linspace(x_min, x_max, num_samples)
-    
-    centerline_points = []
-    
-    for x_target in x_samples:
-        y_values = []
-        
-        # For each walk, find y-value at this x position
-        for walk in walks:
-            if len(walk) < 2:
-                continue
-                
-            x_coords = walk[:, 0]
-            y_coords = walk[:, 1]
-            
-            # Find y at x_target by linear interpolation
-            if x_target >= x_coords.min() and x_target <= x_coords.max():
-                y_interp = np.interp(x_target, x_coords, y_coords)
-                y_values.append(y_interp)
-        
-        # Average the y values from all walks
-        if y_values:
-            avg_y = np.mean(y_values)
-            centerline_points.append([x_target, avg_y])
-    
-    return np.array(centerline_points) if centerline_points else None
-
-
-def _extract_top_to_bottom_traces(mask, x_grid, y_grid, original_path):
-    """Extract vertical traces from top to bottom of the letter."""
-    h, w = mask.shape
-    traces = []
-    
-    # Sample columns across the width
-    for col_step in range(0, w, max(1, w // 20)):  # ~20 vertical traces
-        col = min(col_step, w - 1)
-        
-        # Find all vertical segments in this column
-        segments = []
-        in_segment = False
-        start_row = 0
-        
-        for row in range(h):
-            if mask[row, col] and not in_segment:
-                start_row = row
-                in_segment = True
-            elif not mask[row, col] and in_segment:
-                segments.append((start_row, row - 1))
-                in_segment = False
-        
-        if in_segment:
-            segments.append((start_row, h - 1))
-        
-        # Create traces for each segment
-        for start_row, end_row in segments:
-            if end_row - start_row >= 5:  # Minimum length
-                trace_points = []
-                for row in range(start_row, end_row + 1, 2):  # Every 2nd row for efficiency
-                    x = x_grid[0, col]
-                    y = y_grid[row, 0]
-                    point = np.array([x, y])
-                    if original_path.contains_point(point):
-                        trace_points.append(point)
-                
-                if len(trace_points) >= 3:
-                    traces.append(np.array(trace_points))
-    
-    return traces
-
-
-def _extract_left_to_right_traces(mask, x_grid, y_grid, original_path):
-    """Extract horizontal traces from left to right of the letter."""
-    h, w = mask.shape
-    traces = []
-    
-    # Sample rows across the height  
-    for row_step in range(0, h, max(1, h // 15)):  # ~15 horizontal traces
-        row = min(row_step, h - 1)
-        
-        # Find all horizontal segments in this row
-        segments = []
-        in_segment = False
-        start_col = 0
-        
-        for col in range(w):
-            if mask[row, col] and not in_segment:
-                start_col = col
-                in_segment = True
-            elif not mask[row, col] and in_segment:
-                segments.append((start_col, col - 1))
-                in_segment = False
-        
-        if in_segment:
-            segments.append((start_col, w - 1))
-        
-        # Create traces for each segment
-        for start_col, end_col in segments:
-            if end_col - start_col >= 5:  # Minimum length
-                trace_points = []
-                for col in range(start_col, end_col + 1, 2):  # Every 2nd col for efficiency
-                    x = x_grid[0, col]
-                    y = y_grid[row, 0]
-                    point = np.array([x, y])
-                    if original_path.contains_point(point):
-                        trace_points.append(point)
-                
-                if len(trace_points) >= 3:
-                    traces.append(np.array(trace_points))
-    
-    return traces
-
-
-def _extract_diagonal_traces(mask, x_grid, y_grid, original_path):
-    """Extract diagonal traces to capture slanted strokes."""
-    h, w = mask.shape
-    traces = []
-    
-    # Diagonal traces from top-left to bottom-right
-    for start_offset in range(-h//2, w//2, max(1, min(h, w) // 10)):
-        trace_points = []
-        
-        if start_offset >= 0:
-            # Start from top edge
-            start_row, start_col = 0, start_offset
-        else:
-            # Start from left edge
-            start_row, start_col = -start_offset, 0
-        
-        row, col = start_row, start_col
-        while row < h and col < w:
-            if mask[row, col]:
-                x = x_grid[0, col]
-                y = y_grid[row, 0]
-                point = np.array([x, y])
-                if original_path.contains_point(point):
-                    trace_points.append(point)
-            row += 2
-            col += 2
-        
-        if len(trace_points) >= 5:
-            traces.append(np.array(trace_points))
-    
-    # Diagonal traces from top-right to bottom-left
-    for start_offset in range(-h//2, w//2, max(1, min(h, w) // 10)):
-        trace_points = []
-        
-        if start_offset >= 0:
-            # Start from top edge
-            start_row, start_col = 0, w - 1 - start_offset
-        else:
-            # Start from right edge  
-            start_row, start_col = -start_offset, w - 1
-        
-        row, col = start_row, start_col
-        while row < h and col >= 0:
-            if mask[row, col]:
-                x = x_grid[0, col]
-                y = y_grid[row, 0]
-                point = np.array([x, y])
-                if original_path.contains_point(point):
-                    trace_points.append(point)
-            row += 2
-            col -= 2
-        
-        if len(trace_points) >= 5:
-            traces.append(np.array(trace_points))
-    
-    return traces
+    return np.array(walk)
 
 
 def _create_simple_stroke_approximation(path):
