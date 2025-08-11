@@ -43,10 +43,12 @@ class CenterlineExtractor:
         # Rasterize the path to get a binary mask and coordinate grids
         mask, x_grid, y_grid = rasterize_path(path, resolution=resolution)
         
-        # Store coordinate transformation parameters
-        vertices = path.vertices
-        min_x, min_y = np.min(vertices, axis=0)
-        max_x, max_y = np.max(vertices, axis=0)
+        # Store coordinate transformation parameters including the actual grids
+        coord_info = {
+            'mask_shape': mask.shape,
+            'x_grid': x_grid,
+            'y_grid': y_grid
+        }
         
         # Find all filled pixels and convert to integer coordinates
         y_coords, x_coords = np.where(mask)
@@ -61,30 +63,23 @@ class CenterlineExtractor:
                 letter_points.append(point)
         
         # Return points along with coordinate transformation info
-        coord_info = {
-            'mask_shape': mask.shape,
-            'min_x': min_x, 'max_x': max_x,
-            'min_y': min_y, 'max_y': max_y
-        }
-        
         return letter_points, coord_info
 
-    def _pixel_to_letter_coords(self, pixel_points, coord_info):
-        """Transform pixel coordinates back to letter coordinate system."""
-        mask_h, mask_w = coord_info['mask_shape']
-        min_x, max_x = coord_info['min_x'], coord_info['max_x']
-        min_y, max_y = coord_info['min_y'], coord_info['max_y']
+    def _pixel_to_letter_coords(self, pixel_coords, coord_info):
+        """Convert pixel coordinates to letter coordinate system."""
+        x_grid = coord_info['x_grid']
+        y_grid = coord_info['y_grid']
         
-        # Transform pixel coordinates to letter coordinates
-        letter_points = []
-        for px, py in pixel_points:
-            # Convert pixel indices to letter coordinates
-            # The mask has already been flipped in rasterize_path, so py=0 corresponds to max_y
-            letter_x = min_x + (px / (mask_w - 1)) * (max_x - min_x)
-            letter_y = min_y + (py / (mask_h - 1)) * (max_y - min_y)  # Direct mapping since mask is already flipped
-            letter_points.append([letter_x, letter_y])
+        letter_coords = []
+        for px, py in pixel_coords:
+            # Use the 2D coordinate grids for transformation
+            # Note: x_grid[py, px] gives the letter x-coordinate at pixel (px, py)
+            # y_grid[py, px] gives the letter y-coordinate at pixel (px, py)
+            letter_x = x_grid[py, px]  # y index first, then x index (row, col)
+            letter_y = y_grid[py, px]
+            letter_coords.append((letter_x, letter_y))
         
-        return np.array(letter_points)
+        return letter_coords
 
     def _build_spatial_index(self, letter_points):
         """Build spatial index for fast neighbor lookup."""
