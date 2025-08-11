@@ -388,7 +388,9 @@ class GeneticPolynomialFitter:
         
         # 2. Special bonus for predictions in the correct range
         y_min_data, y_max_data = float(np.min(y_points)), float(np.max(y_points))
+        y_mean_data = (y_min_data + y_max_data) / 2
         correct_range_predictions = 0
+        close_predictions = 0
         total_predictions = 0
         
         for x, y in zip(x_points[:50], y_points[:50]):  # Sample check
@@ -396,15 +398,28 @@ class GeneticPolynomialFitter:
                 pred = poly.evaluate(x)
                 if pred is not None:
                     total_predictions += 1
-                    if y_min_data * 0.5 <= pred <= y_max_data * 1.5:  # Reasonable range
+                    # Bonus for being in reasonable range
+                    if y_min_data * 0.3 <= pred <= y_max_data * 1.5:
                         correct_range_predictions += 1
+                    # Extra bonus for being very close to actual values
+                    if abs(pred - y) <= 20:  # Within 20 units
+                        close_predictions += 1
         
         if total_predictions > 0:
             range_ratio = correct_range_predictions / total_predictions
+            close_ratio = close_predictions / total_predictions
+            
+            # Major bonus for close predictions
+            if close_ratio > 0.5:
+                fitness *= 5.0  # Huge bonus for accurate predictions
+            elif close_ratio > 0.2:
+                fitness *= 2.0  # Good bonus
+            
+            # Range bonus
             if range_ratio > 0.8:
-                fitness *= 3.0  # Big bonus for correct range predictions
+                fitness *= 2.0  # Good range bonus
             elif range_ratio > 0.5:
-                fitness *= 1.5  # Small bonus
+                fitness *= 1.3  # Small bonus
         
         # 3. Progressive coverage bonuses/penalties
         if coverage_ratio >= 0.95:
