@@ -35,14 +35,9 @@ def debug_boundary_checking(text="A"):
     mask, x_grid, y_grid = rasterize_path(path, resolution=400)
     print(f"Mask shape: {mask.shape}, filled pixels: {mask.sum()}")
     
-    # Get the clean mask from our implementation
-    from src.centerline_extraction import _create_clean_mask
-    vertices = path.vertices
-    min_x, min_y = np.min(vertices, axis=0)
-    max_x, max_y = np.max(vertices, axis=0)
-    padding = 0.05 * max(max_x - min_x, max_y - min_y)
-    bounds = (min_x - padding, min_y - padding, max_x + padding, max_y + padding)
-    clean_mask = _create_clean_mask(path, bounds)
+    # Get the clean mask from our implementation (now using rasterize_path)
+    from src.path_processing import rasterize_path as clean_rasterize
+    clean_mask, clean_x_grid, clean_y_grid = clean_rasterize(path, resolution=400)
     print(f"Clean mask: {clean_mask.shape}, filled pixels: {clean_mask.sum()}")
     
     # Get walk paths from extractor
@@ -100,11 +95,9 @@ def debug_boundary_checking(text="A"):
             # Check each point against the clean mask using the same method as our implementation
             x, y = point
             
-            # Get bounds from clean mask
-            min_x, min_y = np.min(vertices, axis=0)
-            max_x, max_y = np.max(vertices, axis=0)
-            padding = 0.05 * max(max_x - min_x, max_y - min_y)
-            min_x_bound, min_y_bound, max_x_bound, max_y_bound = (min_x - padding, min_y - padding, max_x + padding, max_y + padding)
+            # Use the same coordinate system as the clean implementation
+            min_x_bound, max_x_bound = clean_x_grid[0, 0], clean_x_grid[0, -1]
+            min_y_bound, max_y_bound = clean_y_grid[0, 0], clean_y_grid[-1, 0]
             h, w = clean_mask.shape
             
             if min_x_bound <= x <= max_x_bound and min_y_bound <= y <= max_y_bound:
