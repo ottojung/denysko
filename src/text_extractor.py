@@ -6,7 +6,7 @@ Simplified TextExtractor - main orchestrator class for text to centerline extrac
 from matplotlib.path import Path as MPLPath
 
 from .font_utils import text_to_paths
-from .centerline_extraction import extract_skeleton_from_path, upsample_centerline
+from .centerline_extraction import upsample_centerline
 from .preview_utils import preview_extracted_points, preview_skeleton_extraction_steps
 
 
@@ -36,7 +36,8 @@ class TextExtractor:
         return MPLPath(skeleton_points, codes)
 
     def extract_skeleton_from_path(self, path, num_walks=25, step_distance=3, max_steps=100):
-        """Extract skeleton from a path, returning list of separate traces."""
+        """Extract all points inside the letter shape."""
+        from .centerline_extraction_simple import extract_skeleton_from_path
         return extract_skeleton_from_path(path, num_walks, step_distance, max_steps)
 
     def extract_contour_points(self, path, num_points=500):

@@ -10,7 +10,7 @@ TextToDesmos: minimal end-to-end pipeline (from text to Desmos-ready functions).
 from typing import List, Tuple, Optional
 
 from .text_extractor import TextExtractor
-from .polynomial_fitter import PolynomialFitter
+from .polynomial_fitter_genetic import PolynomialFitter
 from .function_transformer import FunctionTransformer
 
 
