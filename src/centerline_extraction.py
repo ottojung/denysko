@@ -189,11 +189,13 @@ class CenterlineExtractor:
             if len(right_walk) > 1:
                 # Transform pixel coordinates back to letter coordinates
                 right_walk_coords = self._pixel_to_letter_coords(right_walk, coord_info)
-                all_walks.append(right_walk_coords)
+                # Convert to numpy array for compatibility with downstream code
+                all_walks.append(np.array(right_walk_coords))
             if len(left_walk) > 1:
                 # Transform pixel coordinates back to letter coordinates  
                 left_walk_coords = self._pixel_to_letter_coords(left_walk, coord_info)
-                all_walks.append(left_walk_coords)
+                # Convert to numpy array for compatibility with downstream code
+                all_walks.append(np.array(left_walk_coords))
         
         print(f"Generated {len(all_walks)} walks")
         return all_walks

@@ -26,21 +26,6 @@ def main():
 
     print()
 
-    # Verify all functions are y = f(x)
-    y_functions = [f for f in functions if f.startswith("y =")]
-    x_functions = [f for f in functions if f.startswith("x =")]
-
-    print("\nVerification:")
-    print(f"y = f(x) functions: {len(y_functions)}")
-    print(f"x = f(y) functions: {len(x_functions)} (should be 0)")
-
-    if len(x_functions) > 0:
-        print("ERROR: Found x = f(y) functions!")
-        for func in x_functions:
-            print(f"{func}")
-    else:
-        print("SUCCESS: All functions are y = f(x)")
-
     # Save to file
     converter.save_functions(functions, "letter_C_functions.txt")
 
