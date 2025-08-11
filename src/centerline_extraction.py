@@ -40,8 +40,13 @@ class CenterlineExtractor:
         """Generate integer coordinate points from the letter path."""
         from .path_processing import rasterize_path
         
-        # Rasterize the path to get a binary mask
+        # Rasterize the path to get a binary mask and coordinate grids
         mask, x_grid, y_grid = rasterize_path(path, resolution=resolution)
+        
+        # Store coordinate transformation parameters
+        vertices = path.vertices
+        min_x, min_y = np.min(vertices, axis=0)
+        max_x, max_y = np.max(vertices, axis=0)
         
         # Find all filled pixels and convert to integer coordinates
         y_coords, x_coords = np.where(mask)
@@ -55,7 +60,31 @@ class CenterlineExtractor:
                 seen.add(point)
                 letter_points.append(point)
         
-        return letter_points
+        # Return points along with coordinate transformation info
+        coord_info = {
+            'mask_shape': mask.shape,
+            'min_x': min_x, 'max_x': max_x,
+            'min_y': min_y, 'max_y': max_y
+        }
+        
+        return letter_points, coord_info
+
+    def _pixel_to_letter_coords(self, pixel_points, coord_info):
+        """Transform pixel coordinates back to letter coordinate system."""
+        mask_h, mask_w = coord_info['mask_shape']
+        min_x, max_x = coord_info['min_x'], coord_info['max_x']
+        min_y, max_y = coord_info['min_y'], coord_info['max_y']
+        
+        # Transform pixel coordinates to letter coordinates
+        letter_points = []
+        for px, py in pixel_points:
+            # Convert pixel indices to letter coordinates
+            # Note: y-axis is flipped in mask (top-down) vs letter coords (bottom-up)
+            letter_x = min_x + (px / (mask_w - 1)) * (max_x - min_x)
+            letter_y = max_y - (py / (mask_h - 1)) * (max_y - min_y)  # Flip y-axis
+            letter_points.append([letter_x, letter_y])
+        
+        return np.array(letter_points)
 
     def _build_spatial_index(self, letter_points):
         """Build spatial index for fast neighbor lookup."""
@@ -127,7 +156,7 @@ class CenterlineExtractor:
         print("Starting integer point jumping algorithm...")
         
         # Generate integer points from the letter
-        letter_points = self._generate_letter_points(path)
+        letter_points, coord_info = self._generate_letter_points(path)
         print(f"Generated {len(letter_points)} integer points for letter representation")
         
         if len(letter_points) < 10:
@@ -163,9 +192,13 @@ class CenterlineExtractor:
             )
             
             if len(right_walk) > 1:
-                all_walks.append(np.array(right_walk, dtype=float))
+                # Transform pixel coordinates back to letter coordinates
+                right_walk_coords = self._pixel_to_letter_coords(right_walk, coord_info)
+                all_walks.append(right_walk_coords)
             if len(left_walk) > 1:
-                all_walks.append(np.array(left_walk, dtype=float))
+                # Transform pixel coordinates back to letter coordinates  
+                left_walk_coords = self._pixel_to_letter_coords(left_walk, coord_info)
+                all_walks.append(left_walk_coords)
         
         print(f"Generated {len(all_walks)} walks")
         return all_walks
