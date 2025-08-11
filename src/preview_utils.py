@@ -152,6 +152,9 @@ def _plot_outline_with_bounds(ax, path, color="blue", alpha=0.5, label="Outline"
     ax.set_xlim(min_x - pad, max_x + pad)
     ax.set_ylim(min_y - pad, max_y + pad)
     
+    # Invert y-axis to fix upside-down rendering
+    ax.invert_yaxis()
+    
     # Ensure consistent coordinate system - prevent y-axis inversion
     ax.set_aspect('equal')
     ax.grid(True, alpha=0.3)
