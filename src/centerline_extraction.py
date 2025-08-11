@@ -58,15 +58,22 @@ def extract_skeleton_from_path(path, step_size=1.0, num_starting_points=25, num_
     padding = 0.05 * max(max_x - min_x, max_y - min_y)
     bounds = (min_x - padding, min_y - padding, max_x + padding, max_y + padding)
 
-    # Create clean binary mask using contains_points (handles holes correctly)
-    mask = _create_clean_mask(path, bounds, resolution=400)
+    # Create clean binary mask using the working rasterize_path (handles holes correctly)
+    from .path_processing import rasterize_path
+    mask, x_grid, y_grid = rasterize_path(path, resolution=400)
+    
+    # Update bounds to match the grid
+    min_x_grid, max_x_grid = x_grid[0, 0], x_grid[0, -1]
+    min_y_grid, max_y_grid = y_grid[0, 0], y_grid[-1, 0]
+    bounds = (min_x_grid, min_y_grid, max_x_grid, max_y_grid)
+    
     if mask.sum() == 0:
         return [vertices]
 
     print(f"Clean mask: {mask.shape}, filled pixels: {mask.sum()}")
 
     # Find random interior starting points
-    start_points = _find_interior_starting_points(mask, bounds, num_points=15)
+    start_points = _find_interior_starting_points(mask, bounds, num_points=num_starting_points)
     if not start_points:
         return [vertices]
 
