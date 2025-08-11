@@ -16,7 +16,7 @@ class PolynomialFitter:
             max_generations=100,
             max_degree=5,
             max_polynomials=15,
-            fitness_weights={'accuracy': 2.0, 'simplicity': 1.0}
+            fitness_weights={'accuracy': 20.0, 'simplicity': 0.1}  # Heavily favor accuracy
         )
     
     def fit_polynomial_to_trace(self, trace, target_degree=3):

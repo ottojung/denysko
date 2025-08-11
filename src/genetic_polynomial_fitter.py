@@ -89,7 +89,7 @@ class GeneticPolynomialFitter:
         crossover_rate=0.8,
         max_degree=6,
         max_polynomials=20,
-        fitness_weights={"accuracy": 1.0, "simplicity": 0.5},
+        fitness_weights={"accuracy": 10.0, "simplicity": 0.1},  # Much higher accuracy weight
     ):
         self.population_size = population_size
         self.max_generations = max_generations
@@ -156,22 +156,23 @@ class GeneticPolynomialFitter:
             accuracy = 0.0
         else:
             mean_error = total_error / covered_points
-            uncovered_penalty = (len(x_points) - covered_points) * 10.0
-            accuracy = 1.0 / (1.0 + mean_error + uncovered_penalty)
+            uncovered_penalty = (len(x_points) - covered_points) * 50.0  # Much heavier penalty
+            # Scale accuracy to be much more sensitive to error
+            accuracy = 1.0 / (1.0 + mean_error * 10.0 + uncovered_penalty)
 
         # Simplicity component: prefer fewer polynomials and lower degrees
-        num_polys_penalty = individual.num_polynomials() * 0.1
-        degree_penalty = individual.total_degree() * 0.05
+        num_polys_penalty = individual.num_polynomials() * 0.01  # Reduced penalty
+        degree_penalty = individual.total_degree() * 0.005  # Reduced penalty
         simplicity = 1.0 / (1.0 + num_polys_penalty + degree_penalty)
 
-        # Combined fitness with exponential amplification
+        # Combined fitness with MUCH higher accuracy weight
         fitness = (
             self.fitness_weights["accuracy"] * accuracy
             + self.fitness_weights["simplicity"] * simplicity
         )
 
-        # Exponential amplification for better solutions
-        fitness = fitness**2
+        # Exponential amplification for better solutions - but more extreme for accuracy
+        fitness = accuracy**3 * simplicity**0.5
 
         return fitness
 
