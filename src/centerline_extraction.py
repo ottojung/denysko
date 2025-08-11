@@ -146,22 +146,14 @@ def _monotonic_random_walk(start_point, original_path, step_distance, direction=
             
         next_point = current_point + np.array([dx, dy])
         
-        # Check if next point is valid AND the path between current and next is valid
+        # Check if next point is valid
         if not _is_point_inside_mask(next_point, mask, x_grid, y_grid):
             break
             
-        # Additional check: validate intermediate points along the step
-        # This prevents visual boundary crossing due to straight line rendering
-        intermediate_valid = True
-        num_checks = 3  # Check 3 intermediate points along the step
-        for check_i in range(1, num_checks):
-            t = check_i / num_checks
-            intermediate_point = current_point + t * np.array([dx, dy])
-            if not _is_point_inside_mask(intermediate_point, mask, x_grid, y_grid):
-                intermediate_valid = False
-                break
-        
-        if not intermediate_valid:
+        # Optional: lighter intermediate validation (only check midpoint)
+        # This prevents major boundary crossings without being too restrictive
+        midpoint = current_point + 0.5 * np.array([dx, dy])
+        if not _is_point_inside_mask(midpoint, mask, x_grid, y_grid):
             break
             
         walk.append(next_point.copy())
@@ -196,35 +188,21 @@ def _is_point_inside_mask(point, mask, x_grid, y_grid):
     if x < x_min or x > x_max or y < y_min or y > y_max:
         return False
     
-    # Convert world coordinates to pixel indices
+    # Convert world coordinates to pixel indices with proper rounding
     col = (x - x_min) / (x_max - x_min) * (w - 1)
     row = (y - y_min) / (y_max - y_min) * (h - 1)
     
-    # Use bilinear sampling for more accurate boundary detection
-    # Get the four surrounding pixels
-    col_floor = int(np.floor(col))
-    col_ceil = int(np.ceil(col))
-    row_floor = int(np.floor(row))
-    row_ceil = int(np.ceil(row))
+    # Use nearest neighbor lookup instead of bilinear sampling
+    # This should be less conservative while still accurate
+    col_idx = int(round(col))
+    row_idx = int(round(row))
     
     # Clamp to valid indices
-    col_floor = max(0, min(w - 1, col_floor))
-    col_ceil = max(0, min(w - 1, col_ceil))
-    row_floor = max(0, min(h - 1, row_floor))
-    row_ceil = max(0, min(h - 1, row_ceil))
+    col_idx = max(0, min(w - 1, col_idx))
+    row_idx = max(0, min(h - 1, row_idx))
     
-    # Check all four surrounding pixels - point is only valid if ALL are inside
-    # This is more conservative and should prevent boundary crossing
-    pixels = [
-        mask[row_floor, col_floor],
-        mask[row_floor, col_ceil], 
-        mask[row_ceil, col_floor],
-        mask[row_ceil, col_ceil]
-    ]
-    
-    # Point is only valid if all surrounding pixels are valid
-    # This creates a safety margin that should prevent holes from being crossed
-    return all(pixels)
+    # Simple check: is this pixel inside the letter shape?
+    return mask[row_idx, col_idx]
 
 
 def _create_simple_stroke_approximation(path):
