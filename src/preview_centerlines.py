@@ -56,24 +56,24 @@ def preview_text(text, font_size=100, num_points=500):
 
 def compare_different_approaches(text):
     """
-    Simple comparison panel drawing the current extractor output multiple times.
-    Kept for parity with previous CLI; the numeric labels do not change behavior.
+    Simple comparison panel drawing the current extractor output with different walk counts.
+    Shows progression from few walks to many walks.
     """
     print(f"=== Comparison Panel for '{text}' ===")
 
     extractor = TextExtractor()
-    point_counts = [50, 200, 5000]
+    walk_counts = [10, 25, 50]  # Different numbers of walks to generate
 
-    n = len(point_counts)
+    n = len(walk_counts)
     fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
     if n == 1:
         axes = [axes]
 
     paths = extractor.text_to_paths(text, font_size=100)
 
-    for i, num_points in enumerate(point_counts):
+    for i, num_walks in enumerate(walk_counts):
         ax = axes[i]
-        ax.set_title(f"Panel {i + 1} ({num_points} pts label)")
+        ax.set_title(f"Panel {i + 1} ({num_walks} walks)")
 
         if paths:
             path = paths[0]  # Use first character only
@@ -83,8 +83,8 @@ def compare_different_approaches(text):
                 ax, path, color="lightgray", alpha=0.5, label="Outline"
             )
 
-            # Extract and plot all traces for this character
-            traces = extractor.extract_skeleton_from_path(path)
+            # Extract and plot traces with specified number of walks
+            traces = extractor.extract_skeleton_from_path(path, num_walks=num_walks)
 
             segments = [t.astype(float) for t in traces if len(t) >= 2]
             if segments:
@@ -94,9 +94,10 @@ def compare_different_approaches(text):
                     segments, colors=colors, linewidths=1.8, alpha=0.9, zorder=5
                 )
                 ax.add_collection(lc)
+                print(f"Panel {i+1}: Generated {len(segments)} walks")
             else:
                 print(
-                    "Warning: No trace segments with >=2 points to draw in comparison panel."
+                    f"Warning: No trace segments with >=2 points to draw in panel {i+1}."
                 )
 
         ax.set_aspect("equal")
