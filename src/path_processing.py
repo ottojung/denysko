@@ -82,11 +82,8 @@ def rasterize_path(path, resolution=400):
     
     plt.close(fig)
     
-    # Flip vertically to match coordinate system (matplotlib renders top-down, we want bottom-up)
-    mask = np.flipud(mask)
-    
-    # Also flip the y_grid to match the flipped mask
-    y_grid = np.flipud(y_grid)
+    # Don't flip the mask or coordinate grids - keep them in matplotlib's coordinate system
+    # This ensures consistency with PathPatch rendering in preview
     
     return mask, x_grid, y_grid
 
