@@ -41,6 +41,8 @@ def debug_boundary_checking(text="A"):
     print(f"Clean mask: {clean_mask.shape}, filled pixels: {clean_mask.sum()}")
     
     # Get walk paths from extractor
+    from src.centerline_extraction import CenterlineExtractor
+    extractor = CenterlineExtractor()
     walks = extractor.extract_skeleton_from_path(path)
     print(f"Generated {len(walks)} walks")
     
