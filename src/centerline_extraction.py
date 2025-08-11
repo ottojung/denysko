@@ -94,7 +94,7 @@ def _get_valid_interior_points(mask, x_grid, y_grid, original_path):
     return np.array(valid_points)
 
 
-def _monotonic_random_walk(start_point, original_path, step_distance, direction='left-to-right'):
+def _monotonic_random_walk(start_point, original_path, step_distance, direction='left-to-right', mask=None, x_grid=None, y_grid=None):
     """
     Generate a monotonic random walk from a starting point.
     
@@ -103,6 +103,8 @@ def _monotonic_random_walk(start_point, original_path, step_distance, direction=
         original_path: Original letter path for boundary checking
         step_distance: Distance between consecutive steps
         direction: 'left-to-right' or 'right-to-left'
+        mask: Rasterized mask for accurate boundary checking with holes
+        x_grid, y_grid: Coordinate grids for mask lookup
     
     Returns:
         numpy array of walk coordinates
@@ -110,8 +112,6 @@ def _monotonic_random_walk(start_point, original_path, step_distance, direction=
     walk = [start_point.copy()]
     current_point = start_point.copy()
     max_steps = 200  # Prevent infinite walks
-    
-    x_direction = 1.0 if direction == 'left-to-right' else -1.0
     
     for step in range(max_steps):
         # Generate next point with monotonic constraint
@@ -144,14 +144,53 @@ def _monotonic_random_walk(start_point, original_path, step_distance, direction=
             
         next_point = current_point + np.array([dx, dy])
         
-        # Check if next point is still within the letter boundary
-        if not original_path.contains_point(next_point):
+        # Use more accurate boundary checking with rasterized mask
+        if not _is_point_inside_mask(next_point, mask, x_grid, y_grid):
             break
             
         walk.append(next_point.copy())
         current_point = next_point
     
     return np.array(walk)
+
+
+def _is_point_inside_mask(point, mask, x_grid, y_grid):
+    """
+    Check if a point is inside the rasterized mask (handles holes correctly).
+    
+    Args:
+        point: [x, y] coordinates to check
+        mask: Binary mask where True = inside letter shape
+        x_grid, y_grid: Coordinate grids for the mask
+    
+    Returns:
+        bool: True if point is inside the valid letter shape
+    """
+    if mask is None:
+        return True  # Fallback to always valid
+    
+    x, y = point
+    h, w = mask.shape
+    
+    # Find the closest mask pixel to this real-world coordinate
+    # Get the bounds of the coordinate system
+    x_min, x_max = x_grid[0, 0], x_grid[0, -1]
+    y_min, y_max = y_grid[0, 0], y_grid[-1, 0]
+    
+    # Check if point is outside the overall bounds
+    if x < x_min or x > x_max or y < y_min or y > y_max:
+        return False
+    
+    # Convert world coordinates to pixel indices
+    col = int((x - x_min) / (x_max - x_min) * (w - 1))
+    row = int((y - y_min) / (y_max - y_min) * (h - 1))
+    
+    # Clamp to valid indices
+    col = max(0, min(w - 1, col))
+    row = max(0, min(h - 1, row))
+    
+    # Check if this pixel is inside the letter shape (handles holes correctly)
+    return mask[row, col]
 
 
 def _create_simple_stroke_approximation(path):
