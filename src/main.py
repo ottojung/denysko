@@ -20,9 +20,9 @@ def main():
     print(f"Testing with letter {json.dumps(text)}...")
 
     converter = TextToDesmos(origin=(0, 0), scale=1.0)
-    functions = converter.text_to_desmos_functions("C")
+    functions = converter.text_to_desmos_functions(text)
 
-    print(f"\nGenerated {len(functions)} functions for letter 'C':")
+    print(f"\nGenerated {len(functions)} functions for letter {json.dumps(text)}:")
     print()
     for i, func in enumerate(functions, 1):
         print(f"{func}")
