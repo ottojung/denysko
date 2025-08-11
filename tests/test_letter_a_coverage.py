@@ -38,7 +38,7 @@ class TestLetterACoverage:
         # Extract all contour points
         all_points = []
         for path in paths:
-            contours = extractor.extract_contour_points(path, points_per_char=1000)
+            contours = extractor.extract_contour_points(path, num_points=1000)
             for contour in contours:
                 if hasattr(contour, "__len__") and len(contour) > 1:
                     all_points.extend(contour)
@@ -190,7 +190,7 @@ def run_letter_a_test():
         
         all_points = []
         for path in paths:
-            contours = extractor.extract_contour_points(path, points_per_char=1000)
+            contours = extractor.extract_contour_points(path, num_points=1000)
             for contour in contours:
                 if hasattr(contour, "__len__") and len(contour) > 1:
                     all_points.extend(contour)
