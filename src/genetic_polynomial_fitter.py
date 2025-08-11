@@ -3,17 +3,7 @@
 Genetic algorithm-based polynomial fitter for letter sha    def __init__(
         self,
         population_size=50,   # Smaller population for faster iterations
-        generations=100,      # Fewer generations, focus on quality i        else:
-            # Fallback: use actual data statistics for better initialization
-            y_min, y_max = float(np.min(y_points)), float(np.max(y_points))
-            y_median = float(np.median(y_points))
-            
-            # Create a polynomial that starts near actual data values
-            coeffs = [
-                y_median + random.gauss(0, (y_max - y_min) * 0.2),  # Near median with variation
-                random.gauss(0, 3.0),  # Small linear term for normalized coordinates
-                random.gauss(0, 1.0)   # Small quadratic term
-            ]on
+        generations=100,      # Fewer generations, focus on quality initialization
         tournament_size=3,
         crossover_rate=0.8,
         mutation_rate=0.4,    # Higher mutation for more exploration
@@ -119,6 +109,12 @@ class GeneticPolynomialFitter:
         self.max_generations = generations  # Fixed parameter name
         self.mutation_rate = mutation_rate
         self.crossover_rate = crossover_rate
+        self.tournament_size = tournament_size
+        self.max_polynomials = max_polynomials
+        self.max_degree = max_degree
+        self.fitness_weights = fitness_weights or {"accuracy": 0.7, "coverage": 0.3}
+        self.debug_count = 0
+        self.crossover_rate = crossover_rate
         self.max_degree = max_degree
         self.max_polynomials = max_polynomials
         self.fitness_weights = fitness_weights
@@ -146,17 +142,13 @@ class GeneticPolynomialFitter:
         
         coefficients = []
         for i in range(degree + 1):
-            if i == 0:  # Constant term - MUST be close to actual data
-                # Sample actual y values from the data as starting points
-                sample_y_values = np.random.choice(y_points, size=min(10, len(y_points)), replace=True)
-                coeff = float(np.random.choice(sample_y_values))  # Pick actual y value
-                # Add small random variation
-                coeff += random.gauss(0, y_range * 0.1)  # 10% variation
-                coeff = max(y_min * 0.5, min(y_max * 1.5, coeff))  # Clamp to reasonable range
-            elif i == 1:  # Linear term - small slope
-                coeff = random.gauss(0, y_range * 0.1)  # Small slope across normalized [-1,1]
-            else:  # Higher-order terms - very small
-                coeff = random.gauss(0, y_range * 0.02 / i)  # Very small contributions
+            if i == 0:  # Constant term - FORCE into positive data range
+                # Ensure constant term is always positive and in data range
+                coeff = random.uniform(max(0, y_min * 0.9), y_max * 1.1)
+            elif i == 1:  # Linear term - very small to prevent drift
+                coeff = random.gauss(0, y_range * 0.1)  # Reduced from 0.2
+            else:  # Higher-order terms - extremely small
+                coeff = random.gauss(0, y_range * 0.02 / i)  # Much smaller
             
             coefficients.append(coeff)
 
@@ -375,51 +367,46 @@ class GeneticPolynomialFitter:
                         print(f"  Point {i}: x={x:.2f}, y_actual={y:.2f}, poly{j}_pred={pred:.2f}, error={error:.2f}")
             self._debug_count += 1
         
-        # RANGE-AWARE FITNESS CALCULATION
-        # Heavily penalize predictions outside the expected y-range
-        y_data_min, y_data_max = min(y_points), max(y_points)
-        y_data_center = (y_data_min + y_data_max) / 2
+        # PROGRESSIVE FITNESS CALCULATION - allow gradual improvement
+        # Instead of catastrophic penalties, use progressive scaling
         
-        # Count how many predictions are in reasonable range
-        in_range_count = 0
-        way_off_count = 0
+        # Base fitness from inverse RMSE
+        if rmse > 200:
+            fitness = 0.001  # Truly catastrophic
+        elif rmse > 100:
+            fitness = 0.1 / rmse  # Very poor but distinguishable
+        elif rmse > 50:
+            fitness = 1.0 / rmse  # Poor but can improve
+        elif rmse > 20:
+            fitness = 10.0 / rmse  # Getting better
+        elif rmse > 10:
+            fitness = 50.0 / rmse  # Good
+        elif rmse > 5:
+            fitness = 100.0 / rmse  # Very good
+        else:
+            fitness = 1000.0 / (1.0 + rmse)  # Excellent
         
-        for x, y in zip(x_points, y_points):
+        # 2. Special bonus for predictions in the correct range
+        y_min_data, y_max_data = float(np.min(y_points)), float(np.max(y_points))
+        correct_range_predictions = 0
+        total_predictions = 0
+        
+        for x, y in zip(x_points[:50], y_points[:50]):  # Sample check
             for poly in individual.polynomials:
                 pred = poly.evaluate(x)
                 if pred is not None:
-                    if y_data_min <= pred <= y_data_max * 1.2:  # Allow slight overshoot
-                        in_range_count += 1
-                    elif pred < 0 or pred > y_data_max * 2:  # Way off
-                        way_off_count += 1
+                    total_predictions += 1
+                    if y_min_data * 0.5 <= pred <= y_max_data * 1.5:  # Reasonable range
+                        correct_range_predictions += 1
         
-        range_ratio = in_range_count / max(1, in_range_count + way_off_count)
+        if total_predictions > 0:
+            range_ratio = correct_range_predictions / total_predictions
+            if range_ratio > 0.8:
+                fitness *= 3.0  # Big bonus for correct range predictions
+            elif range_ratio > 0.5:
+                fitness *= 1.5  # Small bonus
         
-        # Base fitness from RMSE with range bonus
-        if rmse > 200:
-            fitness = 0.001
-        elif rmse > 100:
-            fitness = 0.1 / rmse
-        elif rmse > 50:
-            fitness = 1.0 / rmse
-        elif rmse > 20:
-            fitness = 10.0 / rmse
-        elif rmse > 10:
-            fitness = 50.0 / rmse
-        elif rmse > 5:
-            fitness = 100.0 / rmse
-        else:
-            fitness = 1000.0 / (1.0 + rmse)
-        
-        # MASSIVE bonus for predictions in correct range
-        if range_ratio > 0.8:
-            fitness *= 10.0  # 10x bonus for mostly correct range
-        elif range_ratio > 0.5:
-            fitness *= 3.0   # 3x bonus for half in range
-        elif range_ratio < 0.1:
-            fitness *= 0.01  # Severe penalty for mostly wrong range
-        
-        # 2. Progressive coverage bonuses/penalties
+        # 3. Progressive coverage bonuses/penalties
         if coverage_ratio >= 0.95:
             fitness *= 2.0   # Good coverage bonus
         elif coverage_ratio >= 0.80:
@@ -465,35 +452,27 @@ class GeneticPolynomialFitter:
         return Individual([poly1, poly2])
 
     def _mutate(self, individual, x_points, y_points):
-        """Mutate an individual with range-aware mutations."""
+        """Mutate an individual - maintain exactly 2 polynomials with constrained mutations."""
         if random.random() < self.mutation_rate:
-            mutation_type = random.choice(["modify_coeff", "modify_domain", "range_correct"])
+            mutation_type = random.choice(["modify_coeff", "modify_domain"])
             
             if mutation_type == "modify_coeff" and individual.polynomials:
-                # Modify coefficients of a random polynomial
+                # Modify coefficients of a random polynomial with constraints
                 poly = random.choice(individual.polynomials)
                 coeff_idx = random.randint(0, len(poly.coefficients) - 1)
                 
-                if coeff_idx == 0:  # Constant term - keep in reasonable range
-                    y_min, y_max = min(y_points), max(y_points)
-                    # Small mutation but ensure it stays somewhat reasonable
-                    mutation = random.gauss(0, (y_max - y_min) * 0.1)
-                    new_coeff = poly.coefficients[coeff_idx] + mutation
-                    # Clamp to expanded range
-                    poly.coefficients[coeff_idx] = max(y_min * 0.5, min(y_max * 1.5, new_coeff))
-                else:  # Higher-order terms
-                    poly.coefficients[coeff_idx] += random.gauss(0, 0.5)
-                    
-            elif mutation_type == "range_correct" and individual.polynomials:
-                # Specifically correct polynomials that are way off range
-                poly = random.choice(individual.polynomials)
-                y_min, y_max = min(y_points), max(y_points)
+                # Get data statistics for constrained mutations
+                y_min, y_max = float(np.min(y_points)), float(np.max(y_points))
+                y_range = y_max - y_min
                 
-                # If constant term is negative or way too large, fix it
-                if poly.coefficients[0] < 0 or poly.coefficients[0] > y_max * 2:
-                    # Set to a random value in the correct range
-                    poly.coefficients[0] = random.uniform(y_min, y_max)
-                    print(f"  Range correction: fixed constant term to {poly.coefficients[0]:.2f}")
+                if coeff_idx == 0:  # Constant term - keep in positive range
+                    mutation = random.gauss(0, y_range * 0.1)
+                    new_coeff = poly.coefficients[coeff_idx] + mutation
+                    # Constrain constant term to stay positive
+                    poly.coefficients[coeff_idx] = max(0, min(y_max * 1.5, new_coeff))
+                else:  # Higher order terms - small mutations
+                    mutation = random.gauss(0, y_range * 0.05 / coeff_idx)
+                    poly.coefficients[coeff_idx] += mutation
                 
             elif mutation_type == "modify_domain" and individual.polynomials:
                 # Modify domain of a random polynomial
@@ -543,9 +522,9 @@ class GeneticPolynomialFitter:
             # Create new generation
             new_population = []
 
-            # Keep best individuals (elitism)
+            # Keep best individuals (elitism) - increased elitism
             population.sort(key=lambda ind: ind.fitness, reverse=True)
-            elite_size = max(1, self.population_size // 10)
+            elite_size = max(2, self.population_size // 5)  # Increased from //10 to //5
             new_population.extend(population[:elite_size])
 
             # Generate offspring

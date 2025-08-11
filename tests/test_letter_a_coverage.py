@@ -149,12 +149,13 @@ class TestLetterACoverage:
 
     def test_complete_coverage(self, letter_a_points):
         """Test that genetic polynomial fitter produces good coverage of letter A."""
-        # Create genetic algorithm fitter with more aggressive parameters
+        # Create genetic algorithm fitter directly with optimized parameters
         fitter = GeneticPolynomialFitter(
-            population_size=80,  # Increased for more diversity
-            generations=150,     # More generations for evolution
+            population_size=80,   # Increased for better search
+            generations=150,      # More generations  
             max_degree=3,
-            mutation_rate=0.6    # Higher mutation for exploration
+            mutation_rate=0.2,    # Reduced for more stable evolution
+            crossover_rate=0.8
         )
         
         # Sample points for evaluation and training
