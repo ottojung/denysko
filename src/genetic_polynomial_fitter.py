@@ -392,7 +392,7 @@ class GeneticPolynomialFitter:
             return Polynomial([mean_y], fit_points, 0)
 
     def _evaluate_fitness(self, individual, data_points):
-        """Simple fitness function: minimize sum of distances from points to closest curves."""
+        """Fitness function with complexity penalties: minimize distance AND complexity."""
         if len(data_points) == 0:
             return 0.0
 
@@ -418,9 +418,32 @@ class GeneticPolynomialFitter:
                 # If no polynomial could evaluate, add a large penalty
                 total_distance += 1000.0
 
-        # Convert to fitness: lower total distance = higher fitness
-        # Use inverse with scaling to prevent division by zero
+        # Calculate base accuracy fitness
         average_distance = total_distance / len(data_points)
-        fitness = 1000.0 / (1.0 + average_distance)
+        accuracy_fitness = 1000.0 / (1.0 + average_distance)
+        
+        # Calculate complexity penalties
+        complexity_penalty = 0.0
+        
+        # Penalty 1: Too many polynomials (prefer fewer polynomials)
+        num_polynomials = len([p for p in individual.polynomials if p.degree > 0])
+        if num_polynomials > 2:  # Prefer 2 or fewer polynomials
+            complexity_penalty += (num_polynomials - 2) * 20  # 20 point penalty per extra polynomial
+        
+        # Penalty 2: High degrees (prefer simpler polynomials)
+        total_degree = sum(p.degree for p in individual.polynomials)
+        if total_degree > 6:  # Prefer total degree ≤ 6 (e.g., two degree-3 polynomials)
+            complexity_penalty += (total_degree - 6) * 5   # 5 point penalty per extra degree
+        
+        # Penalty 3: Very high individual degrees (avoid overfitting)
+        for poly in individual.polynomials:
+            if poly.degree > 4:  # Prefer individual degrees ≤ 4
+                complexity_penalty += (poly.degree - 4) * 10  # 10 point penalty per degree above 4
+        
+        # Final fitness = accuracy - complexity penalty
+        fitness = accuracy_fitness - complexity_penalty
+        
+        # Ensure fitness is never negative
+        fitness = max(fitness, 1.0)
 
         return fitness
