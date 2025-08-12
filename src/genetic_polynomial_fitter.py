@@ -244,71 +244,46 @@ class GeneticPolynomialFitter:
         return Individual(point_lists, polynomials)
 
     def _evaluate_fitness(self, individual, data_points):
-        """Evaluate fitness based on coverage of all data points with adaptive tolerance."""
+        """Evaluate fitness based on accuracy (coverage) and complexity."""
+        if len(data_points) == 0:
+            return 0.0
+        
+        # Step 1: Count how many points lie close to any of the generated curves
         covered_points = 0
-        base_tolerance = 5.0
-
-        # Calculate adaptive tolerance based on data distribution
-        x_coords = [x for x, y in data_points]
-        y_coords = [y for x, y in data_points]
-        x_span = max(x_coords) - min(x_coords)
-        y_span = max(y_coords) - min(y_coords)
-
-        # Use tighter tolerance for smaller spans, looser for larger spans
-        adaptive_tolerance = min(base_tolerance, max(2.0, min(x_span, y_span) * 0.02))
-
-        # Multi-tier coverage evaluation
-        covered_tight = 0  # Within adaptive_tolerance
-        covered_loose = 0  # Within base_tolerance
-        total_error = 0.0
-
+        tolerance = 5.0  # Fixed tolerance for consistency
+        
         for x, y in data_points:
-            best_pred = None
-            min_error = float("inf")
-
+            point_covered = False
+            
+            # Check if this point is covered by any polynomial
             for poly in individual.polynomials:
                 try:
                     pred = poly.evaluate(x)
                     error = abs(pred - y)
-                    if error < min_error:
-                        min_error = error
-                        best_pred = pred
+                    if error <= tolerance:
+                        point_covered = True
+                        break  # Point is covered, no need to check other polynomials
                 except Exception:
                     continue
-
-            if best_pred is not None:
-                total_error += min_error
-                if min_error <= adaptive_tolerance:
-                    covered_tight += 1
-                    covered_points += 1
-                elif min_error <= base_tolerance:
-                    covered_loose += 1
-                    covered_points += 1
-
-        coverage_ratio = (
-            covered_points / len(data_points) if len(data_points) > 0 else 0
-        )
-        tight_ratio = covered_tight / len(data_points) if len(data_points) > 0 else 0
-
-        # Enhanced fitness calculation prioritizing tight coverage
-        fitness = coverage_ratio * 100 + tight_ratio * 20
-
-        # Bonus system for high coverage
-        if coverage_ratio >= 0.99:
-            fitness += 100  # Major bonus for 99%+
-        elif coverage_ratio >= 0.98:
-            fitness += 75
-        elif coverage_ratio >= 0.95:
-            fitness += 50
-        elif coverage_ratio >= 0.90:
-            fitness += 25
-
-        # Penalty for high average error
-        if len(data_points) > 0:
-            avg_error = total_error / len(data_points)
-            if avg_error > adaptive_tolerance:
-                fitness -= (avg_error - adaptive_tolerance) * 2
-
+            
+            if point_covered:
+                covered_points += 1
+        
+        # Step 2: Calculate accuracy score (proportion of covered points)
+        accuracy_score = covered_points / len(data_points)
+        
+        # Step 3: Calculate complexity score
+        # Complexity is based on total degree of all polynomials
+        total_degree = sum(poly.degree for poly in individual.polynomials)
+        
+        # Normalize complexity score (higher degree = higher complexity = better)
+        # But give it very low weight as requested
+        max_possible_degree = self.max_polynomials * self.max_degree
+        complexity_score = total_degree / max_possible_degree if max_possible_degree > 0 else 0
+        
+        # Step 4: Combine accuracy and complexity with accuracy heavily weighted
+        fitness = accuracy_score * 100.0 + complexity_score * 1.0  # Very low weight on complexity
+        
         return fitness
 
     def _tournament_selection(self, population):
