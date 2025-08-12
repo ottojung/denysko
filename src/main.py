@@ -6,6 +6,7 @@ Only generates y = f(x) functions.
 
 from .text_to_desmos import TextToDesmos
 import json
+import sys
 
 
 def main():
@@ -14,7 +15,7 @@ def main():
     print("This program generates ONLY y = f(x) functions")
     print()
 
-    text = "A"
+    text = "A" if sys.argv[1:] == [] else sys.argv[1]
 
     print(f"Testing with letter {json.dumps(text)}...")
 
