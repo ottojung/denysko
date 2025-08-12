@@ -167,7 +167,7 @@ class GeneticPolynomialFitter:
             K_tournament=self.tournament_size,
             keep_parents=max(1, self.population_size // 8),  # More elite preservation
             crossover_type="two_points",  # Better crossover
-            mutation_type="adaptive",  # Adaptive mutation
+            mutation_type="random",  # Use random mutation for simplicity
             mutation_percent_genes=max(10, int(self.mutation_rate * 100)),
             random_seed=None,
             suppress_warnings=True,
