@@ -176,8 +176,8 @@ class GeneticPolynomialFitter:
             crossover_type="two_points",  # Better crossover
             mutation_type="random",  # Back to simple random mutation
             mutation_percent_genes=max(
-                30, int(self.mutation_rate * 150)
-            ),  # Higher mutation rate
+                5, int(self.mutation_rate * 20)
+            ),  # More reasonable mutation rate
             random_seed=None,
             suppress_warnings=True,
             on_generation=self._on_generation_callback,
