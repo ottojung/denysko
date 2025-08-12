@@ -392,86 +392,35 @@ class GeneticPolynomialFitter:
             return Polynomial([mean_y], fit_points, 0)
 
     def _evaluate_fitness(self, individual, data_points):
-        """Enhanced fitness function with multi-objective optimization."""
+        """Simple fitness function: minimize sum of distances from points to closest curves."""
         if len(data_points) == 0:
             return 0.0
-
-        # Step 1: Count coverage with multiple tolerance levels
-        covered_points_tight = 0  # Within 3 units (strict)
-        covered_points_medium = 0  # Within 5 units (medium)
-        covered_points_loose = 0  # Within 8 units (loose)
-        total_error = 0.0
-
+        
+        total_distance = 0.0
+        
+        # For each data point, find the minimum distance to any polynomial
         for x, y in data_points:
-            best_error = float("inf")
-
-            # Check if this point is covered by any polynomial
+            min_distance = float('inf')
+            
+            # Check distance to each polynomial
             for poly in individual.polynomials:
                 try:
                     pred = poly.evaluate(x)
-                    error = abs(pred - y)
-                    best_error = min(best_error, error)
+                    distance = abs(pred - y)
+                    min_distance = min(min_distance, distance)
                 except Exception:
                     continue
-
-            if best_error != float("inf"):
-                total_error += best_error
-
-                if best_error <= 3.0:
-                    covered_points_tight += 1
-                    covered_points_medium += 1
-                    covered_points_loose += 1
-                elif best_error <= 5.0:
-                    covered_points_medium += 1
-                    covered_points_loose += 1
-                elif best_error <= 8.0:
-                    covered_points_loose += 1
-
-        # Step 2: Calculate multi-tier accuracy scores
-        tight_accuracy = covered_points_tight / len(data_points)
-        medium_accuracy = covered_points_medium / len(data_points)
-        loose_accuracy = covered_points_loose / len(data_points)
-
-        # Step 3: Calculate complexity and diversity scores
-        total_degree = sum(poly.degree for poly in individual.polynomials)
-        max_possible_degree = self.max_polynomials * self.max_degree
-        complexity_score = (
-            total_degree / max_possible_degree if max_possible_degree > 0 else 0
-        )
-
-        # Diversity bonus: reward different degrees across polynomials
-        degrees = [poly.degree for poly in individual.polynomials]
-        unique_degrees = len(set(degrees))
-        diversity_bonus = unique_degrees / len(degrees) if len(degrees) > 0 else 0
-
-        # Step 4: Penalize very low degree solutions more aggressively
-        avg_degree = np.mean(degrees) if degrees else 0
-        degree_penalty = (
-            max(0, 4.5 - avg_degree) * 25
-        )  # Much stronger penalty for avg degree < 4.5
-
-        # Step 5: Combined fitness with multiple objectives
-        # Primary: medium accuracy (5-unit tolerance as requested)
-        # Secondary: tight accuracy bonus
-        # Tertiary: complexity and diversity with higher weights
-        fitness = (
-            medium_accuracy * 100.0  # Primary objective (0-100)
-            + tight_accuracy * 40.0  # Tight accuracy bonus (0-40) - increased more
-            + complexity_score * 25.0  # Complexity bonus (0-25) - increased more
-            + diversity_bonus * 15.0  # Diversity bonus (0-15) - increased more
-            - degree_penalty  # Much stronger penalty for low degrees
-        )
-
-        # Extra bonus for very high coverage with higher rewards
-        if medium_accuracy >= 0.99:
-            fitness += 200  # Massive bonus for 99%+ coverage
-        elif medium_accuracy >= 0.95:
-            fitness += 100  # Large bonus for 95%+
-        elif medium_accuracy >= 0.90:
-            fitness += 50
-        elif medium_accuracy >= 0.85:
-            fitness += 25
-        elif medium_accuracy >= 0.80:
-            fitness += 10
-
-        return max(0, fitness)  # Ensure non-negative
+            
+            # Add the minimum distance to total
+            if min_distance != float('inf'):
+                total_distance += min_distance
+            else:
+                # If no polynomial could evaluate, add a large penalty
+                total_distance += 1000.0
+        
+        # Convert to fitness: lower total distance = higher fitness
+        # Use inverse with scaling to prevent division by zero
+        average_distance = total_distance / len(data_points)
+        fitness = 1000.0 / (1.0 + average_distance)
+        
+        return fitness
