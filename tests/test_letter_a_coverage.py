@@ -155,7 +155,7 @@ class TestLetterACoverage:
             generations=500,      # Many generations for ultimate convergence
             max_degree=4,         # Allow higher degree for better fitting
             mutation_rate=0.5,    # Very high mutation for exploration
-            crossover_rate=0.95   # Very high crossover
+            tournament_size=7     # Larger tournament for stronger selection pressure
         )
         
         # Sample points for evaluation and training
