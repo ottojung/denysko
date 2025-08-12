@@ -153,8 +153,9 @@ class TestLetterACoverage:
         fitter = GeneticPolynomialFitter(
             population_size=400,  # Massive population for final push
             generations=500,      # Many generations for ultimate convergence
-            max_degree=4,         # Allow higher degree for better fitting
-            mutation_rate=0.5,    # Very high mutation for exploration
+            max_polynomials=2,    # Two polynomials for letter A structure
+            max_degree=8,         # Allow much higher degree for complex letter shapes
+            mutation_rate=0.05,   # LOW mutation rate to preserve high-degree solutions
             tournament_size=7     # Larger tournament for stronger selection pressure
         )
         
