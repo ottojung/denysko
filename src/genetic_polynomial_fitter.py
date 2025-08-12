@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Point-selection genetic algorithm for polynomial fitting.
+Point-selection genetic algorithm for polynomial fitting using PyGAD.
 
 The genotype is a list of lists of point indices from the input data.
 Each list has exactly max_degree indices (initially all the same).
@@ -14,6 +14,7 @@ import random
 from typing import List, Tuple
 from dataclasses import dataclass
 import warnings
+import pygad
 
 warnings.simplefilter("ignore", np.exceptions.RankWarning)
 
