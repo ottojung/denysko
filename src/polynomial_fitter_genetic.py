@@ -11,11 +11,11 @@ class PolynomialFitter:
     """Fit polynomials to extracted centerlines using genetic algorithm."""
 
     def __init__(self):
-        # Create genetic algorithm fitter with strong complexity preference for 2 polynomials
+        # Create adaptive genetic algorithm fitter that handles both simple and complex letters
         self.ga_fitter = GeneticPolynomialFitter(
             population_size=120,  # Good population for exploration
             generations=120,      # Sufficient generations
-            max_polynomials=2,    # Force exploration of 2-polynomial solutions
+            max_polynomials=4,    # Allow up to 4 polynomials, adaptive penalty will choose optimal number
             max_degree=5,         # Allow high degrees, but complexity penalty will control
             mutation_rate=0.05,   # Low mutation rate to preserve good solutions
             tournament_size=5     # Good selection pressure

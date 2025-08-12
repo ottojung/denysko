@@ -422,23 +422,60 @@ class GeneticPolynomialFitter:
         average_distance = total_distance / len(data_points)
         accuracy_fitness = 1000.0 / (1.0 + average_distance)
         
-        # Calculate complexity penalties
+        # Calculate polynomial metrics for complexity analysis
+        num_polynomials = len([p for p in individual.polynomials if p.degree > 0])
+        total_degree = sum(p.degree for p in individual.polynomials)
+        
+        # Calculate complexity penalties - ADAPTIVE based on letter complexity
         complexity_penalty = 0.0
         
-        # Penalty 1: Too many polynomials (strongly prefer 2 polynomials)
-        num_polynomials = len([p for p in individual.polynomials if p.degree > 0])
-        if num_polynomials > 2:  # Prefer exactly 2 polynomials
-            complexity_penalty += (num_polynomials - 2) * 50  # 50 point penalty per extra polynomial (increased)
+        # Calculate data complexity: measure y-variation across x-regions
+        x_coords = [p[0] for p in data_points]
+        y_coords = [p[1] for p in data_points]
+        if len(x_coords) > 0:
+            x_min, x_max = min(x_coords), max(x_coords)
+            x_span = x_max - x_min
+            
+            # Check y-variation in middle region (where complex letters have problems)
+            if x_span > 0:
+                middle_x = x_min + 0.5 * x_span
+                middle_width = 0.3 * x_span
+                middle_points = [(x, y) for x, y in data_points 
+                               if middle_x - middle_width/2 <= x <= middle_x + middle_width/2]
+                
+                if len(middle_points) > 10:  # Need sufficient points for analysis
+                    middle_y = [y for x, y in middle_points]
+                    y_variation = max(middle_y) - min(middle_y) if middle_y else 0
+                    y_span = max(y_coords) - min(y_coords) if y_coords else 1
+                    
+                    # High y-variation indicates complex letter (like T, H, E, F)
+                    complexity_ratio = y_variation / y_span if y_span > 0 else 0
+                    is_complex_letter = complexity_ratio > 0.6  # More than 60% y-variation
+                else:
+                    is_complex_letter = False
+            else:
+                is_complex_letter = False
+        else:
+            is_complex_letter = False
         
-        # Penalty 2: High degrees (prefer simpler polynomials)
-        total_degree = sum(p.degree for p in individual.polynomials)
-        if total_degree > 8:  # Allow slightly higher total degree (two degree-4 polynomials)
-            complexity_penalty += (total_degree - 8) * 8   # 8 point penalty per extra degree
+        # ADAPTIVE penalties based on letter complexity
+        if is_complex_letter:
+            # Complex letters (T, H, E, F): Allow more polynomials, less penalty
+            if num_polynomials > 4:  # Allow up to 4 polynomials for complex letters
+                complexity_penalty += (num_polynomials - 4) * 30
+            if total_degree > 12:  # Allow higher total degree
+                complexity_penalty += (total_degree - 12) * 5
+        else:
+            # Simple letters (A, O, C, S): Prefer fewer polynomials, stronger penalty
+            if num_polynomials > 2:  # Prefer exactly 2 polynomials for simple letters
+                complexity_penalty += (num_polynomials - 2) * 50
+            if total_degree > 8:  # Prefer lower total degree
+                complexity_penalty += (total_degree - 8) * 8
         
-        # Penalty 3: Very high individual degrees (avoid overfitting)
+        # Universal penalty: Very high individual degrees (avoid overfitting)
         for poly in individual.polynomials:
             if poly.degree > 4:  # Prefer individual degrees ≤ 4
-                complexity_penalty += (poly.degree - 4) * 15  # 15 point penalty per degree above 4 (increased)
+                complexity_penalty += (poly.degree - 4) * 15
         
         # Final fitness = accuracy - complexity penalty
         fitness = accuracy_fitness - complexity_penalty
