@@ -13,7 +13,9 @@ import numpy as np
 import random
 from typing import List, Tuple
 from dataclasses import dataclass
+import warnings
 
+warnings.simplefilter('ignore', np.exceptions.RankWarning)
 
 @dataclass
 class Polynomial:
