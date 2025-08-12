@@ -395,13 +395,13 @@ class GeneticPolynomialFitter:
         """Simple fitness function: minimize sum of distances from points to closest curves."""
         if len(data_points) == 0:
             return 0.0
-        
+
         total_distance = 0.0
-        
+
         # For each data point, find the minimum distance to any polynomial
         for x, y in data_points:
-            min_distance = float('inf')
-            
+            min_distance = float("inf")
+
             # Check distance to each polynomial
             for poly in individual.polynomials:
                 try:
@@ -410,17 +410,17 @@ class GeneticPolynomialFitter:
                     min_distance = min(min_distance, distance)
                 except Exception:
                     continue
-            
+
             # Add the minimum distance to total
-            if min_distance != float('inf'):
+            if min_distance != float("inf"):
                 total_distance += min_distance
             else:
                 # If no polynomial could evaluate, add a large penalty
                 total_distance += 1000.0
-        
+
         # Convert to fitness: lower total distance = higher fitness
         # Use inverse with scaling to prevent division by zero
         average_distance = total_distance / len(data_points)
         fitness = 1000.0 / (1.0 + average_distance)
-        
+
         return fitness
