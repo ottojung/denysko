@@ -148,14 +148,14 @@ class TestLetterACoverage:
             return None
 
     def test_complete_coverage(self, letter_a_points):
-        """Test that genetic polynomial fitter produces good coverage of letter A."""
-        # Create genetic algorithm fitter directly with optimized parameters
+        """Test that genetic polynomial fitter produces 99% coverage of letter A."""
+        # Create genetic algorithm fitter with ULTRA-HIGH-PERFORMANCE parameters for 99% coverage
         fitter = GeneticPolynomialFitter(
-            population_size=80,   # Increased for better search
-            generations=200,      # Even more generations to evolve better solutions
-            max_degree=3,
-            mutation_rate=0.2,    # Reduced for more stable evolution
-            crossover_rate=0.8
+            population_size=400,  # Massive population for final push
+            generations=500,      # Many generations for ultimate convergence
+            max_degree=4,         # Allow higher degree for better fitting
+            mutation_rate=0.5,    # Very high mutation for exploration
+            crossover_rate=0.95   # Very high crossover
         )
         
         # Sample points for evaluation and training
@@ -199,19 +199,19 @@ class TestLetterACoverage:
                         min_error = error
                         best_pred = pred
             
-            if best_pred is not None and min_error <= 20.0:  # More reasonable tolerance
+            if best_pred is not None and min_error <= 5.0:  # ULTRA-TIGHT tolerance for 99% coverage
                 covered_points += 1
             
             if min_error != float('inf'):
                 max_error = max(max_error, min_error)
-                if min_error > 20.0:  # Updated threshold
+                if min_error > 5.0:  # Updated threshold for 99% target
                     errors_above_threshold += 1
         
         coverage_ratio = covered_points / len(test_points)
         print(f"  - Covered points: {covered_points}")
         print(f"  - Coverage ratio: {coverage_ratio:.1%}")
         print(f"  - Max error: {max_error:.2f}")
-        print(f"  - Points with errors > 20.0: {errors_above_threshold}")
+        print(f"  - Points with errors > 5.0: {errors_above_threshold}")
         
         # Show example predictions
         print("Example predictions (first 5 points):")
@@ -222,8 +222,8 @@ class TestLetterACoverage:
                     error = abs(pred - y)
                     print(f"  Point {i}: x={x:.2f}, y_actual={y:.2f}, poly_{j}_pred={pred:.2f}, error={error:.2f}")
         
-        # Test passes if we have good coverage
-        assert coverage_ratio >= 0.25, f"Expected ≥25% coverage, got {coverage_ratio:.1%} ({covered_points}/{len(test_points)} points). Max error: {max_error:.2f}"
+        # Test passes if we achieve 99% coverage with ultra-tight tolerance
+        assert coverage_ratio >= 0.99, f"Expected ≥99% coverage with 5-unit tolerance, got {coverage_ratio:.1%} ({covered_points}/{len(test_points)} points). Max error: {max_error:.2f}"
     
     def test_structural_separation(self, letter_a_points):
         """Test that polynomials properly separate letter A structure."""
