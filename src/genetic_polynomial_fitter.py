@@ -425,20 +425,20 @@ class GeneticPolynomialFitter:
         # Calculate complexity penalties
         complexity_penalty = 0.0
         
-        # Penalty 1: Too many polynomials (prefer fewer polynomials)
+        # Penalty 1: Too many polynomials (strongly prefer 2 polynomials)
         num_polynomials = len([p for p in individual.polynomials if p.degree > 0])
-        if num_polynomials > 2:  # Prefer 2 or fewer polynomials
-            complexity_penalty += (num_polynomials - 2) * 20  # 20 point penalty per extra polynomial
+        if num_polynomials > 2:  # Prefer exactly 2 polynomials
+            complexity_penalty += (num_polynomials - 2) * 50  # 50 point penalty per extra polynomial (increased)
         
         # Penalty 2: High degrees (prefer simpler polynomials)
         total_degree = sum(p.degree for p in individual.polynomials)
-        if total_degree > 6:  # Prefer total degree ≤ 6 (e.g., two degree-3 polynomials)
-            complexity_penalty += (total_degree - 6) * 5   # 5 point penalty per extra degree
+        if total_degree > 8:  # Allow slightly higher total degree (two degree-4 polynomials)
+            complexity_penalty += (total_degree - 8) * 8   # 8 point penalty per extra degree
         
         # Penalty 3: Very high individual degrees (avoid overfitting)
         for poly in individual.polynomials:
             if poly.degree > 4:  # Prefer individual degrees ≤ 4
-                complexity_penalty += (poly.degree - 4) * 10  # 10 point penalty per degree above 4
+                complexity_penalty += (poly.degree - 4) * 15  # 15 point penalty per degree above 4 (increased)
         
         # Final fitness = accuracy - complexity penalty
         fitness = accuracy_fitness - complexity_penalty
