@@ -111,11 +111,14 @@ class GeneticPolynomialFitter:
         point_lists = []
         genes_per_poly = self.max_degree
         
+        # Ensure solution is flat array
+        flat_solution = np.array(solution).flatten()
+        
         for i in range(self.max_polynomials):
             start_idx = i * genes_per_poly
             end_idx = start_idx + genes_per_poly
-            point_list = solution[start_idx:end_idx].tolist()
-            point_lists.append(point_list)
+            point_list = flat_solution[start_idx:end_idx].tolist()
+            point_lists.append([int(idx) for idx in point_list])  # Ensure integers
         
         return point_lists
 
@@ -167,8 +170,8 @@ class GeneticPolynomialFitter:
             K_tournament=self.tournament_size,
             keep_parents=max(1, self.population_size // 8),  # More elite preservation
             crossover_type="two_points",  # Better crossover
-            mutation_type="random",  # Use random mutation for simplicity
-            mutation_percent_genes=max(10, int(self.mutation_rate * 100)),
+            mutation_type="random",  # Back to simple random mutation
+            mutation_percent_genes=max(30, int(self.mutation_rate * 150)),  # Higher mutation rate
             random_seed=None,
             suppress_warnings=True,
             on_generation=self._on_generation_callback,
@@ -265,27 +268,13 @@ class GeneticPolynomialFitter:
                 
                 # Select points for this polynomial with diversity
                 poly_points = []
-                used_points = set()
                 
-                for _ in range(self.max_degree):
-                    # Try to select diverse points
-                    attempts = 0
-                    while attempts < 20:
-                        if point_candidates:
-                            candidate = np.random.choice(point_candidates)
-                        else:
-                            candidate = np.random.randint(0, len(data_points))
-                        
-                        # Encourage diversity by avoiding recently used points
-                        if len(used_points) < self.max_degree // 2 or candidate not in used_points:
-                            poly_points.append(candidate)
-                            used_points.add(candidate)
-                            break
-                        attempts += 1
-                    
-                    if len(poly_points) < len(poly_points) + 1:
-                        # Fallback to random if diversity fails
-                        poly_points.append(np.random.randint(0, len(data_points)))
+                for gene_idx in range(self.max_degree):
+                    if point_candidates:
+                        candidate = np.random.choice(point_candidates)
+                    else:
+                        candidate = np.random.randint(0, len(data_points))
+                    poly_points.append(candidate)
                 
                 solution.extend(poly_points)
             
@@ -293,6 +282,63 @@ class GeneticPolynomialFitter:
         
         return np.array(population, dtype=int)
     
+    def _custom_mutation(self, offspring, ga_instance):
+        """Custom mutation function that targets uncovered points."""
+        if self.data_points is None:
+            return offspring
+        
+        mutation_rate = max(0.1, self.mutation_rate)
+        
+        # Find uncovered points for this individual
+        point_lists = self._decode_solution(offspring)
+        polynomials = []
+        for point_list in point_lists:
+            poly = self._fit_polynomial_to_points(point_list, self.data_points)
+            polynomials.append(poly)
+        
+        uncovered_points = []
+        tolerance = 5.0
+        
+        for i, (x, y) in enumerate(self.data_points):
+            best_error = float('inf')
+            for poly in polynomials:
+                try:
+                    pred = poly.evaluate(x)
+                    error = abs(pred - y)
+                    best_error = min(best_error, error)
+                except Exception:
+                    continue
+            
+            if best_error > tolerance:
+                uncovered_points.append(i)
+        
+        # Apply mutations
+        for gene_idx in range(len(offspring)):
+            if np.random.random() < mutation_rate:
+                # 60% chance to use uncovered points, 40% random
+                if uncovered_points and np.random.random() < 0.6:
+                    offspring[gene_idx] = np.random.choice(uncovered_points)
+                else:
+                    offspring[gene_idx] = np.random.randint(0, len(self.data_points))
+        
+        # Force diversity within each polynomial
+        genes_per_poly = self.max_degree
+        for poly_idx in range(self.max_polynomials):
+            start_idx = poly_idx * genes_per_poly
+            end_idx = start_idx + genes_per_poly
+            poly_genes = offspring[start_idx:end_idx]
+            
+            # If all genes are the same, diversify
+            if len(set(poly_genes)) == 1:
+                # Keep one, change others
+                for i in range(1, len(poly_genes)):
+                    if uncovered_points:
+                        offspring[start_idx + i] = np.random.choice(uncovered_points)
+                    else:
+                        offspring[start_idx + i] = np.random.randint(0, len(self.data_points))
+        
+        return offspring
+
     def _on_generation_callback(self, ga_instance):
         """Callback function called after each generation."""
         generation = ga_instance.generations_completed
@@ -378,28 +424,32 @@ class GeneticPolynomialFitter:
         unique_degrees = len(set(degrees))
         diversity_bonus = unique_degrees / len(degrees) if len(degrees) > 0 else 0
         
-        # Step 4: Penalize very low degree solutions
+        # Step 4: Penalize very low degree solutions more aggressively
         avg_degree = np.mean(degrees) if degrees else 0
-        degree_penalty = max(0, 2.5 - avg_degree) * 5  # Penalty for avg degree < 2.5
+        degree_penalty = max(0, 4.5 - avg_degree) * 25  # Much stronger penalty for avg degree < 4.5
         
         # Step 5: Combined fitness with multiple objectives
-        # Primary: medium accuracy (5-unit tolerance as requested)
+        # Primary: medium accuracy (5-unit tolerance as requested)  
         # Secondary: tight accuracy bonus
-        # Tertiary: complexity and diversity
+        # Tertiary: complexity and diversity with higher weights
         fitness = (
             medium_accuracy * 100.0 +           # Primary objective (0-100)
-            tight_accuracy * 20.0 +             # Tight accuracy bonus (0-20)
-            complexity_score * 5.0 +            # Complexity bonus (0-5)
-            diversity_bonus * 3.0 -             # Diversity bonus (0-3)
-            degree_penalty                      # Penalty for low degrees
+            tight_accuracy * 40.0 +             # Tight accuracy bonus (0-40) - increased more
+            complexity_score * 25.0 +           # Complexity bonus (0-25) - increased more
+            diversity_bonus * 15.0 -            # Diversity bonus (0-15) - increased more
+            degree_penalty                      # Much stronger penalty for low degrees
         )
         
-        # Extra bonus for very high coverage
+        # Extra bonus for very high coverage with higher rewards
         if medium_accuracy >= 0.99:
-            fitness += 50  # Major bonus for 99%+ coverage
+            fitness += 200  # Massive bonus for 99%+ coverage  
         elif medium_accuracy >= 0.95:
-            fitness += 25
+            fitness += 100  # Large bonus for 95%+
         elif medium_accuracy >= 0.90:
+            fitness += 50
+        elif medium_accuracy >= 0.85:
+            fitness += 25
+        elif medium_accuracy >= 0.80:
             fitness += 10
         
         return max(0, fitness)  # Ensure non-negative
