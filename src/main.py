@@ -14,7 +14,7 @@ def main():
     print("This program generates ONLY y = f(x) functions")
     print()
 
-    text = "C"
+    text = "A"
 
     print(f"Testing with letter {json.dumps(text)}...")
 
