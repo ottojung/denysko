@@ -645,7 +645,7 @@ class GeneticPolynomialFitter:
 
             # Add the minimum distance to total
             if min_distance != float("inf"):
-                total_distance += min_distance
+                total_distance += min_distance ** 5  # Use a high power to emphasize larger errors
             else:
                 # If no polynomial could evaluate, add a large penalty
                 total_distance += 1000.0
