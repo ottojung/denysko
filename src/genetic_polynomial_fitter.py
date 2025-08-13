@@ -102,7 +102,7 @@ class GeneticPolynomialFitter:
         tournament_size=5,
         crossover_rate=0.8,
         mutation_rate=0.9,
-        max_polynomials=2,
+        max_polynomials=6,  # Generate enough polynomials for complex letters
         max_degree=6,
         fitness_weights=None,
     ):
@@ -171,6 +171,10 @@ class GeneticPolynomialFitter:
         # Store complexity for use in filtering
         if full_trace_complexity is not None:
             self._forced_complexity = full_trace_complexity
+            # Dynamically adjust max_polynomials based on complexity
+            # Generate at least as many as needed, plus some extra for selection
+            self.max_polynomials = max(6, full_trace_complexity + 1)
+            self.num_genes = self.max_polynomials * self.max_degree
         else:
             self._forced_complexity = None
 
