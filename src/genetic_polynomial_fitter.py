@@ -101,7 +101,7 @@ class GeneticPolynomialFitter:
         generations=200,
         tournament_size=5,
         crossover_rate=0.8,
-        mutation_rate=0.03,
+        mutation_rate=0.93,
         max_polynomials=2,
         max_degree=6,
         fitness_weights=None,
@@ -643,9 +643,7 @@ class GeneticPolynomialFitter:
 
             # Add the minimum distance to total
             if min_distance != float("inf"):
-                total_distance += (
-                    min_distance**5
-                )  # Use a high power to emphasize larger errors
+                total_distance += min_distance
             else:
                 # If no polynomial could evaluate, add a large penalty
                 total_distance += 1000.0
