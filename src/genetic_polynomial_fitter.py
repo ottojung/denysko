@@ -101,7 +101,7 @@ class GeneticPolynomialFitter:
         generations=200,
         tournament_size=5,
         crossover_rate=0.8,
-        mutation_rate=0.7,
+        mutation_rate=0.9,
         max_polynomials=2,
         max_degree=6,
         fitness_weights=None,
