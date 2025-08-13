@@ -639,22 +639,22 @@ class GeneticPolynomialFitter:
 
         num_effective = len(effective_polynomials)
 
-        # SMART COMPLEXITY PENALTY - Use forced complexity from full trace analysis
-        expected_polynomials = 2  # Default for simple letters
-        if hasattr(self, "_forced_complexity") and self._forced_complexity is not None:
-            expected_polynomials = self._forced_complexity
-        
-        # Heavy penalty for deviating from expected polynomial count
-        if num_effective == expected_polynomials:
-            complexity_penalty = 0  # Perfect match - no penalty
-        elif num_effective < expected_polynomials:
-            # Penalty for too few polynomials (underfitting)
-            shortage = expected_polynomials - num_effective
-            complexity_penalty = shortage * 150  # Heavy penalty for underfitting
+        # COMPLEXITY PENALTY - Balance accuracy with polynomial count
+        # Favor simpler solutions but don't assume letter complexity
+        if num_effective <= 1:
+            complexity_penalty = 100  # Penalize too few polynomials
+        elif num_effective == 2:
+            complexity_penalty = 0    # Generally good balance
+        elif num_effective == 3:
+            complexity_penalty = 25   # Light penalty
+        elif num_effective == 4:
+            complexity_penalty = 50   # Moderate penalty
+        elif num_effective == 5:
+            complexity_penalty = 75   # Higher penalty
+        elif num_effective == 6:
+            complexity_penalty = 100  # Heavy penalty
         else:
-            # Penalty for too many polynomials (overfitting)
-            excess = num_effective - expected_polynomials
-            complexity_penalty = excess * 200  # Even heavier penalty for overfitting
+            complexity_penalty = num_effective * 60  # Escalating penalty
 
         # Diversity bonus - reward polynomials that cover different areas
         diversity_bonus = 0
