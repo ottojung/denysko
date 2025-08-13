@@ -168,12 +168,6 @@ class GeneticPolynomialFitter:
         data_points = [(float(p[0]), float(p[1])) for p in data_points]
         self.data_points = data_points  # Store for fitness function
 
-        # Store complexity for use in filtering (but don't change polynomial generation)
-        if full_trace_complexity is not None:
-            self._forced_complexity = full_trace_complexity
-        else:
-            self._forced_complexity = None
-
         print(
             f"Starting PyGAD point-selection genetic algorithm with {len(data_points)} data points"
         )
