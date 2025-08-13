@@ -34,7 +34,7 @@ class Polynomial:
         return result
 
     def __str__(self):
-        """Convert to Desmos-compatible string."""
+        """Convert to Desmos-compatible string with domain restrictions."""
         terms = []
         for i, coeff in enumerate(self.coefficients):
             if abs(coeff) < 1e-10:  # Skip near-zero coefficients
@@ -58,10 +58,25 @@ class Polynomial:
                     terms.append(f"{coeff:.6f}*x^{i}")
 
         if not terms:
-            return "y = 0"
+            polynomial_expr = "0"
+        else:
+            polynomial_expr = " + ".join(terms).replace(" + -", " - ")
 
-        result = " + ".join(terms).replace(" + -", " - ")
-        return f"y = {result}"
+        # Calculate domain restrictions based on fit_points x-coordinates
+        if self.fit_points:
+            x_coords = [point[0] for point in self.fit_points]
+            x_min = min(x_coords)
+            x_max = max(x_coords)
+            
+            # Add small buffer to ensure smooth connections at endpoints
+            x_range = x_max - x_min
+            buffer = max(x_range * 0.05, 1.0)  # 5% buffer or at least 1 unit
+            x_min -= buffer
+            x_max += buffer
+            
+            return f"y = {polynomial_expr} {{{x_min:.2f} ≤ x ≤ {x_max:.2f}}}"
+        else:
+            return f"y = {polynomial_expr}"
 
 
 @dataclass

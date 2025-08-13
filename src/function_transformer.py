@@ -26,16 +26,25 @@ class FunctionTransformer:
         Apply coordinate transformations to a y = f(x) function.
         
         Args:
-            func_str (str): Function string in form "y = f(x)"
+            func_str (str): Function string in form "y = f(x)" possibly with domain restrictions
             
         Returns:
-            str: Transformed function string
+            str: Transformed function string with preserved domain restrictions
         """
         if not func_str.startswith("y ="):
             return func_str  # Only transform y = f(x) functions
         
+        # Split the function and domain restrictions
+        if '{' in func_str and '}' in func_str:
+            # Extract function and domain parts
+            func_part = func_str[:func_str.find('{')].strip()
+            domain_part = func_str[func_str.find('{'):].strip()
+        else:
+            func_part = func_str
+            domain_part = ""
+        
         # Extract the right side of the equation
-        rhs = func_str[4:].strip()  # Remove "y = "
+        rhs = func_part[4:].strip()  # Remove "y = "
         
         # Apply scaling to x: replace x with (x - origin_x) / scale
         if self.scale != 1.0 or self.origin[0] != 0:
@@ -48,6 +57,16 @@ class FunctionTransformer:
             rhs = re.sub(r'\bx\b', f"({x_transform})", rhs)
         
         # Apply y offset
+        if self.origin[1] != 0:
+            result = f"y = {rhs} + {self.origin[1]}"
+        else:
+            result = f"y = {rhs}"
+        
+        # Add domain restrictions back
+        if domain_part:
+            result += " " + domain_part
+        
+        return result
         if self.origin[1] != 0:
             return f"y = {rhs} + {self.origin[1]}"
         
