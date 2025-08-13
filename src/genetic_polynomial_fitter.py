@@ -157,10 +157,22 @@ class GeneticPolynomialFitter:
         # Calculate fitness using our existing logic
         return self._evaluate_fitness(individual, self.data_points)
 
-    def fit(self, data_points):
-        """Fit polynomials to data points using PyGAD genetic algorithm."""
+    def fit(self, data_points, full_trace_complexity=None):
+        """
+        Fit polynomials to data points using PyGAD genetic algorithm.
+        
+        Args:
+            data_points: sampled data points for genetic algorithm
+            full_trace_complexity: complexity calculated from full trace (optional)
+        """
         data_points = [(float(p[0]), float(p[1])) for p in data_points]
         self.data_points = data_points  # Store for fitness function
+
+        # Store complexity for use in filtering
+        if full_trace_complexity is not None:
+            self._forced_complexity = full_trace_complexity
+        else:
+            self._forced_complexity = None
 
         print(
             f"Starting PyGAD point-selection genetic algorithm with {len(data_points)} data points"
@@ -218,18 +230,117 @@ class GeneticPolynomialFitter:
         final_coverage = (
             best_fitness / 100.0 if best_fitness <= 100 else (best_fitness - 50) / 100.0
         )
+        # FILTER OUT REDUNDANT POLYNOMIALS - Remove polynomials that don't add significant coverage
+        filtered_polynomials = self._filter_redundant_polynomials(best_polynomials, data_points)
+        
+        # Update count after filtering
         print("Final results:")
         print(f"  Best fitness: {best_fitness:.1f}")
         print(f"  Estimated coverage: {final_coverage:.1%}")
-        print(f"  Number of polynomials: {len(best_polynomials)}")
+        print(f"  Number of polynomials (before filtering): {len(best_polynomials)}")
+        print(f"  Number of polynomials (after filtering): {len(filtered_polynomials)}")
 
-        for i, poly in enumerate(best_polynomials):
-            unique_points = len(set(best_point_lists[i]))
+        for i, poly in enumerate(filtered_polynomials):
+            # Find the original point list for this polynomial
+            poly_index = best_polynomials.index(poly) if poly in best_polynomials else i
+            if poly_index < len(best_point_lists):
+                unique_points = len(set(best_point_lists[poly_index]))
+            else:
+                unique_points = poly.degree + 1
             print(
                 f"  Polynomial {i}: degree {poly.degree}, fitted to {unique_points} unique points"
             )
 
-        return best_polynomials
+        return filtered_polynomials
+    
+    def _filter_redundant_polynomials(self, polynomials, data_points):
+        """Aggressively remove redundant polynomials to find minimal set."""
+        if len(polynomials) <= 1:
+            return polynomials
+            
+        # Analyze letter complexity to determine max polynomials allowed
+        max_allowed_polys = self._determine_max_polynomials(data_points)
+        
+        # Create coverage map for each polynomial
+        poly_coverage = []
+        for poly in polynomials:
+            coverage = set()
+            for i, (x, y) in enumerate(data_points):
+                try:
+                    poly_y = poly.evaluate(x)
+                    distance = abs(y - poly_y)
+                    if distance < 20.0:  # Generous distance threshold
+                        coverage.add(i)
+                except Exception:
+                    continue
+            poly_coverage.append((poly, coverage))
+        
+        # Sort polynomials by coverage size (best first)
+        poly_coverage.sort(key=lambda x: len(x[1]), reverse=True)
+        
+        # Greedily select polynomials based on complexity analysis
+        selected_polynomials = []
+        covered_points = set()
+        
+        print(f"  Filtering debug: max_allowed_polys = {max_allowed_polys}")
+        
+        for poly, coverage in poly_coverage:
+            # Calculate new coverage this polynomial would add
+            new_coverage = coverage - covered_points
+            
+            print(f"  Poly with {len(coverage)} total coverage, {len(new_coverage)} new coverage")
+            
+            # Adaptive threshold based on complexity requirement
+            if max_allowed_polys >= 5:  # Complex letters need more relaxed threshold
+                min_threshold = max(2, len(data_points) * 0.005)  # At least 2 points or 0.5%
+            else:  # Simple letters can have stricter threshold
+                min_threshold = max(5, len(data_points) * 0.01)   # At least 5 points or 1%
+            
+            # Add polynomial if it improves coverage (even minimally for complex letters)
+            if len(new_coverage) >= min_threshold:
+                selected_polynomials.append(poly)
+                covered_points.update(coverage)
+                print(f"    Added polynomial {len(selected_polynomials)}/{max_allowed_polys}")
+                
+                # Respect the max polynomial limit for this letter type
+                if len(selected_polynomials) >= max_allowed_polys:
+                    print(f"    Reached max limit of {max_allowed_polys} polynomials")
+                    break
+            else:
+                print(f"    Skipped (insufficient new coverage: {len(new_coverage)} < {min_threshold})")
+        
+        # Ensure at least one polynomial
+        if not selected_polynomials and poly_coverage:
+            selected_polynomials = [poly_coverage[0][0]]  # Take the best one
+        
+        return selected_polynomials
+    
+    def _determine_max_polynomials(self, data_points):
+        """
+        Determine maximum polynomials based on letter complexity.
+        
+        Uses forced complexity from full trace if available, otherwise falls back to heuristics.
+        """
+        # Use forced complexity from full trace if available
+        if hasattr(self, '_forced_complexity') and self._forced_complexity is not None:
+            print(f"    Using forced complexity from full trace: {self._forced_complexity} polynomials")
+            return self._forced_complexity
+            
+        # Fallback to heuristic analysis if no forced complexity
+        if len(data_points) == 0:
+            return 2
+            
+        # Simple heuristic based on sampled points
+        point_density = len(data_points) / 1000.0  # Normalize by expected sample size
+        
+        print(f"    Fallback heuristic: density={point_density:.1f}")
+        
+        if point_density > 0.45:
+            print("    -> Medium complexity letter (3 polynomials)")  
+            return 3
+        else:
+            print("    -> Simple letter (2 polynomials)")
+            return 2
 
     def _create_strategic_initial_population(self, data_points):
         """Create initial population with strategic point selections."""
@@ -512,58 +623,25 @@ class GeneticPolynomialFitter:
         
         # Calculate polynomial metrics for complexity analysis
         num_polynomials = len([p for p in individual.polynomials if p.degree > 0])
-        total_degree = sum(p.degree for p in individual.polynomials)
         
-        # Calculate complexity penalties - ADAPTIVE based on letter complexity
-        complexity_penalty = 0.0
+        # MODERATE COMPLEXITY PENALTIES - Allow evolution but favor simplicity
+        # Use the actual total polynomial count
+        num_polynomials = len(individual.polynomials)
         
-        # Calculate data complexity: measure y-variation across x-regions
-        x_coords = [p[0] for p in data_points]
-        y_coords = [p[1] for p in data_points]
-        if len(x_coords) > 0:
-            x_min, x_max = min(x_coords), max(x_coords)
-            x_span = x_max - x_min
-            
-            # Check y-variation in middle region (where complex letters have problems)
-            if x_span > 0:
-                middle_x = x_min + 0.5 * x_span
-                middle_width = 0.3 * x_span
-                middle_points = [(x, y) for x, y in data_points 
-                               if middle_x - middle_width/2 <= x <= middle_x + middle_width/2]
-                
-                if len(middle_points) > 10:  # Need sufficient points for analysis
-                    middle_y = [y for x, y in middle_points]
-                    y_variation = max(middle_y) - min(middle_y) if middle_y else 0
-                    y_span = max(y_coords) - min(y_coords) if y_coords else 1
-                    
-                    # High y-variation indicates complex letter (like T, H, E, F)
-                    complexity_ratio = y_variation / y_span if y_span > 0 else 0
-                    is_complex_letter = complexity_ratio > 0.6  # More than 60% y-variation
-                else:
-                    is_complex_letter = False
-            else:
-                is_complex_letter = False
+        # Moderate polynomial count penalty - linear growth to allow evolution
+        if num_polynomials > 1:
+            polynomial_count_penalty = (num_polynomials - 1) * 15  # 15, 30, 45, 60...
         else:
-            is_complex_letter = False
+            polynomial_count_penalty = 0
         
-        # ADAPTIVE penalties based on letter complexity
-        if is_complex_letter:
-            # Complex letters (T, H, E, F): Allow more polynomials, less penalty
-            if num_polynomials > 4:  # Allow up to 4 polynomials for complex letters
-                complexity_penalty += (num_polynomials - 4) * 30
-            if total_degree > 12:  # Allow higher total degree
-                complexity_penalty += (total_degree - 12) * 5
-        else:
-            # Simple letters (A, O, C, S): Prefer fewer polynomials, stronger penalty
-            if num_polynomials > 2:  # Prefer exactly 2 polynomials for simple letters
-                complexity_penalty += (num_polynomials - 2) * 50
-            if total_degree > 8:  # Prefer lower total degree
-                complexity_penalty += (total_degree - 8) * 8
-        
-        # Universal penalty: Very high individual degrees (avoid overfitting)
+        # Light degree penalty - slightly favor lower degrees
+        degree_penalty = 0
         for poly in individual.polynomials:
-            if poly.degree > 4:  # Prefer individual degrees ≤ 4
-                complexity_penalty += (poly.degree - 4) * 15
+            if poly.degree > 2:
+                degree_penalty += (poly.degree - 2) * 5  # 5, 10, 15...
+        
+        # Combine complexity penalties (much lighter)
+        complexity_penalty = polynomial_count_penalty + degree_penalty
         
         # Final fitness = accuracy - complexity penalty
         fitness = accuracy_fitness - complexity_penalty
