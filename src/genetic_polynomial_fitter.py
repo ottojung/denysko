@@ -203,9 +203,7 @@ class GeneticPolynomialFitter:
             keep_parents=max(1, self.population_size // 8),  # More elite preservation
             crossover_type="two_points",  # Better crossover
             mutation_type=self._custom_mutation,  # Use two-tier custom mutation
-            mutation_percent_genes=max(
-                5, int(self.mutation_rate)
-            ),  # More reasonable mutation rate
+            mutation_percent_genes=round(self.mutation_rate * 100),
             random_seed=None,
             suppress_warnings=True,
             on_generation=self._on_generation_callback,
@@ -482,8 +480,8 @@ class GeneticPolynomialFitter:
                         solution[gene_idx]
                     )  # Extract the point index
 
-                    # Decide mutation type: 80% small nudges, 20% big changes
-                    if np.random.random() < 0.8:
+                    # Decide mutation type: 95% small nudges, 5% big changes
+                    if np.random.random() < 0.95:
                         # SMALL NUDGE: Replace with nearby neighbor
                         neighbors = self._get_neighbors(current_point_idx, radius=5)
                         if neighbors:
@@ -645,7 +643,9 @@ class GeneticPolynomialFitter:
 
             # Add the minimum distance to total
             if min_distance != float("inf"):
-                total_distance += min_distance ** 5  # Use a high power to emphasize larger errors
+                total_distance += (
+                    min_distance**5
+                )  # Use a high power to emphasize larger errors
             else:
                 # If no polynomial could evaluate, add a large penalty
                 total_distance += 1000.0
