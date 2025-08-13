@@ -102,8 +102,8 @@ class GeneticPolynomialFitter:
         tournament_size=5,
         crossover_rate=0.8,
         mutation_rate=0.9,
-        max_polynomials=6,  # Generate enough polynomials for complex letters
-        max_degree=6,
+        max_polynomials=6,  # Always generate 6 polynomials
+        max_degree=6,       # Always use degree 6
         fitness_weights=None,
     ):
         self.population_size = population_size
@@ -168,13 +168,9 @@ class GeneticPolynomialFitter:
         data_points = [(float(p[0]), float(p[1])) for p in data_points]
         self.data_points = data_points  # Store for fitness function
 
-        # Store complexity for use in filtering
+        # Store complexity for use in filtering (but don't change polynomial generation)
         if full_trace_complexity is not None:
             self._forced_complexity = full_trace_complexity
-            # Dynamically adjust max_polynomials based on complexity
-            # Generate at least as many as needed, plus some extra for selection
-            self.max_polynomials = max(6, full_trace_complexity + 1)
-            self.num_genes = self.max_polynomials * self.max_degree
         else:
             self._forced_complexity = None
 
@@ -258,12 +254,16 @@ class GeneticPolynomialFitter:
         return filtered_polynomials
 
     def _filter_redundant_polynomials(self, polynomials, data_points):
-        """Aggressively remove redundant polynomials to find minimal set."""
+        """Filter polynomials based on complexity analysis and meaningful coverage contribution."""
         if len(polynomials) <= 1:
             return polynomials
 
-        # Analyze letter complexity to determine max polynomials allowed
-        max_allowed_polys = self._determine_max_polynomials(data_points)
+        # Determine target polynomial count from complexity analysis
+        target_polynomials = 2  # Default for simple letters
+        if hasattr(self, "_forced_complexity") and self._forced_complexity is not None:
+            target_polynomials = self._forced_complexity
+        
+        print(f"  Filtering debug: evaluating {len(polynomials)} polynomials, target = {target_polynomials}")
 
         # Create coverage map for each polynomial
         poly_coverage = []
@@ -273,7 +273,7 @@ class GeneticPolynomialFitter:
                 try:
                     poly_y = poly.evaluate(x)
                     distance = abs(y - poly_y)
-                    if distance < 20.0:  # Generous distance threshold
+                    if distance < 20.0:  # Coverage threshold
                         coverage.add(i)
                 except Exception:
                     continue
@@ -282,81 +282,52 @@ class GeneticPolynomialFitter:
         # Sort polynomials by coverage size (best first)
         poly_coverage.sort(key=lambda x: len(x[1]), reverse=True)
 
-        # Greedily select polynomials based on complexity analysis
+        # Greedily select polynomials up to the target count
         selected_polynomials = []
         covered_points = set()
 
-        print(f"  Filtering debug: max_allowed_polys = {max_allowed_polys}")
-
-        for poly, coverage in poly_coverage:
+        for i, (poly, coverage) in enumerate(poly_coverage):
             # Calculate new coverage this polynomial would add
             new_coverage = coverage - covered_points
 
             print(
-                f"  Poly with {len(coverage)} total coverage, {len(new_coverage)} new coverage"
+                f"  Poly {i+1} with {len(coverage)} total coverage, {len(new_coverage)} new coverage"
             )
 
-            # Adaptive threshold based on complexity requirement
-            if max_allowed_polys >= 5:  # Complex letters need more relaxed threshold
-                min_threshold = max(
-                    2, len(data_points) * 0.005
-                )  # At least 2 points or 0.5%
-            else:  # Simple letters can have stricter threshold
-                min_threshold = max(
-                    5, len(data_points) * 0.01
-                )  # At least 5 points or 1%
-
-            # Add polynomial if it improves coverage (even minimally for complex letters)
-            if len(new_coverage) >= min_threshold:
+            # Take first polynomial regardless
+            if len(selected_polynomials) == 0:
                 selected_polynomials.append(poly)
                 covered_points.update(coverage)
-                print(
-                    f"    Added polynomial {len(selected_polynomials)}/{max_allowed_polys}"
-                )
+                print(f"    Added polynomial {len(selected_polynomials)} (first)")
+                continue
 
-                # Respect the max polynomial limit for this letter type
-                if len(selected_polynomials) >= max_allowed_polys:
-                    print(f"    Reached max limit of {max_allowed_polys} polynomials")
-                    break
+            # Check if we've reached the target count
+            if len(selected_polynomials) >= target_polynomials:
+                print(f"    Reached target count of {target_polynomials} polynomials")
+                break
+
+            # For subsequent polynomials, require meaningful new coverage
+            min_new_coverage = max(1, len(data_points) * 0.008)  # 0.8% threshold
+            
+            # Also allow polynomials with significant total coverage
+            significant_total_coverage = len(coverage) >= len(data_points) * 0.15  # 15% total
+            
+            should_add = (len(new_coverage) >= min_new_coverage or 
+                         significant_total_coverage or 
+                         len(selected_polynomials) < 2)  # Always allow at least 2 polynomials
+
+            if should_add:
+                selected_polynomials.append(poly)
+                covered_points.update(coverage)
+                print(f"    Added polynomial {len(selected_polynomials)}")
             else:
                 print(
-                    f"    Skipped (insufficient new coverage: {len(new_coverage)} < {min_threshold})"
+                    f"    Skipped (new coverage: {len(new_coverage)} < {min_new_coverage:.1f}, "
+                    f"total coverage: {len(coverage)} < {len(data_points) * 0.15:.0f})"
                 )
 
-        # Ensure at least one polynomial
-        if not selected_polynomials and poly_coverage:
-            selected_polynomials = [poly_coverage[0][0]]  # Take the best one
-
+        print(f"  Final selection: {len(selected_polynomials)} polynomials (target was {target_polynomials})")
         return selected_polynomials
-
-    def _determine_max_polynomials(self, data_points):
-        """
-        Determine maximum polynomials based on letter complexity.
-
-        Uses forced complexity from full trace if available, otherwise falls back to heuristics.
-        """
-        # Use forced complexity from full trace if available
-        if hasattr(self, "_forced_complexity") and self._forced_complexity is not None:
-            print(
-                f"    Using forced complexity from full trace: {self._forced_complexity} polynomials"
-            )
-            return self._forced_complexity
-
-        # Fallback to heuristic analysis if no forced complexity
-        if len(data_points) == 0:
-            return 2
-
-        # Simple heuristic based on sampled points
-        point_density = len(data_points) / 1000.0  # Normalize by expected sample size
-
-        print(f"    Fallback heuristic: density={point_density:.1f}")
-
-        if point_density > 0.45:
-            print("    -> Medium complexity letter (3 polynomials)")
-            return 3
-        else:
-            print("    -> Simple letter (2 polynomials)")
-            return 2
 
     def _create_strategic_initial_population(self, data_points):
         """Create initial population with strategic point selections."""
@@ -626,11 +597,12 @@ class GeneticPolynomialFitter:
             return Polynomial([mean_y], fit_points, 0)
 
     def _evaluate_fitness(self, individual, data_points):
-        """Fitness function with complexity penalties: minimize distance AND complexity."""
+        """Fitness function that balances accuracy with polynomial complexity to find optimal count."""
         if len(data_points) == 0:
             return 0.0
 
         total_distance = 0.0
+        covered_points = 0
 
         # For each data point, find the minimum distance to any polynomial
         for x, y in data_points:
@@ -638,39 +610,83 @@ class GeneticPolynomialFitter:
 
             # Check distance to each polynomial
             for poly in individual.polynomials:
-                pred = poly.evaluate(x)
-                distance = abs(pred - y)
-                min_distance = min(min_distance, distance)
+                try:
+                    pred = poly.evaluate(x)
+                    distance = abs(pred - y)
+                    min_distance = min(min_distance, distance)
+                except Exception:
+                    continue
 
             total_distance += min_distance
+            
+            # Count point as covered if distance is reasonable
+            if min_distance < 15.0:  # Coverage threshold
+                covered_points += 1
 
         # Calculate base accuracy fitness
         average_distance = total_distance / len(data_points)
         accuracy_fitness = 1000.0 / (1.0 + average_distance)
+        
+        # Coverage bonus - reward covering more points
+        coverage_ratio = covered_points / len(data_points)
+        coverage_bonus = coverage_ratio * 300  # Increased coverage importance
 
-        # Calculate polynomial metrics for complexity analysis
-        num_polynomials = len([p for p in individual.polynomials if p.degree > 0])
-
-        # MODERATE COMPLEXITY PENALTIES - Allow evolution but favor simplicity
-        # Use the actual total polynomial count
-        num_polynomials = len(individual.polynomials)
-
-        # Moderate polynomial count penalty - linear growth to allow evolution
-        if num_polynomials > 1:
-            polynomial_count_penalty = num_polynomials * 15
-        else:
-            polynomial_count_penalty = 0
-
-        # Light degree penalty - slightly favor lower degrees
-        degree_penalty = 0
+        # Count effective polynomials and assess their diversity
+        effective_polynomials = []
         for poly in individual.polynomials:
-            degree_penalty += poly.degree * 5
+            if poly.degree > 0:
+                # Check if this polynomial contributes meaningfully
+                poly_coverage = 0
+                for x, y in data_points[:100]:  # Sample check for performance
+                    try:
+                        pred = poly.evaluate(x)
+                        if abs(pred - y) < 20.0:  # If it fits some points reasonably
+                            poly_coverage += 1
+                    except Exception:
+                        continue
+                if poly_coverage >= 5:  # Require minimum coverage to be considered effective
+                    effective_polynomials.append((poly, poly_coverage))
 
-        # Combine complexity penalties (much lighter)
-        complexity_penalty = polynomial_count_penalty + degree_penalty
+        num_effective = len(effective_polynomials)
 
-        # Final fitness = accuracy - complexity penalty
-        fitness = accuracy_fitness - complexity_penalty
+        # SMART COMPLEXITY PENALTY - Use forced complexity from full trace analysis
+        expected_polynomials = 2  # Default for simple letters
+        if hasattr(self, "_forced_complexity") and self._forced_complexity is not None:
+            expected_polynomials = self._forced_complexity
+        
+        # Heavy penalty for deviating from expected polynomial count
+        if num_effective == expected_polynomials:
+            complexity_penalty = 0  # Perfect match - no penalty
+        elif num_effective < expected_polynomials:
+            # Penalty for too few polynomials (underfitting)
+            shortage = expected_polynomials - num_effective
+            complexity_penalty = shortage * 150  # Heavy penalty for underfitting
+        else:
+            # Penalty for too many polynomials (overfitting)
+            excess = num_effective - expected_polynomials
+            complexity_penalty = excess * 200  # Even heavier penalty for overfitting
+
+        # Diversity bonus - reward polynomials that cover different areas
+        diversity_bonus = 0
+        if len(effective_polynomials) > 1:
+            # Simple diversity measure based on coverage spread
+            total_unique_coverage = set()
+            for poly, _ in effective_polynomials:
+                poly_points = set()
+                for i, (x, y) in enumerate(data_points):
+                    try:
+                        pred = poly.evaluate(x)
+                        if abs(pred - y) < 20.0:
+                            poly_points.add(i)
+                    except Exception:
+                        continue
+                total_unique_coverage.update(poly_points)
+            
+            diversity_ratio = len(total_unique_coverage) / len(data_points)
+            diversity_bonus = diversity_ratio * 50
+
+        # Final fitness = accuracy + coverage bonus + diversity bonus - complexity penalty
+        fitness = accuracy_fitness + coverage_bonus + diversity_bonus - complexity_penalty
 
         # Ensure fitness is never negative
         fitness = max(fitness, 1.0)
