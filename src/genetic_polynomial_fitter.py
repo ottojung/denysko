@@ -634,16 +634,13 @@ class GeneticPolynomialFitter:
 
             # Check distance to each polynomial
             for poly in individual.polynomials:
-                try:
-                    pred = poly.evaluate(x)
-                    distance = abs(pred - y)
-                    min_distance = min(min_distance, distance)
-                except Exception:
-                    continue
+                pred = poly.evaluate(x)
+                distance = abs(pred - y)
+                min_distance = min(min_distance, distance)
 
             # Add the minimum distance to total
             if min_distance != float("inf"):
-                total_distance += min_distance
+                total_distance += min_distance ** 2
             else:
                 # If no polynomial could evaluate, add a large penalty
                 total_distance += 1000.0
