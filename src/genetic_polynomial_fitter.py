@@ -74,9 +74,9 @@ class Polynomial:
             x_min -= buffer
             x_max += buffer
             
-            return f"y = {polynomial_expr} {{{x_min:.2f} ≤ x ≤ {x_max:.2f}}}"
+            return f"y={polynomial_expr}\\ \\left\\{{{x_min:.3f}\\le x\\le{x_max:.3f}\\right\\}}"
         else:
-            return f"y = {polynomial_expr}"
+            return f"y={polynomial_expr}"
 
 
 @dataclass
