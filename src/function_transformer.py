@@ -31,20 +31,25 @@ class FunctionTransformer:
         Returns:
             str: Transformed function string with preserved domain restrictions
         """
-        if not func_str.startswith("y ="):
+        if not func_str.startswith("y"):
             return func_str  # Only transform y = f(x) functions
         
-        # Split the function and domain restrictions
-        if '{' in func_str and '}' in func_str:
+        # Split the function and domain restrictions using the new Desmos syntax
+        if '\\left\\{' in func_str and '\\right\\}' in func_str:
             # Extract function and domain parts
-            func_part = func_str[:func_str.find('{')].strip()
-            domain_part = func_str[func_str.find('{'):].strip()
+            func_part = func_str[:func_str.find('\\ \\left\\{')].strip()
+            domain_part = func_str[func_str.find('\\ \\left\\{'):].strip()
         else:
             func_part = func_str
             domain_part = ""
         
         # Extract the right side of the equation
-        rhs = func_part[4:].strip()  # Remove "y = "
+        if func_part.startswith("y="):
+            rhs = func_part[2:].strip()  # Remove "y="
+        elif func_part.startswith("y ="):
+            rhs = func_part[4:].strip()  # Remove "y = "
+        else:
+            return func_str
         
         # Apply scaling to x: replace x with (x - origin_x) / scale
         if self.scale != 1.0 or self.origin[0] != 0:
@@ -58,13 +63,13 @@ class FunctionTransformer:
         
         # Apply y offset
         if self.origin[1] != 0:
-            result = f"y = {rhs} + {self.origin[1]}"
+            result = f"y={rhs} + {self.origin[1]}"
         else:
-            result = f"y = {rhs}"
+            result = f"y={rhs}"
         
         # Add domain restrictions back
         if domain_part:
-            result += " " + domain_part
+            result += domain_part
         
         return result
         if self.origin[1] != 0:
@@ -84,7 +89,7 @@ class FunctionTransformer:
         """
         transformed = []
         for func in functions:
-            if func.startswith("y ="):  # Only transform y = f(x) functions
+            if func.startswith("y"):  # Handle both "y=" and "y =" formats
                 transformed.append(self.transform_function(func))
             else:
                 # Skip any non-y functions (shouldn't exist but safety check)

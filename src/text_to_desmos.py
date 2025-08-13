@@ -70,9 +70,9 @@ class TextToDesmos:
         y_functions: List[str] = []
         for contour in contours_all:
             funcs = self.fitter.fit_all_traces([contour])
-            # keep only y = ...
+            # keep only y = ... or y=...
             for f in funcs:
-                if isinstance(f, str) and f.startswith("y ="):
+                if isinstance(f, str) and f.startswith("y"):
                     y_functions.append(f)
 
         if not y_functions:
@@ -82,8 +82,8 @@ class TextToDesmos:
         transformed = self.transformer.transform_functions(y_functions)
         simplified = [self.transformer.simplify_function_string(f) for f in transformed]
 
-        # 5) Ensure final validation (y = ... only)
-        return [f for f in simplified if isinstance(f, str) and f.startswith("y =")] 
+        # 5) Ensure final validation (y = ... or y=... only)
+        return [f for f in simplified if isinstance(f, str) and f.startswith("y")] 
 
     def save_functions(self, functions: List[str], filename: str = "desmos_functions.txt") -> None:
         """Save function strings to a text file."""
