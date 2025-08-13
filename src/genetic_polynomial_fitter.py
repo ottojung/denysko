@@ -204,7 +204,7 @@ class GeneticPolynomialFitter:
             crossover_type="two_points",  # Better crossover
             mutation_type=self._custom_mutation,  # Use two-tier custom mutation
             mutation_percent_genes=max(
-                5, int(self.mutation_rate * 20)
+                5, int(self.mutation_rate)
             ),  # More reasonable mutation rate
             random_seed=None,
             suppress_warnings=True,
@@ -663,15 +663,14 @@ class GeneticPolynomialFitter:
 
         # Moderate polynomial count penalty - linear growth to allow evolution
         if num_polynomials > 1:
-            polynomial_count_penalty = (num_polynomials - 1) * 15  # 15, 30, 45, 60...
+            polynomial_count_penalty = num_polynomials * 15
         else:
             polynomial_count_penalty = 0
 
         # Light degree penalty - slightly favor lower degrees
         degree_penalty = 0
         for poly in individual.polynomials:
-            if poly.degree > 2:
-                degree_penalty += (poly.degree - 2) * 5  # 5, 10, 15...
+            degree_penalty += poly.degree * 5
 
         # Combine complexity penalties (much lighter)
         complexity_penalty = polynomial_count_penalty + degree_penalty
