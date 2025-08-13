@@ -254,16 +254,11 @@ class GeneticPolynomialFitter:
         return filtered_polynomials
 
     def _filter_redundant_polynomials(self, polynomials, data_points):
-        """Filter polynomials based on complexity analysis and meaningful coverage contribution."""
+        """Filter polynomials based on meaningful coverage contribution."""
         if len(polynomials) <= 1:
             return polynomials
 
-        # Determine target polynomial count from complexity analysis
-        target_polynomials = 2  # Default for simple letters
-        if hasattr(self, "_forced_complexity") and self._forced_complexity is not None:
-            target_polynomials = self._forced_complexity
-        
-        print(f"  Filtering debug: evaluating {len(polynomials)} polynomials, target = {target_polynomials}")
+        print(f"  Filtering debug: evaluating {len(polynomials)} polynomials")
 
         # Create coverage map for each polynomial
         poly_coverage = []
@@ -282,7 +277,7 @@ class GeneticPolynomialFitter:
         # Sort polynomials by coverage size (best first)
         poly_coverage.sort(key=lambda x: len(x[1]), reverse=True)
 
-        # Greedily select polynomials up to the target count
+        # Greedily select polynomials that provide meaningful coverage
         selected_polynomials = []
         covered_points = set()
 
@@ -300,11 +295,6 @@ class GeneticPolynomialFitter:
                 covered_points.update(coverage)
                 print(f"    Added polynomial {len(selected_polynomials)} (first)")
                 continue
-
-            # Check if we've reached the target count
-            if len(selected_polynomials) >= target_polynomials:
-                print(f"    Reached target count of {target_polynomials} polynomials")
-                break
 
             # For subsequent polynomials, require meaningful new coverage
             min_new_coverage = max(1, len(data_points) * 0.008)  # 0.8% threshold
@@ -326,7 +316,7 @@ class GeneticPolynomialFitter:
                     f"total coverage: {len(coverage)} < {len(data_points) * 0.15:.0f})"
                 )
 
-        print(f"  Final selection: {len(selected_polynomials)} polynomials (target was {target_polynomials})")
+        print(f"  Final selection: {len(selected_polynomials)} polynomials")
         return selected_polynomials
 
     def _create_strategic_initial_population(self, data_points):
