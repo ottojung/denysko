@@ -638,7 +638,7 @@ class GeneticPolynomialFitter:
                 distance = abs(pred - y)
                 min_distance = min(min_distance, distance)
 
-            total_distance += min_distance ** 0.3
+            total_distance += min_distance ** 0.5
 
         # Calculate base accuracy fitness
         average_distance = total_distance / len(data_points)
