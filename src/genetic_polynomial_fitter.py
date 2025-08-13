@@ -9,7 +9,6 @@ Polynomials are fit exactly to the unique points in each list.
 Fitness is coverage of all input points by all polynomials.
 """
 
-from fractions import Fraction
 import numpy as np
 from typing import List, Tuple
 from dataclasses import dataclass
@@ -627,7 +626,7 @@ class GeneticPolynomialFitter:
         if len(data_points) == 0:
             return 0.0
 
-        total_distance = Fraction(0.0)
+        total_distance = 0.0
 
         # For each data point, find the minimum distance to any polynomial
         for x, y in data_points:
@@ -639,7 +638,7 @@ class GeneticPolynomialFitter:
                 distance = abs(pred - y)
                 min_distance = min(min_distance, distance)
 
-            total_distance += Fraction(min_distance) ** 0.5
+            total_distance += min_distance ** 0.3
 
         # Calculate base accuracy fitness
         average_distance = total_distance / len(data_points)
