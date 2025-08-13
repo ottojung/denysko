@@ -30,7 +30,6 @@ def test_new_syntax():
     print(f"  Has \\le: {has_le}")
     print(f"  Starts with y=: {has_proper_format}")
     
-    expected_pattern = "y=0.634068+18.079992*x\\ \\left\\{"
     matches_expected = result.startswith("y=0.634068+18.079992*x\\ \\left\\{")
     print(f"  Matches expected pattern: {matches_expected}")
 

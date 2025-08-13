@@ -60,7 +60,8 @@ class Polynomial:
         if not terms:
             polynomial_expr = "0"
         else:
-            polynomial_expr = " + ".join(terms).replace(" + -", " - ")
+            # Join with + and - without spaces to match Desmos format
+            polynomial_expr = "+".join(terms).replace("+-", "-")
 
         # Calculate domain restrictions based on fit_points x-coordinates
         if self.fit_points:
