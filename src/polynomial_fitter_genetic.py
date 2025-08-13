@@ -11,15 +11,7 @@ class PolynomialFitter:
     """Fit polynomials to extracted centerlines using genetic algorithm."""
 
     def __init__(self):
-        # Create genetic algorithm fitter with STRONG complexity pressure
-        self.ga_fitter = GeneticPolynomialFitter(
-            population_size=100,   # Smaller population for faster evolution
-            generations=80,        # Fewer generations with strong pressure
-            max_polynomials=6,     # Allow range 1-6, let complexity penalties choose optimal
-            max_degree=4,          # Lower max degree to reduce complexity
-            mutation_rate=0.08,    # Higher mutation to explore simpler solutions
-            tournament_size=3      # Lower selection pressure to allow diverse solutions
-        )
+        self.ga_fitter = GeneticPolynomialFitter()
 
     def fit_polynomial_to_trace(self, trace, target_degree=3):
         """
