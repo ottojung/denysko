@@ -635,11 +635,7 @@ class GeneticPolynomialFitter:
 
         num_effective = len(effective_polynomials)
 
-        # IMPROVED COMPLEXITY PENALTY - More aggressive scoring to control polynomial count
-        # The penalty should strongly discourage excessive polynomials
-        if num_effective <= 1:
-            complexity_penalty = 200  # Heavy penalty for too few polynomials
-        elif num_effective == 2:
+        if num_effective == 2:
             complexity_penalty = 0    # Optimal for most cases
         elif num_effective == 3:
             complexity_penalty = 80   # Significant penalty to discourage
