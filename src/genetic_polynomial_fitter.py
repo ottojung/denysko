@@ -103,7 +103,7 @@ class GeneticPolynomialFitter:
         crossover_rate=0.8,
         mutation_rate=0.9,
         max_polynomials=6,  # Always generate 6 polynomials
-        max_degree=6,       # Always use degree 6
+        max_degree=6,  # Always use degree 6
         fitness_weights=None,
     ):
         self.population_size = population_size
@@ -252,14 +252,20 @@ class GeneticPolynomialFitter:
         if len(polynomials) <= 1:
             return polynomials
 
-        print(f"  Filtering debug: evaluating {len(polynomials)} polynomials using coverage loss analysis")
+        print(
+            f"  Filtering debug: evaluating {len(polynomials)} polynomials using coverage loss analysis"
+        )
 
         # Use the same coverage loss analysis as the fitness function
-        necessary_polynomials = self._analyze_polynomial_necessity(polynomials, data_points)
-        
-        print(f"  Coverage loss analysis: {len(necessary_polynomials)} out of {len(polynomials)} polynomials are necessary")
+        necessary_polynomials = self._analyze_polynomial_necessity(
+            polynomials, data_points
+        )
+
+        print(
+            f"  Coverage loss analysis: {len(necessary_polynomials)} out of {len(polynomials)} polynomials are necessary"
+        )
         for i, poly in enumerate(necessary_polynomials):
-            print(f"    Polynomial {i+1}: degree {poly.degree}")
+            print(f"    Polynomial {i + 1}: degree {poly.degree}")
 
         print(f"  Final selection: {len(necessary_polynomials)} polynomials")
         return necessary_polynomials
@@ -553,7 +559,7 @@ class GeneticPolynomialFitter:
                     continue
 
             total_distance += min_distance
-            
+
             # Count point as covered if distance is reasonable
             if min_distance < 15.0:  # Coverage threshold
                 covered_points += 1
@@ -561,21 +567,25 @@ class GeneticPolynomialFitter:
         # Calculate base accuracy fitness
         average_distance = total_distance / len(data_points)
         accuracy_fitness = 1000.0 / (1.0 + average_distance)
-        
+
         # Coverage bonus - reward covering more points
         coverage_ratio = covered_points / len(data_points)
         coverage_bonus = coverage_ratio * 300  # Increased coverage importance
 
         # Count effective polynomials using coverage loss analysis
-        effective_polynomials = self._analyze_polynomial_necessity(individual.polynomials, data_points)
+        effective_polynomials = self._analyze_polynomial_necessity(
+            individual.polynomials, data_points
+        )
         num_effective = len(effective_polynomials)
 
         # PRINCIPLED COMPLEXITY PENALTY - Based on coverage loss analysis
         # Light penalty for polynomials that don't contribute >5% coverage
         unnecessary_polynomials = len(individual.polynomials) - num_effective
-        complexity_penalty = unnecessary_polynomials * 25  # Light penalty to allow evolution
+        complexity_penalty = (
+            unnecessary_polynomials * 25
+        )  # Light penalty to allow evolution
 
-        # Diversity bonus - reward polynomials that cover different areas  
+        # Diversity bonus - reward polynomials that cover different areas
         diversity_bonus = 0
         if len(effective_polynomials) > 1:
             # Simple diversity measure based on unique coverage
@@ -590,12 +600,14 @@ class GeneticPolynomialFitter:
                     except Exception:
                         continue
                 total_unique_coverage.update(poly_points)
-            
+
             diversity_ratio = len(total_unique_coverage) / len(data_points)
             diversity_bonus = diversity_ratio * 50
 
         # Final fitness = accuracy + coverage bonus + diversity bonus - complexity penalty
-        fitness = accuracy_fitness + coverage_bonus + diversity_bonus - complexity_penalty
+        fitness = (
+            accuracy_fitness + coverage_bonus + diversity_bonus - complexity_penalty
+        )
 
         # Ensure fitness is never negative
         fitness = max(fitness, 1.0)
@@ -605,53 +617,57 @@ class GeneticPolynomialFitter:
     def _analyze_polynomial_necessity(self, polynomials, data_points):
         """
         Determine which polynomials are necessary by measuring coverage loss.
-        A polynomial is considered necessary if removing it causes >10% coverage loss.
+        A polynomial is considered necessary if removing it causes a significant coverage loss.
         """
         if len(polynomials) <= 1:
             return polynomials
-        
+
         # Calculate baseline coverage with all polynomials
         baseline_coverage = self._calculate_coverage(polynomials, data_points)
-        
+
         necessary_polynomials = []
-        
+
         for i, test_poly in enumerate(polynomials):
             if test_poly.degree == 0:  # Skip constant polynomials
                 continue
-                
+
             # Create list without this polynomial
             remaining_polys = [p for j, p in enumerate(polynomials) if j != i]
-            
+
             if not remaining_polys:  # Always keep at least one polynomial
                 necessary_polynomials.append(test_poly)
                 continue
-            
+
             # Calculate coverage without this polynomial
             reduced_coverage = self._calculate_coverage(remaining_polys, data_points)
-            
+
             # Calculate coverage loss percentage
             if baseline_coverage > 0:
-                coverage_loss_ratio = (baseline_coverage - reduced_coverage) / baseline_coverage
+                coverage_loss_ratio = (
+                    baseline_coverage - reduced_coverage
+                ) / baseline_coverage
             else:
                 coverage_loss_ratio = 0
-            
+
             # If removing this polynomial causes >6% coverage loss, it's necessary
             if coverage_loss_ratio > 0.06:  # 6% threshold (fine-tuned)
                 necessary_polynomials.append(test_poly)
-        
+
         return necessary_polynomials
-    
+
     def _calculate_coverage(self, polynomials, data_points):
         """Calculate how many data points are covered by the given polynomials."""
         if not polynomials:
             return 0
-        
+
         covered_count = 0
-        coverage_threshold = 15.0  # Distance threshold for considering a point "covered"
-        
+        coverage_threshold = (
+            15.0  # Distance threshold for considering a point "covered"
+        )
+
         for x, y in data_points:
             min_distance = float("inf")
-            
+
             for poly in polynomials:
                 try:
                     pred = poly.evaluate(x)
@@ -659,8 +675,8 @@ class GeneticPolynomialFitter:
                     min_distance = min(min_distance, distance)
                 except Exception:
                     continue
-            
+
             if min_distance < coverage_threshold:
                 covered_count += 1
-        
+
         return covered_count
