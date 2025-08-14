@@ -248,70 +248,21 @@ class GeneticPolynomialFitter:
         return filtered_polynomials
 
     def _filter_redundant_polynomials(self, polynomials, data_points):
-        """Filter polynomials based on meaningful coverage contribution."""
+        """Filter polynomials using the same principled coverage loss approach."""
         if len(polynomials) <= 1:
             return polynomials
 
-        print(f"  Filtering debug: evaluating {len(polynomials)} polynomials")
+        print(f"  Filtering debug: evaluating {len(polynomials)} polynomials using coverage loss analysis")
 
-        # Create coverage map for each polynomial
-        poly_coverage = []
-        for poly in polynomials:
-            coverage = set()
-            for i, (x, y) in enumerate(data_points):
-                try:
-                    poly_y = poly.evaluate(x)
-                    distance = abs(y - poly_y)
-                    if distance < 20.0:  # Coverage threshold
-                        coverage.add(i)
-                except Exception:
-                    continue
-            poly_coverage.append((poly, coverage))
+        # Use the same coverage loss analysis as the fitness function
+        necessary_polynomials = self._analyze_polynomial_necessity(polynomials, data_points)
+        
+        print(f"  Coverage loss analysis: {len(necessary_polynomials)} out of {len(polynomials)} polynomials are necessary")
+        for i, poly in enumerate(necessary_polynomials):
+            print(f"    Polynomial {i+1}: degree {poly.degree}")
 
-        # Sort polynomials by coverage size (best first)
-        poly_coverage.sort(key=lambda x: len(x[1]), reverse=True)
-
-        # Greedily select polynomials that provide meaningful coverage
-        selected_polynomials = []
-        covered_points = set()
-
-        for i, (poly, coverage) in enumerate(poly_coverage):
-            # Calculate new coverage this polynomial would add
-            new_coverage = coverage - covered_points
-
-            print(
-                f"  Poly {i+1} with {len(coverage)} total coverage, {len(new_coverage)} new coverage"
-            )
-
-            # Take first polynomial regardless
-            if len(selected_polynomials) == 0:
-                selected_polynomials.append(poly)
-                covered_points.update(coverage)
-                print(f"    Added polynomial {len(selected_polynomials)} (first)")
-                continue
-
-            # For subsequent polynomials, require more substantial new coverage
-            min_new_coverage = max(5, len(data_points) * 0.02)  # 2% threshold (more aggressive)
-            
-            # Also require polynomials to have significant total coverage
-            significant_total_coverage = len(coverage) >= len(data_points) * 0.20  # 20% total (more stringent)
-            
-            should_add = (len(new_coverage) >= min_new_coverage and 
-                         significant_total_coverage and 
-                         len(selected_polynomials) < 4)  # Cap at 4 polynomials maximum
-
-            if should_add:
-                selected_polynomials.append(poly)
-                covered_points.update(coverage)
-                print(f"    Added polynomial {len(selected_polynomials)}")
-            else:
-                print(
-                    f"    Skipped (new coverage: {len(new_coverage)} < {min_new_coverage:.1f}, "
-                    f"total coverage: {len(coverage)} < {len(data_points) * 0.15:.0f})"
-                )
-
-        print(f"  Final selection: {len(selected_polynomials)} polynomials")
-        return selected_polynomials
+        print(f"  Final selection: {len(necessary_polynomials)} polynomials")
+        return necessary_polynomials
 
     def _create_strategic_initial_population(self, data_points):
         """Create initial population with strategic point selections."""
@@ -615,50 +566,21 @@ class GeneticPolynomialFitter:
         coverage_ratio = covered_points / len(data_points)
         coverage_bonus = coverage_ratio * 300  # Increased coverage importance
 
-        # Count effective polynomials with stricter criteria
-        effective_polynomials = []
-        for poly in individual.polynomials:
-            if poly.degree > 0:
-                # Check if this polynomial contributes meaningfully with stricter threshold
-                poly_coverage = 0
-                for x, y in data_points[:100]:  # Sample check for performance
-                    try:
-                        pred = poly.evaluate(x)
-                        if abs(pred - y) < 15.0:  # Stricter fit requirement
-                            poly_coverage += 1
-                    except Exception:
-                        continue
-                # Require more substantial coverage to be considered effective
-                min_coverage_threshold = max(10, len(data_points[:100]) * 0.15)  # 15% of sample
-                if poly_coverage >= min_coverage_threshold:
-                    effective_polynomials.append((poly, poly_coverage))
-
+        # Count effective polynomials using coverage loss analysis
+        effective_polynomials = self._analyze_polynomial_necessity(individual.polynomials, data_points)
         num_effective = len(effective_polynomials)
 
-        # IMPROVED COMPLEXITY PENALTY - More aggressive scoring to control polynomial count
-        # The penalty should strongly discourage excessive polynomials
-        if num_effective <= 1:
-            complexity_penalty = 200  # Heavy penalty for too few polynomials
-        elif num_effective == 2:
-            complexity_penalty = 0    # Optimal for most cases
-        elif num_effective == 3:
-            complexity_penalty = 80   # Significant penalty to discourage
-        elif num_effective == 4:
-            complexity_penalty = 180  # Heavy penalty
-        elif num_effective == 5:
-            complexity_penalty = 300  # Very heavy penalty
-        elif num_effective == 6:
-            complexity_penalty = 450  # Extremely heavy penalty
-        else:
-            # Exponential penalty for excessive polynomials
-            complexity_penalty = num_effective * 200
+        # PRINCIPLED COMPLEXITY PENALTY - Based on coverage loss analysis
+        # Heavy penalty for polynomials that don't contribute >10% coverage
+        unnecessary_polynomials = len(individual.polynomials) - num_effective
+        complexity_penalty = unnecessary_polynomials * 400  # Heavy penalty for each unnecessary polynomial
 
-        # Diversity bonus - reward polynomials that cover different areas
+        # Diversity bonus - reward polynomials that cover different areas  
         diversity_bonus = 0
         if len(effective_polynomials) > 1:
-            # Simple diversity measure based on coverage spread
+            # Simple diversity measure based on unique coverage
             total_unique_coverage = set()
-            for poly, _ in effective_polynomials:
+            for poly in effective_polynomials:
                 poly_points = set()
                 for i, (x, y) in enumerate(data_points):
                     try:
@@ -679,3 +601,66 @@ class GeneticPolynomialFitter:
         fitness = max(fitness, 1.0)
 
         return fitness
+
+    def _analyze_polynomial_necessity(self, polynomials, data_points):
+        """
+        Determine which polynomials are necessary by measuring coverage loss.
+        A polynomial is considered necessary if removing it causes >10% coverage loss.
+        """
+        if len(polynomials) <= 1:
+            return polynomials
+        
+        # Calculate baseline coverage with all polynomials
+        baseline_coverage = self._calculate_coverage(polynomials, data_points)
+        
+        necessary_polynomials = []
+        
+        for i, test_poly in enumerate(polynomials):
+            if test_poly.degree == 0:  # Skip constant polynomials
+                continue
+                
+            # Create list without this polynomial
+            remaining_polys = [p for j, p in enumerate(polynomials) if j != i]
+            
+            if not remaining_polys:  # Always keep at least one polynomial
+                necessary_polynomials.append(test_poly)
+                continue
+            
+            # Calculate coverage without this polynomial
+            reduced_coverage = self._calculate_coverage(remaining_polys, data_points)
+            
+            # Calculate coverage loss percentage
+            if baseline_coverage > 0:
+                coverage_loss_ratio = (baseline_coverage - reduced_coverage) / baseline_coverage
+            else:
+                coverage_loss_ratio = 0
+            
+            # If removing this polynomial causes >10% coverage loss, it's necessary
+            if coverage_loss_ratio > 0.10:  # 10% threshold
+                necessary_polynomials.append(test_poly)
+        
+        return necessary_polynomials
+    
+    def _calculate_coverage(self, polynomials, data_points):
+        """Calculate how many data points are covered by the given polynomials."""
+        if not polynomials:
+            return 0
+        
+        covered_count = 0
+        coverage_threshold = 15.0  # Distance threshold for considering a point "covered"
+        
+        for x, y in data_points:
+            min_distance = float("inf")
+            
+            for poly in polynomials:
+                try:
+                    pred = poly.evaluate(x)
+                    distance = abs(pred - y)
+                    min_distance = min(min_distance, distance)
+                except Exception:
+                    continue
+            
+            if min_distance < coverage_threshold:
+                covered_count += 1
+        
+        return covered_count
