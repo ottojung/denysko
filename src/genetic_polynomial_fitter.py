@@ -611,9 +611,9 @@ class GeneticPolynomialFitter:
         average_distance = total_distance / len(data_points)
         accuracy_fitness = 1000.0 / (1.0 + average_distance)
         
-        # Coverage bonus - reward covering more points (but not too generously)
+        # Coverage bonus - reward covering more points
         coverage_ratio = covered_points / len(data_points)
-        coverage_bonus = coverage_ratio * 200  # Reduced from 300 to balance with complexity penalty
+        coverage_bonus = coverage_ratio * 300  # Increased coverage importance
 
         # Count effective polynomials with stricter criteria
         effective_polynomials = []
@@ -635,7 +635,11 @@ class GeneticPolynomialFitter:
 
         num_effective = len(effective_polynomials)
 
-        if num_effective == 2:
+        # IMPROVED COMPLEXITY PENALTY - More aggressive scoring to control polynomial count
+        # The penalty should strongly discourage excessive polynomials
+        if num_effective <= 1:
+            complexity_penalty = 200  # Heavy penalty for too few polynomials
+        elif num_effective == 2:
             complexity_penalty = 0    # Optimal for most cases
         elif num_effective == 3:
             complexity_penalty = 80   # Significant penalty to discourage
