@@ -157,7 +157,7 @@ class GeneticPolynomialFitter:
         # Calculate fitness using our existing logic
         return self._evaluate_fitness(individual, self.data_points)
 
-    def fit(self, data_points, full_trace_complexity=None):
+    def fit(self, data_points):
         """
         Fit polynomials to data points using PyGAD genetic algorithm.
 

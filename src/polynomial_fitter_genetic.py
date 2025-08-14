@@ -41,7 +41,7 @@ class PolynomialFitter:
         print(f"Fitting genetic polynomials to {len(sampled_trace)} points")
 
         # Use genetic algorithm to find optimal polynomials with complexity from full trace
-        polynomials = self.ga_fitter.fit(sampled_trace, full_trace_complexity=full_complexity)
+        polynomials = self.ga_fitter.fit(sampled_trace)
 
         # Convert to Desmos format strings
         result = []
