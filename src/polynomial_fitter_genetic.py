@@ -27,9 +27,7 @@ class PolynomialFitter:
         if len(trace) < 4:  # Need minimum points for fitting
             return []
 
-        # Calculate complexity from FULL trace before sampling
-        full_complexity = self._calculate_complexity_from_full_trace(trace)
-        print(f"Full trace complexity analysis: max_polynomials = {full_complexity}")
+        self._calculate_complexity_from_full_trace(trace)
 
         # Sample points if too many (genetic algorithm works better with fewer points)
         sampled_trace = trace
