@@ -290,15 +290,15 @@ class GeneticPolynomialFitter:
                 print(f"    Added polynomial {len(selected_polynomials)} (first)")
                 continue
 
-            # For subsequent polynomials, require meaningful new coverage
-            min_new_coverage = max(1, len(data_points) * 0.008)  # 0.8% threshold
+            # For subsequent polynomials, require more substantial new coverage
+            min_new_coverage = max(5, len(data_points) * 0.02)  # 2% threshold (more aggressive)
             
-            # Also allow polynomials with significant total coverage
-            significant_total_coverage = len(coverage) >= len(data_points) * 0.15  # 15% total
+            # Also require polynomials to have significant total coverage
+            significant_total_coverage = len(coverage) >= len(data_points) * 0.20  # 20% total (more stringent)
             
-            should_add = (len(new_coverage) >= min_new_coverage or 
-                         significant_total_coverage or 
-                         len(selected_polynomials) < 2)  # Always allow at least 2 polynomials
+            should_add = (len(new_coverage) >= min_new_coverage and 
+                         significant_total_coverage and 
+                         len(selected_polynomials) < 4)  # Cap at 4 polynomials maximum
 
             if should_add:
                 selected_polynomials.append(poly)
@@ -611,44 +611,47 @@ class GeneticPolynomialFitter:
         average_distance = total_distance / len(data_points)
         accuracy_fitness = 1000.0 / (1.0 + average_distance)
         
-        # Coverage bonus - reward covering more points
+        # Coverage bonus - reward covering more points (but not too generously)
         coverage_ratio = covered_points / len(data_points)
-        coverage_bonus = coverage_ratio * 300  # Increased coverage importance
+        coverage_bonus = coverage_ratio * 200  # Reduced from 300 to balance with complexity penalty
 
-        # Count effective polynomials and assess their diversity
+        # Count effective polynomials with stricter criteria
         effective_polynomials = []
         for poly in individual.polynomials:
             if poly.degree > 0:
-                # Check if this polynomial contributes meaningfully
+                # Check if this polynomial contributes meaningfully with stricter threshold
                 poly_coverage = 0
                 for x, y in data_points[:100]:  # Sample check for performance
                     try:
                         pred = poly.evaluate(x)
-                        if abs(pred - y) < 20.0:  # If it fits some points reasonably
+                        if abs(pred - y) < 15.0:  # Stricter fit requirement
                             poly_coverage += 1
                     except Exception:
                         continue
-                if poly_coverage >= 5:  # Require minimum coverage to be considered effective
+                # Require more substantial coverage to be considered effective
+                min_coverage_threshold = max(10, len(data_points[:100]) * 0.15)  # 15% of sample
+                if poly_coverage >= min_coverage_threshold:
                     effective_polynomials.append((poly, poly_coverage))
 
         num_effective = len(effective_polynomials)
 
-        # COMPLEXITY PENALTY - Balance accuracy with polynomial count
-        # Favor simpler solutions but don't assume letter complexity
+        # IMPROVED COMPLEXITY PENALTY - More aggressive scoring to control polynomial count
+        # The penalty should strongly discourage excessive polynomials
         if num_effective <= 1:
-            complexity_penalty = 100  # Penalize too few polynomials
+            complexity_penalty = 200  # Heavy penalty for too few polynomials
         elif num_effective == 2:
-            complexity_penalty = 0    # Generally good balance
+            complexity_penalty = 0    # Optimal for most cases
         elif num_effective == 3:
-            complexity_penalty = 25   # Light penalty
+            complexity_penalty = 80   # Significant penalty to discourage
         elif num_effective == 4:
-            complexity_penalty = 50   # Moderate penalty
+            complexity_penalty = 180  # Heavy penalty
         elif num_effective == 5:
-            complexity_penalty = 75   # Higher penalty
+            complexity_penalty = 300  # Very heavy penalty
         elif num_effective == 6:
-            complexity_penalty = 100  # Heavy penalty
+            complexity_penalty = 450  # Extremely heavy penalty
         else:
-            complexity_penalty = num_effective * 60  # Escalating penalty
+            # Exponential penalty for excessive polynomials
+            complexity_penalty = num_effective * 200
 
         # Diversity bonus - reward polynomials that cover different areas
         diversity_bonus = 0
