@@ -101,7 +101,7 @@ class GeneticPolynomialFitter:
         generations=200,
         tournament_size=5,
         crossover_rate=0.8,
-        mutation_rate=0.9,
+        mutation_rate=0.4,
         max_polynomials=6,  # Always generate 6 polynomials
         max_degree=6,  # Always use degree 6
         fitness_weights=None,
@@ -197,7 +197,7 @@ class GeneticPolynomialFitter:
             K_tournament=self.tournament_size,
             keep_parents=max(1, self.population_size // 8),  # More elite preservation
             crossover_type="two_points",  # Better crossover
-            mutation_type=self._custom_mutation,  # Use two-tier custom mutation
+            mutation_type=self._custom_mutation,
             mutation_percent_genes=round(self.mutation_rate * 100),
             random_seed=None,
             suppress_warnings=True,
