@@ -569,16 +569,11 @@ class GeneticPolynomialFitter:
         )
         num_effective = len(effective_polynomials)
 
-        # PRINCIPLED COMPLEXITY PENALTY - Based on coverage loss analysis
-        # Light penalty for polynomials that don't contribute >5% coverage
-        unnecessary_polynomials = len(individual.polynomials) - num_effective
-        complexity_penalty = (
-            unnecessary_polynomials * 25
-        )  # Light penalty to allow evolution
+        complexity_penalty = 1 + (len(individual.polynomials) - num_effective)
 
         # Final fitness = accuracy + coverage bonus + diversity bonus - complexity penalty
         fitness = (
-            accuracy_fitness - complexity_penalty
+            accuracy_fitness / complexity_penalty
         )
 
         return 1000 + fitness
@@ -631,7 +626,7 @@ class GeneticPolynomialFitter:
                 coverage_loss_ratio = 0
 
             # If removing this polynomial causes >4% coverage loss, it's necessary
-            if coverage_loss_ratio > 0.04:  # More lenient 4% threshold for additional polynomials
+            if coverage_loss_ratio > 0.04:
                 necessary_polynomials.append(test_poly)
 
         return necessary_polynomials
