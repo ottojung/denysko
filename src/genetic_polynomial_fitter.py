@@ -354,8 +354,6 @@ class GeneticPolynomialFitter:
         if self.data_points is None:
             return offspring
 
-        mutation_rate = max(0.1, self.mutation_rate)
-
         # Pre-compute spatial relationships for efficient neighbor finding
         if not hasattr(self, "_neighbor_cache"):
             self._build_neighbor_cache()
@@ -393,7 +391,7 @@ class GeneticPolynomialFitter:
 
             # Apply TWO-TIER MUTATIONS to this solution
             for gene_idx in range(len(solution)):
-                if np.random.random() < mutation_rate:
+                if np.random.random() < self.mutation_rate:
                     current_point_idx = int(
                         solution[gene_idx]
                     )  # Extract the point index
