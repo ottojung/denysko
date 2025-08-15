@@ -627,30 +627,42 @@ class GeneticPolynomialFitter:
 
         necessary_polynomials = []
 
+        # Sort polynomials by their individual coverage contribution (descending)
+        poly_coverage_scores = []
         for i, test_poly in enumerate(polynomials):
             if test_poly.degree == 0:  # Skip constant polynomials
+                poly_coverage_scores.append((i, test_poly, 0))
                 continue
-
-            # Create list without this polynomial
-            remaining_polys = [p for j, p in enumerate(polynomials) if j != i]
-
-            if not remaining_polys:  # Always keep at least one polynomial
-                necessary_polynomials.append(test_poly)
-                continue
-
+                
             # Calculate coverage without this polynomial
+            remaining_polys = [p for j, p in enumerate(polynomials) if j != i]
+            if not remaining_polys:
+                poly_coverage_scores.append((i, test_poly, baseline_coverage))
+                continue
+                
             reduced_coverage = self._calculate_coverage(remaining_polys, data_points)
+            coverage_contribution = baseline_coverage - reduced_coverage
+            poly_coverage_scores.append((i, test_poly, coverage_contribution))
 
-            # Calculate coverage loss percentage
+        # Sort by coverage contribution (descending)
+        poly_coverage_scores.sort(key=lambda x: x[2], reverse=True)
+
+        # Always keep the top 2 polynomials (minimum required)
+        for i in range(min(2, len(poly_coverage_scores))):
+            _, poly, _ = poly_coverage_scores[i]
+            necessary_polynomials.append(poly)
+
+        # For remaining polynomials, use the coverage loss threshold
+        for i in range(2, len(poly_coverage_scores)):
+            _, test_poly, coverage_contribution = poly_coverage_scores[i]
+            
             if baseline_coverage > 0:
-                coverage_loss_ratio = (
-                    baseline_coverage - reduced_coverage
-                ) / baseline_coverage
+                coverage_loss_ratio = coverage_contribution / baseline_coverage
             else:
                 coverage_loss_ratio = 0
 
-            # If removing this polynomial causes >6% coverage loss, it's necessary
-            if coverage_loss_ratio > 0.06:  # 6% threshold (fine-tuned)
+            # If removing this polynomial causes >4% coverage loss, it's necessary
+            if coverage_loss_ratio > 0.04:  # More lenient 4% threshold for additional polynomials
                 necessary_polynomials.append(test_poly)
 
         return necessary_polynomials
