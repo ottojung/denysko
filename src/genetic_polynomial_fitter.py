@@ -350,6 +350,7 @@ class GeneticPolynomialFitter:
 
     def _custom_mutation(self, offspring, ga_instance):
         """Two-tier mutation function: small nudges (common) + big changes (rare)."""
+
         if self.data_points is None:
             return offspring
 
