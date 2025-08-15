@@ -366,29 +366,6 @@ class GeneticPolynomialFitter:
         ):  # For each solution in population
             solution = offspring_array[solution_idx]
 
-            # Find uncovered points for this individual solution
-            point_lists = self._decode_solution(solution)
-            polynomials = []
-            for point_list in point_lists:
-                poly = self._fit_polynomial_to_points(point_list, self.data_points)
-                polynomials.append(poly)
-
-            uncovered_points = []
-            tolerance = 5.0
-
-            for i, (x, y) in enumerate(self.data_points):
-                best_error = float("inf")
-                for poly in polynomials:
-                    try:
-                        pred = poly.evaluate(x)
-                        error = abs(pred - y)
-                        best_error = min(best_error, error)
-                    except Exception:
-                        continue
-
-                if best_error > tolerance:
-                    uncovered_points.append(i)
-
             # Apply TWO-TIER MUTATIONS to this solution
             for gene_idx in range(len(solution)):
                 if np.random.random() < self.mutation_rate:
@@ -396,65 +373,23 @@ class GeneticPolynomialFitter:
                         solution[gene_idx]
                     )  # Extract the point index
 
-                    # Decide mutation type: 95% small nudges, 5% big changes
+                    # Decide mutation type: small nudges vs big changes
                     if np.random.random() < 0.95:
                         # SMALL NUDGE: Replace with nearby neighbor
                         neighbors = self._get_neighbors(current_point_idx, radius=5)
                         if neighbors:
-                            # Prefer uncovered neighbors if available
-                            uncovered_neighbors = [
-                                n for n in neighbors if n in uncovered_points
-                            ]
-                            if uncovered_neighbors:
-                                solution[gene_idx] = np.random.choice(
-                                    uncovered_neighbors
-                                )
-                            else:
-                                solution[gene_idx] = np.random.choice(neighbors)
+                            solution[gene_idx] = np.random.choice(neighbors)
                         else:
-                            # No neighbors found, fall back to random selection from uncovered points
-                            if uncovered_points:
-                                solution[gene_idx] = np.random.choice(uncovered_points)
-                            else:
-                                solution[gene_idx] = np.random.randint(
-                                    0, len(self.data_points)
-                                )
-                    else:
-                        # BIG CHANGE: Replace with completely random point
-                        if uncovered_points and np.random.random() < 0.7:
-                            # 70% chance to pick from uncovered points
-                            solution[gene_idx] = np.random.choice(uncovered_points)
-                        else:
-                            # 30% chance for completely random point
                             solution[gene_idx] = np.random.randint(
                                 0, len(self.data_points)
                             )
+                    else:
 
-            # Force diversity within each polynomial for this solution
-            genes_per_poly = self.max_degree
-            for poly_idx in range(self.max_polynomials):
-                start_idx = poly_idx * genes_per_poly
-                end_idx = start_idx + genes_per_poly
-                poly_genes = solution[start_idx:end_idx]
-
-                # Convert to list of integers for set operations
-                poly_genes_list = [int(g) for g in poly_genes]
-
-                # If all genes are the same, diversify
-                if len(set(poly_genes_list)) == 1:
-                    # Keep one, change others
-                    for i in range(1, len(poly_genes)):
-                        gene_pos = start_idx + i
-                        if uncovered_points:
-                            solution[gene_pos] = np.random.choice(uncovered_points)
-                        else:
-                            solution[gene_pos] = np.random.randint(
-                                0, len(self.data_points)
-                            )
+                        solution[gene_idx] = np.random.randint(
+                            0, len(self.data_points)
+                        )
 
         return offspring_array
-
-        return offspring
 
     def _build_neighbor_cache(self):
         """Build cache of spatial neighbors for efficient mutation."""
@@ -489,12 +424,7 @@ class GeneticPolynomialFitter:
         ):
             return []
 
-        # Return subset of cached neighbors within radius
         all_neighbors = self._neighbor_cache[point_idx]
-        if radius >= 20:  # If radius is large, return all cached neighbors
-            return all_neighbors
-
-        # For smaller radius, return first 'radius' neighbors (they're sorted by distance)
         return all_neighbors[: min(radius, len(all_neighbors))]
 
     def _on_generation_callback(self, ga_instance):
