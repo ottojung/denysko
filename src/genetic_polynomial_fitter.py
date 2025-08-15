@@ -165,6 +165,7 @@ class GeneticPolynomialFitter:
             data_points: sampled data points for genetic algorithm
             full_trace_complexity: complexity calculated from full trace (optional)
         """
+
         data_points = [(float(p[0]), float(p[1])) for p in data_points]
         self.data_points = data_points  # Store for fitness function
 
@@ -543,7 +544,6 @@ class GeneticPolynomialFitter:
             return 0.0
 
         total_distance = 0.0
-        covered_points = 0
 
         # For each data point, find the minimum distance to any polynomial
         for x, y in data_points:
@@ -560,17 +560,9 @@ class GeneticPolynomialFitter:
 
             total_distance += min_distance
 
-            # Count point as covered if distance is reasonable
-            if min_distance < 15.0:  # Coverage threshold
-                covered_points += 1
-
         # Calculate base accuracy fitness
         average_distance = total_distance / len(data_points)
-        accuracy_fitness = 1000.0 / (1.0 + average_distance)
-
-        # Coverage bonus - reward covering more points
-        coverage_ratio = covered_points / len(data_points)
-        coverage_bonus = coverage_ratio * 300  # Increased coverage importance
+        accuracy_fitness = 1000 / (1 + average_distance)
 
         # Count effective polynomials using coverage loss analysis
         effective_polynomials = self._analyze_polynomial_necessity(
@@ -585,34 +577,12 @@ class GeneticPolynomialFitter:
             unnecessary_polynomials * 25
         )  # Light penalty to allow evolution
 
-        # Diversity bonus - reward polynomials that cover different areas
-        diversity_bonus = 0
-        if len(effective_polynomials) > 1:
-            # Simple diversity measure based on unique coverage
-            total_unique_coverage = set()
-            for poly in effective_polynomials:
-                poly_points = set()
-                for i, (x, y) in enumerate(data_points):
-                    try:
-                        pred = poly.evaluate(x)
-                        if abs(pred - y) < 20.0:
-                            poly_points.add(i)
-                    except Exception:
-                        continue
-                total_unique_coverage.update(poly_points)
-
-            diversity_ratio = len(total_unique_coverage) / len(data_points)
-            diversity_bonus = diversity_ratio * 50
-
         # Final fitness = accuracy + coverage bonus + diversity bonus - complexity penalty
         fitness = (
-            accuracy_fitness + coverage_bonus + diversity_bonus - complexity_penalty
+            accuracy_fitness - complexity_penalty
         )
 
-        # Ensure fitness is never negative
-        fitness = max(fitness, 1.0)
-
-        return fitness
+        return 1000 + fitness
 
     def _analyze_polynomial_necessity(self, polynomials, data_points):
         """
