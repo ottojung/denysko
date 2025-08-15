@@ -571,7 +571,6 @@ class GeneticPolynomialFitter:
 
         complexity_penalty = 1 + (len(individual.polynomials) - num_effective)
 
-        # Final fitness = accuracy + coverage bonus + diversity bonus - complexity penalty
         fitness = (
             accuracy_fitness / complexity_penalty
         )
