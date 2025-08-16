@@ -284,7 +284,7 @@ class GeneticPolynomialFitter:
             # For each gene, just pick a random point index
             for gene_idx in range(self.num_genes):
                 random_point_idx = np.random.randint(0, len(data_points))
-                for point_idx in range(self.max_degree - 1):
+                for point_idx in range(self.max_degree):
                     solution.append(random_point_idx)
 
             population.append(solution)
