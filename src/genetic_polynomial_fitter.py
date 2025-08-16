@@ -101,8 +101,8 @@ class GeneticPolynomialFitter:
         generations=200,
         tournament_size=5,
         mutation_rate=0.4,
-        max_polynomials=6,  # Always generate 6 polynomials
-        max_degree=6,  # Always use degree 6
+        max_polynomials=6,
+        max_degree=6,
         fitness_weights=None,
     ):
         self.population_size = population_size
