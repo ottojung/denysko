@@ -456,7 +456,8 @@ class GeneticPolynomialFitter:
 
         # Calculate base accuracy fitness
         average_distance = total_distance / len(data_points)
-        accuracy_fitness = 99999 * 1 / (1 + average_distance)
+        normalized_distance = average_distance / self.coverage_threshold
+        accuracy_fitness = 99999 * 1 / (1 + normalized_distance)
 
         # Count effective polynomials using coverage loss analysis
         effective_polynomials = self._analyze_polynomial_necessity(
