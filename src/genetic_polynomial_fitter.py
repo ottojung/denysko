@@ -421,6 +421,8 @@ class GeneticPolynomialFitter:
 
             total_distance += min_distance
 
+        print(total_distance)            
+
         # Calculate base accuracy fitness
         average_distance = total_distance / len(data_points)
         accuracy_fitness = 1 / (1 + average_distance)
