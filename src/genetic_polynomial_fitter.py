@@ -196,7 +196,6 @@ class GeneticPolynomialFitter:
             keep_parents=max(1, self.population_size // 8),  # More elite preservation
             crossover_type="two_points",  # Better crossover
             mutation_type=self._custom_mutation,
-            mutation_percent_genes=round(self.mutation_rate * 100),
             random_seed=None,
             suppress_warnings=True,
             on_generation=self._on_generation_callback,
