@@ -440,7 +440,7 @@ class GeneticPolynomialFitter:
             if len(point_indices) >= 1:
                 unique_indices = [point_indices[0], point_indices[0]]
             else:
-                unique_indices = [0, 0]
+                raise ValueError("Not enough unique points to fit a polynomial")
 
         fit_points = [data_points[i] for i in unique_indices]
         x_vals = [p[0] for p in fit_points]
