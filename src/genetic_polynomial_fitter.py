@@ -358,14 +358,7 @@ class GeneticPolynomialFitter:
         if not hasattr(self, "_neighbor_cache"):
             self._build_neighbor_cache()
 
-        # Convert offspring to proper numpy array and work with individual solutions
-        offspring_array = np.array(offspring)
-
-        for solution_idx in range(
-            offspring_array.shape[0]
-        ):  # For each solution in population
-            solution = offspring_array[solution_idx]
-
+        for solution in offspring:
             # Apply TWO-TIER MUTATIONS to this solution
             for gene_idx in range(len(solution)):
                 if np.random.random() < self.mutation_rate:
@@ -389,7 +382,7 @@ class GeneticPolynomialFitter:
                             0, len(self.data_points)
                         )
 
-        return offspring_array
+        return offspring
 
     def _build_neighbor_cache(self):
         """Build cache of spatial neighbors for efficient mutation."""
