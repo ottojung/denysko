@@ -100,7 +100,6 @@ class GeneticPolynomialFitter:
         population_size=100,
         generations=200,
         tournament_size=5,
-        crossover_rate=0.8,
         mutation_rate=0.4,
         max_polynomials=6,  # Always generate 6 polynomials
         max_degree=6,  # Always use degree 6
@@ -109,7 +108,6 @@ class GeneticPolynomialFitter:
         self.population_size = population_size
         self.max_generations = generations
         self.mutation_rate = mutation_rate
-        self.crossover_rate = crossover_rate
         self.tournament_size = tournament_size
         self.max_polynomials = max_polynomials
         self.max_degree = max_degree
