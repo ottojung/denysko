@@ -459,15 +459,15 @@ class GeneticPolynomialFitter:
         normalized_distance = average_distance / self.coverage_threshold
         accuracy_fitness = 99999 * 1 / (1 + normalized_distance)
 
-        # Count effective polynomials using coverage loss analysis
-        effective_polynomials = self._analyze_polynomial_necessity(
-            individual.polynomials, data_points
-        )
-        num_effective = len(effective_polynomials)
+        # # Count effective polynomials using coverage loss analysis
+        # effective_polynomials = self._analyze_polynomial_necessity(
+        #     individual.polynomials, data_points
+        # )
+        # num_effective = len(effective_polynomials)
 
-        complexity_penalty = 1 + (len(individual.polynomials) - num_effective)
+        # complexity_penalty = 1 + (len(individual.polynomials) - num_effective)
 
-        fitness = accuracy_fitness / complexity_penalty
+        fitness = accuracy_fitness / len(individual.polynomials)
 
         return 1000 + fitness
 
