@@ -346,7 +346,7 @@ class GeneticPolynomialFitter:
                     )  # Extract the point index
 
                     # Decide mutation type: small nudges vs big changes
-                    if np.random.random() < 0.95:
+                    if np.random.random() < 0.8:
                         # SMALL NUDGE: Replace with nearby neighbor
                         neighbors = self._get_neighbors(current_point_idx, radius=5)
                         if neighbors:
