@@ -474,6 +474,7 @@ class GeneticPolynomialFitter:
                 distance = abs(pred - y)
                 min_distance = min(min_distance, distance)
 
+            assert min_distance != float("inf"), "Minimum distance should not be infinite"
             total_distance += min_distance
 
         # Calculate base accuracy fitness
