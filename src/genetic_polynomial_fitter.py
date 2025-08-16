@@ -115,6 +115,7 @@ class GeneticPolynomialFitter:
 
         # Store data points for use in fitness function
         self.data_points = None
+        self.coverage_threshold = None  # Will be calculated from data points
 
         # Gene space: each gene is an index into data_points
         # Total genes = max_polynomials * max_degree
@@ -171,6 +172,9 @@ class GeneticPolynomialFitter:
 
         data_points = [(float(p[0]), float(p[1])) for p in data_points]
         self.data_points = data_points  # Store for fitness function
+
+        # Calculate coverage threshold as average distance between points
+        self.coverage_threshold = self._calculate_coverage_threshold(data_points)
 
         print(
             f"Starting PyGAD point-selection genetic algorithm with {len(data_points)} data points"
@@ -291,6 +295,38 @@ class GeneticPolynomialFitter:
 
         return np.array(population, dtype=int)
 
+    def _calculate_coverage_threshold(self, data_points):
+        """Calculate coverage threshold as average distance between neighboring points."""
+        if len(data_points) < 2:
+            return 15.0  # Default fallback
+
+        # Build neighbor relationships first
+        total_distance = 0.0
+        count = 0
+
+        for i, (x1, y1) in enumerate(data_points):
+            # Find closest neighbor for each point
+            min_neighbor_distance = float("inf")
+
+            for j, (x2, y2) in enumerate(data_points):
+                if i != j:
+                    distance = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+                    if distance < min_neighbor_distance:
+                        min_neighbor_distance = distance
+
+            if min_neighbor_distance != float("inf"):
+                total_distance += min_neighbor_distance
+                count += 1
+
+        if count == 0:
+            return 15.0  # Default fallback
+
+        avg_neighbor_distance = total_distance / count
+        print(
+            f"Calculated coverage threshold from neighbor distances: {avg_neighbor_distance:.2f}"
+        )
+        return avg_neighbor_distance
+
     def _custom_mutation(self, offspring, ga_instance):
         """Two-tier mutation function: small nudges (common) + big changes (rare)."""
 
@@ -320,10 +356,7 @@ class GeneticPolynomialFitter:
                                 0, len(self.data_points)
                             )
                     else:
-
-                        solution[gene_idx] = np.random.randint(
-                            0, len(self.data_points)
-                        )
+                        solution[gene_idx] = np.random.randint(0, len(self.data_points))
 
         return offspring
 
@@ -433,9 +466,7 @@ class GeneticPolynomialFitter:
 
         complexity_penalty = 1 + (len(individual.polynomials) - num_effective)
 
-        fitness = (
-            accuracy_fitness / complexity_penalty
-        )
+        fitness = accuracy_fitness / complexity_penalty
 
         return 1000 + fitness
 
@@ -458,13 +489,13 @@ class GeneticPolynomialFitter:
             if test_poly.degree == 0:  # Skip constant polynomials
                 poly_coverage_scores.append((i, test_poly, 0))
                 continue
-                
+
             # Calculate coverage without this polynomial
             remaining_polys = [p for j, p in enumerate(polynomials) if j != i]
             if not remaining_polys:
                 poly_coverage_scores.append((i, test_poly, baseline_coverage))
                 continue
-                
+
             reduced_coverage = self._calculate_coverage(remaining_polys, data_points)
             coverage_contribution = baseline_coverage - reduced_coverage
             poly_coverage_scores.append((i, test_poly, coverage_contribution))
@@ -480,7 +511,7 @@ class GeneticPolynomialFitter:
         # For remaining polynomials, use the coverage loss threshold
         for i in range(2, len(poly_coverage_scores)):
             _, test_poly, coverage_contribution = poly_coverage_scores[i]
-            
+
             if baseline_coverage > 0:
                 coverage_loss_ratio = coverage_contribution / baseline_coverage
             else:
@@ -498,9 +529,7 @@ class GeneticPolynomialFitter:
             return 0
 
         covered_count = 0
-        coverage_threshold = (
-            15.0  # Distance threshold for considering a point "covered"
-        )
+        coverage_threshold = self.coverage_threshold
 
         for x, y in data_points:
             min_distance = float("inf")
