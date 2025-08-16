@@ -449,13 +449,9 @@ class GeneticPolynomialFitter:
         degree = len(unique_indices) - 1
         degree = max(1, min(degree, self.max_degree))
 
-        try:
-            coefficients = np.polyfit(x_vals, y_vals, degree)
-            coefficients = coefficients[::-1].tolist()
-            return Polynomial(coefficients, fit_points, degree)
-        except Exception:
-            mean_y = np.mean(y_vals) if y_vals else 0.0
-            return Polynomial([mean_y], fit_points, 0)
+        coefficients = np.polyfit(x_vals, y_vals, degree)
+        coefficients = coefficients[::-1].tolist()
+        return Polynomial(coefficients, fit_points, degree)
 
     def _evaluate_fitness(self, individual, data_points):
         """Fitness function that balances accuracy with polynomial complexity to find optimal count."""
