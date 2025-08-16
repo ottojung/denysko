@@ -476,6 +476,7 @@ class GeneticPolynomialFitter:
 
             if min_distance == float("inf"):
                 raise ValueError("Minimum distance should not be infinite")
+
             total_distance += min_distance
 
         # Calculate base accuracy fitness
