@@ -132,7 +132,12 @@ class GeneticPolynomialFitter:
             start_idx = i * genes_per_poly
             end_idx = start_idx + genes_per_poly
             point_list = flat_solution[start_idx:end_idx].tolist()
-            point_lists.append([int(idx) for idx in point_list])  # Ensure integers
+
+            assert isinstance(point_list, list)
+            for idx in point_list:
+                assert isinstance(idx, (int, float))
+
+            point_lists.append(point_list)
 
         return point_lists
 
