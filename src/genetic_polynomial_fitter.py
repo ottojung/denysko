@@ -100,7 +100,7 @@ class GeneticPolynomialFitter:
         population_size=100,
         generations=200,
         tournament_size=5,
-        mutation_rate=0.9,
+        mutation_rate=0.3,
         max_polynomials=2,
         max_degree=6,
         fitness_weights=None,
@@ -346,7 +346,7 @@ class GeneticPolynomialFitter:
                     )  # Extract the point index
 
                     # Decide mutation type: small nudges vs big changes
-                    if np.random.random() < 0.8:
+                    if np.random.random() < 0.9:
                         # SMALL NUDGE: Replace with nearby neighbor
                         neighbors = self._get_neighbors(current_point_idx, radius=5)
                         if neighbors:
