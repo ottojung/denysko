@@ -525,8 +525,6 @@ class GeneticPolynomialFitter:
 
     def _calculate_coverage(self, polynomials, data_points):
         """Calculate how many data points are covered by the given polynomials."""
-        if not polynomials:
-            return 0
 
         covered_count = 0
         coverage_threshold = self.coverage_threshold
