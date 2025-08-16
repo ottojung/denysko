@@ -103,7 +103,6 @@ class GeneticPolynomialFitter:
         mutation_rate=0.3,
         max_polynomials=2,
         max_degree=6,
-        fitness_weights=None,
     ):
         self.population_size = population_size
         self.max_generations = generations
@@ -111,7 +110,6 @@ class GeneticPolynomialFitter:
         self.tournament_size = tournament_size
         self.max_polynomials = max_polynomials
         self.max_degree = max_degree
-        self.fitness_weights = fitness_weights or {"coverage": 1.0}
 
         # Store data points for use in fitness function
         self.data_points = None
