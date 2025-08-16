@@ -269,77 +269,17 @@ class GeneticPolynomialFitter:
         return necessary_polynomials
 
     def _create_strategic_initial_population(self, data_points):
-        """Create initial population with strategic point selections."""
+        """Create initial population with random point selections."""
         population = []
-        x_coords = np.array([x for x, y in data_points])
-        y_coords = np.array([y for x, y in data_points])
 
-        # Strategy 1: Extremal points
-        x_min_idx = np.argmin(x_coords)
-        x_max_idx = np.argmax(x_coords)
-        y_min_idx = np.argmin(y_coords)
-        y_max_idx = np.argmax(y_coords)
-        extremal_points = [x_min_idx, x_max_idx, y_min_idx, y_max_idx]
-
-        # Strategy 2: Quantile points
-        x_sorted_indices = np.argsort(x_coords)
-        quantile_points = []
-        for q in [0.1, 0.3, 0.5, 0.7, 0.9]:
-            idx = x_sorted_indices[int(q * len(x_sorted_indices))]
-            quantile_points.append(idx)
-
-        # Strategy 3: High-variation points (potential corners/features)
-        variation_scores = []
-        for i in range(len(data_points)):
-            # Calculate local variation
-            distances = []
-            for j in range(len(data_points)):
-                if i != j:
-                    dx = x_coords[i] - x_coords[j]
-                    dy = y_coords[i] - y_coords[j]
-                    distances.append((dx * dx + dy * dy, j))
-
-            distances.sort()
-            nearby_indices = [idx for _, idx in distances[: min(10, len(distances))]]
-
-            if len(nearby_indices) > 1:
-                nearby_y = [y_coords[idx] for idx in nearby_indices]
-                variation = np.std(nearby_y)
-            else:
-                variation = 0
-            variation_scores.append(variation)
-
-        high_variation_indices = np.argsort(variation_scores)[-20:].tolist()
-
-        # Create diverse initial solutions
+        # Create random initial solutions
         for i in range(self.population_size):
             solution = []
 
-            for poly_idx in range(self.max_polynomials):
-                if i % 4 == 0:
-                    # Strategy: Use extremal points
-                    point_candidates = extremal_points + quantile_points
-                elif i % 4 == 1:
-                    # Strategy: Use high-variation points
-                    point_candidates = high_variation_indices
-                elif i % 4 == 2:
-                    # Strategy: Use quantile distribution
-                    point_candidates = quantile_points + extremal_points
-                else:
-                    # Strategy: Random selection
-                    point_candidates = list(range(len(data_points)))
-
-                # Select points for this polynomial with diversity
-                poly_points = []
-
-                for gene_idx in range(self.max_degree):
-                    if point_candidates:
-                        candidate = np.random.choice(point_candidates)
-                    else:
-                        candidate = np.random.randint(0, len(data_points))
-                    poly_points.append(candidate)
-
-                solution.extend(poly_points)
+            # For each gene, just pick a random point index
+            for gene_idx in range(self.num_genes):
+                random_point_idx = np.random.randint(0, len(data_points))
+                solution.append(random_point_idx)
 
             population.append(solution)
 
