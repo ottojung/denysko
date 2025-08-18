@@ -1,21 +1,21 @@
 #!/usr/bin/env python3
 """
-Updated polynomial fitter using genetic algorithm approach.
+Updated polynomial fitter using simple search algorithm approach.
 """
 
 import numpy as np
-from .genetic_polynomial_fitter import GeneticPolynomialFitter
+from .simple_polynomial_fitter import SimplePolynomialFitter
 
 
 class PolynomialFitter:
-    """Fit polynomials to extracted centerlines using genetic algorithm."""
+    """Fit polynomials to extracted centerlines using simple search algorithm."""
 
     def __init__(self):
-        self.ga_fitter = GeneticPolynomialFitter()
+        self.simple_fitter = SimplePolynomialFitter()
 
     def fit_polynomial_to_trace(self, trace, target_degree=3):
         """
-        Fit polynomials to a trace using genetic algorithm.
+        Fit polynomials to a trace using simple search algorithm.
 
         Args:
             trace: numpy array of (x, y) points
@@ -27,17 +27,17 @@ class PolynomialFitter:
         if len(trace) < 4:  # Need minimum points for fitting
             return []
 
-        # Sample points if too many (genetic algorithm works better with fewer points)
+        # Sample points if too many (search algorithm works better with fewer points)
         sampled_trace = trace
         if len(trace) > 500:
-            print(f"Sampling {len(trace)} points down to 500 for genetic algorithm")
+            print(f"Sampling {len(trace)} points down to 500 for search algorithm")
             indices = np.linspace(0, len(trace) - 1, 500, dtype=int)
             sampled_trace = trace[indices]
 
-        print(f"Fitting genetic polynomials to {len(sampled_trace)} points")
+        print(f"Fitting polynomials to {len(sampled_trace)} points")
 
-        # Use genetic algorithm to find optimal polynomials with complexity from full trace
-        polynomials = self.ga_fitter.fit(sampled_trace)
+        # Use simple search algorithm to find optimal polynomials
+        polynomials = self.simple_fitter.fit(sampled_trace)
 
         # Convert to Desmos format strings
         result = []
