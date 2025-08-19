@@ -315,12 +315,9 @@ class SimplePolynomialFitter:
             min_distance = float("inf")
 
             for poly in polynomials:
-                try:
-                    pred = poly.evaluate(x)
-                    distance = abs(pred - y)
-                    min_distance = min(min_distance, distance)
-                except Exception:
-                    continue
+                pred = poly.evaluate(x)
+                distance = abs(pred - y)
+                min_distance = min(min_distance, distance)
 
             if min_distance != float("inf"):
                 total_distance += min_distance
