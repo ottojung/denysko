@@ -319,7 +319,9 @@ class SimplePolynomialFitter:
                 distance = abs(pred - y)
                 min_distance = min(min_distance, distance)
 
-            if min_distance != float("inf"):
-                total_distance += min_distance
+            if min_distance == float("inf"):
+                raise RuntimeError("Impossible to evaluate polynomial for point")
+
+            total_distance += min_distance
 
         return total_distance / len(self.data_points)
