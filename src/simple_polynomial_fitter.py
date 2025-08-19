@@ -355,4 +355,4 @@ class SimplePolynomialFitter:
             if min_distance <= acceptable_distance:
                 score += 1
 
-        return score / len(self.data_points)
+        return score
