@@ -82,7 +82,7 @@ class SimplePolynomialFitter:
         self,
         max_iterations=10000,
         max_points_per_poly=5,
-        max_polynomials=5,
+        max_polynomials=3,
     ):
         self.max_iterations = max_iterations
         self.max_points_per_poly = max_points_per_poly
