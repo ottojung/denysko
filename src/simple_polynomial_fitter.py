@@ -335,7 +335,7 @@ class SimplePolynomialFitter:
             avg_neighbor = float(np.mean(neighbor_arr))
             std_neighbor = float(np.std(neighbor_arr))
 
-        acceptable_distance = 2.0 * avg_neighbor + 2.0 * std_neighbor
+        acceptable_distance = 1.0 * avg_neighbor + 0.3 * std_neighbor
 
         score = 0.0
 
