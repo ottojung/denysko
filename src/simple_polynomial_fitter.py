@@ -185,9 +185,9 @@ class SimplePolynomialFitter:
         """Apply a random perturbation to the solution."""
         rand = np.random.random()
 
-        if rand < 0.90:  # 90% - Replace point with immediate neighbor
+        if rand < 0.80:  # 80% - Replace point with immediate neighbor
             return self._replace_with_neighbor(solution)
-        elif rand < 0.95:  # 5% - Replace point with random point
+        elif rand < 0.95:  # 15% - Replace point with random point
             return self._replace_with_random(solution)
         elif rand < 0.98:  # 3% - Add random point to existing polynomial
             return self._add_point_to_polynomial(solution)
