@@ -274,7 +274,7 @@ class SimplePolynomialFitter:
         y_vals = [p[1] for p in fit_points]
 
         degree = len(unique_indices) - 1
-        degree = max(0, min(degree, 6))  # Max degree 6
+        degree = max(1, min(degree, 2))
 
         try:
             if degree == 0:
