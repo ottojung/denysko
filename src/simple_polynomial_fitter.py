@@ -337,31 +337,22 @@ class SimplePolynomialFitter:
 
         acceptable_distance = 2.0 * avg_neighbor + 2.0 * std_neighbor
 
-        included_distances = []
+        score = 0.0
 
         # Calculate minimum distance for each data point and include only if acceptable
         for x, y in self.data_points:
             min_distance = float("inf")
 
             for poly in polynomials:
-                try:
-                    pred = poly.evaluate(x)
-                    distance = abs(pred - y)
-                    if distance < min_distance:
-                        min_distance = distance
-                except Exception:
-                    continue
+                pred = poly.evaluate(x)
+                distance = abs(pred - y)
+                if distance < min_distance:
+                    min_distance = distance
 
             if min_distance == float("inf"):
-                # If polynomial evaluation failed for this point, skip it
-                continue
+                raise RuntimeError("Impossible to evaluate polynomial for point")
 
             if min_distance <= acceptable_distance:
-                included_distances.append(min_distance)
+                score += 1
 
-        if not included_distances:
-            # No points within acceptable distance -> heavy penalty
-            return 1e6
-
-        # Return average of included distances
-        return float(sum(included_distances) / len(included_distances))
+        return score / len(self.data_points)
