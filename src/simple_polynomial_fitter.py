@@ -298,11 +298,17 @@ class SimplePolynomialFitter:
             return Polynomial([mean_y], fit_points, 0)
 
     def _calculate_error(self, solution):
-        """Calculate total error for the solution."""
+        """Calculate total error for the solution using neighbor-based acceptance threshold.
+
+        Procedure:
+        - Compute average neighbor distance and its standard deviation from the neighbor cache.
+        - Acceptable distance = 2 * avg_neighbor_distance + 2 * std_neighbor_distance
+        - For each data point, compute the minimum distance to any polynomial and include it
+          in the error sum only if it's <= acceptable distance.
+        - Return the average of included distances. If none included, return a large penalty.
+        """
         if not solution:
             return float("inf")
-
-        total_distance = 0.0
 
         # Fit polynomials for current solution
         polynomials = []
@@ -310,18 +316,52 @@ class SimplePolynomialFitter:
             poly = self._fit_polynomial_to_points(poly_points)
             polynomials.append(poly)
 
-        # Calculate error for each data point
+        # Build list of neighbor distances from neighbor_cache
+        neighbor_distances = []
+        if self.neighbor_cache is not None:
+            for i, neighs in self.neighbor_cache.items():
+                x1, y1 = self.data_points[i]
+                for n in neighs:
+                    x2, y2 = self.data_points[n]
+                    d = ((x2 - x1) ** 2 + (y2 - y1) ** 2) ** 0.5
+                    neighbor_distances.append(d)
+
+        # Fallback if neighbor distances not available
+        if not neighbor_distances:
+            avg_neighbor = 15.0
+            std_neighbor = 0.0
+        else:
+            neighbor_arr = np.array(neighbor_distances)
+            avg_neighbor = float(np.mean(neighbor_arr))
+            std_neighbor = float(np.std(neighbor_arr))
+
+        acceptable_distance = 2.0 * avg_neighbor + 2.0 * std_neighbor
+
+        included_distances = []
+
+        # Calculate minimum distance for each data point and include only if acceptable
         for x, y in self.data_points:
             min_distance = float("inf")
 
             for poly in polynomials:
-                pred = poly.evaluate(x)
-                distance = abs(pred - y)
-                min_distance = min(min_distance, distance)
+                try:
+                    pred = poly.evaluate(x)
+                    distance = abs(pred - y)
+                    if distance < min_distance:
+                        min_distance = distance
+                except Exception:
+                    continue
 
             if min_distance == float("inf"):
-                raise RuntimeError("Impossible to evaluate polynomial for point")
+                # If polynomial evaluation failed for this point, skip it
+                continue
 
-            total_distance += min_distance
+            if min_distance <= acceptable_distance:
+                included_distances.append(min_distance)
 
-        return total_distance / len(self.data_points)
+        if not included_distances:
+            # No points within acceptable distance -> heavy penalty
+            return 1e6
+
+        # Return average of included distances
+        return float(sum(included_distances) / len(included_distances))
