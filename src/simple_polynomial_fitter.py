@@ -80,7 +80,7 @@ class SimplePolynomialFitter:
 
     def __init__(
         self,
-        max_iterations=1000,
+        max_iterations=10000,
         max_points_per_poly=5,
         max_polynomials=5,
     ):
