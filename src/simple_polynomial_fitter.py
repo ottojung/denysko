@@ -353,6 +353,6 @@ class SimplePolynomialFitter:
                 raise RuntimeError("Impossible to evaluate polynomial for point")
 
             if min_distance <= acceptable_distance:
-                score += 1
+                score += min_distance
 
         return 1/score
