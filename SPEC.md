@@ -23,11 +23,11 @@ If a feature requires more than one glyph, it is out of scope.
 ## 3. Interface
 
 ```
-desmos-letter <letter> [--seed N] [--max-curves K] [--out FILE]
+desmos-letter <letter> [--seed N] [--max-curves K]
 ```
 
 - `<letter>`: exactly one character from `A`–`Z`. Anything else → exit code 2, no output.
-- Default output: stdout, one Desmos expression per line. `--out FILE` writes the same lines plus nothing else.
+- Output: **stdout only**, one Desmos expression per line. The tool writes no files, ever.
 
 ### Expression contract (every emitted line)
 
