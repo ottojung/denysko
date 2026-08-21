@@ -76,4 +76,4 @@ No silent bad output, ever.
 
 ## 8. Dependencies
 
-Python ≥ 3.11, numpy, matplotlib. Nothing else.
+`uv`, Python ≥ 3.11, `numpy`, `matplotlib`. Nothing else.
