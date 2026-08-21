@@ -76,4 +76,4 @@ No silent bad output, ever.
 
 ## 8. Dependencies
 
-Python ≥ 3.11, numpy, matplotlib. Nothing else. (pygad is removed, not optional.)
+Python ≥ 3.11, numpy, matplotlib. Nothing else.
