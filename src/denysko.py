@@ -69,6 +69,7 @@ class Glyph:
 
 
 U_OF_X = np.polynomial.Polynomial([-1.0, 0.02])
+X_OF_U = np.polynomial.Polynomial([50.0, 50.0])
 
 
 def x_curve_of_candidate(cand: Candidate) -> XCurve:
