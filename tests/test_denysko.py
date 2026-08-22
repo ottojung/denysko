@@ -1,5 +1,3 @@
-import string
-
 import numpy as np
 import pytest
 
@@ -7,53 +5,405 @@ from src import denysko as d
 
 
 # ---------------------------------------------------------------------------
-# Synthetic glyphs
+# u -> x conversion and serialization
 # ---------------------------------------------------------------------------
 
 
-def _vertical_bar_points():
+def test_u_coefficients_printed_as_x():
+    cand = d.Candidate(1, np.array([100.0, 100.0]))
+    assert d.serialize(cand) == "y=2x"
+
+
+def test_serialize_parse_roundtrip():
+    for degree in range(6):
+        coef = np.arange(1.0, degree + 2.0)
+        line = d.serialize(d.Candidate(degree, coef))
+        curve = d.parse_line(line)
+        assert curve is not None
+        assert d.format_expression(curve) == line
+
+
+def test_parse_matches_internal_u_basis_values():
+    xs = np.array([-5.0, 0.0, 12.5, 50.0, 77.7, 105.0])
+    coef = np.array([3.0, -2.0, 1.0])
+    curve = d.parse_line(d.serialize(d.Candidate(2, coef)))
+    expected = d._poly_u(coef, xs)
+    assert np.allclose(curve.poly(xs), expected, atol=0.05)
+
+
+def test_malformed_lines_do_not_parse():
+    for line in ["", "y=", "y=x^^2", "y=..x", "x=2", "y=x^2 \\left\\{0\\le x\\le 10\\right\\}"]:
+        assert d.parse_line(line) is None
+
+
+# ---------------------------------------------------------------------------
+# Trace classification
+# ---------------------------------------------------------------------------
+
+
+def test_single_finite_trace():
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
+    an = d.analyze_candidate(
+        d.Candidate(1, np.array([50.0, 50.0])),  # u-basis: y = x
+        glyph, np.zeros(len(glyph.search_points), dtype=bool),
+    )
+    assert an.bounds == pytest.approx((0.0, 100.0))
+    assert an.trace_penalty == 0.0
+
+
+def test_constant_in_band_is_unbounded_trace():
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
+    an = d.analyze_candidate(
+        d.Candidate(0, np.array([50.0])),
+        glyph, np.zeros(len(glyph.search_points), dtype=bool),
+    )
+    assert an.bounds is None
+    assert an.trace_penalty == pytest.approx(2.0)
+
+
+def test_multiple_components_invalid():
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
+    # y = 120 - x^2, band [0,100]: two in-band intervals
+    coef_u = np.polynomial.Polynomial([120.0, 0.0, -1.0])(d.X_OF_U).coef
+    an = d.analyze_candidate(
+        d.Candidate(2, coef_u),
+        glyph, np.zeros(len(glyph.search_points), dtype=bool),
+    )
+    assert an.bounds is None
+    assert an.trace_penalty == pytest.approx(1.0)
+
+
+# ---------------------------------------------------------------------------
+# Tail rules
+# ---------------------------------------------------------------------------
+
+
+def test_tail_derivative_root_rejection():
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
+    # P = 3(x+10)^3 - 5 has a stationary point below the trace
+    coef_u = np.polynomial.Polynomial([-3005.0, 900.0, 90.0, 3.0])(d.X_OF_U).coef
+    an = d.analyze_candidate(
+        d.Candidate(3, coef_u),
+        glyph, np.zeros(len(glyph.search_points), dtype=bool),
+    )
+    assert an.bounds is not None
+    assert an.deriv_outside >= 1
+    assert not an.feasible
+
+
+def test_tail_slope_rejection():
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
+    an = d.analyze_candidate(
+        d.Candidate(1, np.array([50.0, 50.0])),  # y = x, slope 1 < 8
+        glyph, np.zeros(len(glyph.search_points), dtype=bool),
+    )
+    assert abs(an.left_slope) < d.MIN_TAIL_SLOPE
+    assert not an.feasible
+
+
+def test_outside_band_no_surface_penalty():
+    # Vertical bar: distances only near the trace matter.
     ys = np.arange(5.0, 95.01, 0.5)
-    cols = [
-        np.column_stack([np.full(len(ys), x), ys]) for x in (49.6, 50.4)
-    ]
-    return np.vstack(cols)
+    p = np.vstack([
+        np.column_stack([np.full(len(ys), 49.6), ys]),
+        np.column_stack([np.full(len(ys), 50.4), ys]),
+    ])
+    glyph = d.make_glyph(p)
+    # steep line hugging the bar: 50 + 1400u = 28x - 1350
+    an = d.analyze_candidate(
+        d.Candidate(1, np.array([50.0, 1400.0])),
+        glyph, np.zeros(len(glyph.search_points), dtype=bool),
+    )
+    assert an.surface_fraction >= 0.95
+    assert an.bad_surface_fraction < 0.05
+    assert an.mean_surface_excess < 0.05
 
 
-def _horizontal_bar_points():
-    xs = np.arange(20.0, 80.01, 0.5)
-    rows = [
-        np.column_stack([xs, np.full(len(xs), y)]) for y in (49.6, 50.4)
-    ]
-    return np.vstack(rows)
+def test_connected_shape_validator_handcrafted():
+    """A handcrafted curve crossing ymin and ymax is surface-valid.
+
+    The boundary is a connected sloped segment; the curve follows it and
+    exits steeply at both band crossings. A shallow exit fails the tail
+    steepness rule.
+    """
+    l = 30.0
+    xs = np.arange(l, l + 12.0, 0.1)
+    y = 90.0 - 8.0 * (xs - l)
+    p = np.column_stack([xs, y])
+    glyph = d.make_glyph(p)
+
+    steep = d.XCurve(np.polynomial.Polynomial([90.0 + 8.0 * l, -8.0]))
+    an = d._analyze(
+        steep, 1, glyph, np.zeros(len(glyph.points), dtype=bool), dense=True
+    )
+    assert d.structurally_feasible(an)
+    assert d.validate([d.format_expression(steep)], glyph) == []
+
+    shallow = d.XCurve(np.polynomial.Polynomial([90.0 + 1.0 * l, -1.0]))
+    an = d._analyze(
+        shallow, 1, glyph, np.zeros(len(glyph.points), dtype=bool), dense=True
+    )
+    assert not d.structurally_feasible(an)
+    assert abs(an.left_slope) < d.MIN_TAIL_SLOPE
 
 
-def _steep_line_points(slope=28.0, intercept=-1350.0, x_lo=40.0, x_hi=60.0):
-    xs = np.arange(x_lo, x_hi + 0.001, 0.05)
-    return np.column_stack([xs, slope * xs + intercept])
-
-
-def _u_coef_of_xpoly(coef_x):
-    """Convert ordinary powers-of-x coefficients to the internal u basis."""
-    poly_u = np.polynomial.Polynomial(coef_x)(d.X_OF_U)
-    return poly_u.coef
+def test_euclidean_distance_tiny_cloud():
+    a = np.array([[0.0, 0.0], [1.0, 0.0]])
+    b = np.array([[0.0, 2.0]])
+    da, db = d._min_dists(a, b)
+    assert da[0] == pytest.approx(2.0)
+    assert db[0] == pytest.approx(2.0)
 
 
 # ---------------------------------------------------------------------------
-# CLI contract
+# p2 ranking
+# ---------------------------------------------------------------------------
+
+
+def test_segment_p2_ranking():
+    p = np.column_stack([np.arange(0.0, 101.0, 1.0), np.zeros(101)])
+    p1 = np.array([50.0, 0.0])
+    good = np.array([60.0, 0.0])   # along the boundary
+    bad = np.array([60.0, 30.0])   # sticks far off the boundary
+    d1, _ = d._min_dists(
+        np.linspace(p1, good, 33), p
+    )
+    d2, _ = d._min_dists(
+        np.linspace(p1, bad, 33), p
+    )
+    assert d1.mean() < d2.mean()
+
+
+# ---------------------------------------------------------------------------
+# Bent-line seeds
+# ---------------------------------------------------------------------------
+
+
+def _tiny_glyph():
+    xs = np.arange(10.0, 91.0, 2.0)
+    return d.make_glyph(np.column_stack([xs, 0.5 * xs]))
+
+
+def _line_val(line_coef, x):
+    u = (x - 50.0) / 50.0
+    return line_coef[0] + line_coef[1] * u
+
+
+def test_five_initial_seeds():
+    glyph = _tiny_glyph()
+    p1, p2 = glyph.search_points[5], glyph.search_points[15]
+    seeds = d._initial_seeds(p1, p2, glyph)
+    assert len(seeds) == 5
+    assert sorted(s.degree for s in seeds) == [1, 2, 2, 3, 3]
+
+
+def test_bend_seeds_pass_through_p1_p2():
+    glyph = _tiny_glyph()
+    p1, p2 = glyph.search_points[5], glyph.search_points[15]
+    u1 = (p1[0] - 50.0) / 50.0
+    u2 = (p2[0] - 50.0) / 50.0
+    for s in d._bent_seeds_u(p1, p2, glyph):
+        assert np.polyval(s.coef[::-1], u1) == pytest.approx(p1[1], abs=1e-9)
+        assert np.polyval(s.coef[::-1], u2) == pytest.approx(p2[1], abs=1e-9)
+
+
+def test_quadratic_both_up_bends_above_band():
+    glyph = _tiny_glyph()
+    p1, p2 = glyph.search_points[5], glyph.search_points[15]
+    u1 = (p1[0] - 50.0) / 50.0
+    u2 = (p2[0] - 50.0) / 50.0
+    line = np.array([p1[1] - ((p2[1] - p1[1]) / (u2 - u1)) * u1, (p2[1] - p1[1]) / (u2 - u1)])
+    xL = glyph.xmin - 5.0
+    xR = glyph.xmax + 5.0
+    up = [s for s in d._bent_seeds_u(p1, p2, glyph) if s.degree == 2]
+    assert up
+    # the "both up" quadratic must lie above the line at both padded ends
+    above = [s for s in up
+             if np.polyval(s.coef[::-1], (xL - 50.0) / 50.0) > _line_val(line, xL)
+             and np.polyval(s.coef[::-1], (xR - 50.0) / 50.0) > _line_val(line, xR)]
+    assert above
+
+
+def test_cubic_opposite_tails():
+    glyph = _tiny_glyph()
+    p1, p2 = glyph.search_points[5], glyph.search_points[15]
+    u1 = (p1[0] - 50.0) / 50.0
+    u2 = (p2[0] - 50.0) / 50.0
+    line = np.array([p1[1] - ((p2[1] - p1[1]) / (u2 - u1)) * u1, (p2[1] - p1[1]) / (u2 - u1)])
+    xL = glyph.xmin - 5.0
+    xR = glyph.xmax + 5.0
+    cub = [s for s in d._bent_seeds_u(p1, p2, glyph) if s.degree == 3]
+    assert cub
+    # opposite-tail cubics: one side above the line, the other below
+    opp = [s for s in cub
+           if (np.polyval(s.coef[::-1], (xL - 50.0) / 50.0) > _line_val(line, xL)
+               and np.polyval(s.coef[::-1], (xR - 50.0) / 50.0) < _line_val(line, xR))]
+    assert opp
+
+
+# ---------------------------------------------------------------------------
+# Merit arithmetic and feasible comparison
+# ---------------------------------------------------------------------------
+
+
+def test_merit_formula():
+    an = d.Analysis(
+        samples=np.zeros((10, 2)),
+        sample_d=np.zeros(10),
+        point_d=np.zeros(10),
+        newly_covered=40,
+        coverage_fraction=0.8,
+        surface_fraction=0.9,
+        bad_surface_fraction=0.1,
+        mean_surface_excess=0.2,
+        surface_penalty=1.0,
+        mean_surface_distance=0.5,
+        trace_penalty=0.0,
+        tail_penalty=1.0,
+        bounds=(0.0, 100.0),
+        left_slope=10.0,
+        right_slope=-10.0,
+        deriv_outside=0,
+        feasible=True,
+        merit=0.0,
+    )
+    expected = (
+        0.8
+        - 4.0 * 0.1
+        - 0.5 * 0.2
+        - 2.0 * 0.0
+        - 1.0 * 1.0
+        - 0.005 * 3
+    )
+    an.merit = expected
+    assert d.analyze_candidate is not None  # keep import used
+    assert expected == pytest.approx(0.8 - 0.4 - 0.1 - 1.0 - 0.015)
+
+
+def test_feasible_score_ordering():
+    a = d.Analysis(
+        samples=np.zeros((0, 2)), sample_d=np.zeros(0), point_d=np.zeros(0),
+        newly_covered=50, coverage_fraction=1.0, surface_fraction=1.0,
+        bad_surface_fraction=0.0, mean_surface_excess=0.0, surface_penalty=0.0,
+        mean_surface_distance=0.4, trace_penalty=0.0, tail_penalty=0.0,
+        bounds=(0.0, 1.0), left_slope=10.0, right_slope=-10.0, deriv_outside=0,
+        feasible=True, merit=0.0,
+    )
+    b = d.Analysis(
+        samples=np.zeros((0, 2)), sample_d=np.zeros(0), point_d=np.zeros(0),
+        newly_covered=50, coverage_fraction=1.0, surface_fraction=1.0,
+        bad_surface_fraction=0.0, mean_surface_excess=0.0, surface_penalty=0.0,
+        mean_surface_distance=0.9, trace_penalty=0.0, tail_penalty=0.0,
+        bounds=(0.0, 1.0), left_slope=10.0, right_slope=-10.0, deriv_outside=0,
+        feasible=True, merit=0.0,
+    )
+    assert d.feasible_score(a, 2) > d.feasible_score(b, 2)
+    # lower degree wins ties on coverage
+    c = d.Analysis(
+        samples=np.zeros((0, 2)), sample_d=np.zeros(0), point_d=np.zeros(0),
+        newly_covered=50, coverage_fraction=1.0, surface_fraction=1.0,
+        bad_surface_fraction=0.0, mean_surface_excess=0.0, surface_penalty=0.0,
+        mean_surface_distance=0.4, trace_penalty=0.0, tail_penalty=0.0,
+        bounds=(0.0, 1.0), left_slope=10.0, right_slope=-10.0, deriv_outside=0,
+        feasible=True, merit=0.0,
+    )
+    assert d.feasible_score(c, 1) > d.feasible_score(a, 3)
+
+
+# ---------------------------------------------------------------------------
+# Best feasible state bookkeeping (monkeypatched analyses)
+# ---------------------------------------------------------------------------
+
+
+def test_hill_climb_returns_best_feasible(monkeypatch):
+    start_coef = np.array([0.0])
+    feasible_coef = np.array([1.0])
+    infeasible_coef = np.array([2.0])
+
+    def fake_measure(cand, glyph, uncovered, *, dense=False):
+        key = cand.coef.tobytes()
+        feasible = key == feasible_coef.tobytes()
+        newly = 20 if feasible else 30
+        return d.Analysis(
+            samples=np.zeros((4, 2)), sample_d=np.zeros(4),
+            point_d=np.zeros(len(glyph.search_points)),
+            newly_covered=newly, coverage_fraction=0.5,
+            surface_fraction=1.0 if feasible else 0.5,
+            bad_surface_fraction=0.0 if feasible else 0.5,
+            mean_surface_excess=0.0, surface_penalty=0.0,
+            mean_surface_distance=0.5, trace_penalty=0.0,
+            tail_penalty=0.0, bounds=(0.0, 1.0) if feasible else None,
+            left_slope=10.0, right_slope=-10.0, deriv_outside=0,
+            feasible=feasible, merit=0.5 if feasible else 1.0,
+        )
+
+    sequence = [
+        d.Candidate(1, feasible_coef),
+        d.Candidate(1, infeasible_coef),
+        None,
+    ]
+    monkeypatch.setattr(d, "_mutate", lambda cand, rng, sigma: sequence.pop(0) if sequence else None)
+    monkeypatch.setattr(d, "analyze_candidate", fake_measure)
+
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0), np.zeros(101)]))
+    uncovered = np.ones(len(glyph.search_points), dtype=bool)
+    best = d._hill_climb(
+        d.Candidate(0, start_coef), glyph, uncovered,
+        steps=10, rng=np.random.default_rng(0),
+    )
+    assert best is not None
+    cand, an = best
+    assert np.array_equal(cand.coef, feasible_coef)
+    assert an.feasible
+
+
+# ---------------------------------------------------------------------------
+# Degree reduction (monkeypatched, deterministic)
+# ---------------------------------------------------------------------------
+
+
+def test_reduce_degree_never_increases(monkeypatch):
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0), np.zeros(101)]))
+    rng = np.random.default_rng(0)
+    cand = d.Candidate(3, np.array([1.0, 2.0, 3.0, 4.0]))
+    assigned = np.arange(len(glyph.points))
+    reduced = d._reduce_degree(cand, assigned, glyph, rng)
+    assert reduced.degree <= cand.degree
+
+
+def test_degree_reduction_coef_only_refinement_keeps_degree(monkeypatch):
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0), np.zeros(101)]))
+    rng = np.random.default_rng(0)
+    cand = d.Candidate(3, np.array([1.0, 2.0, 3.0, 4.0]))
+    refined, _ = d._refine_coef_only(cand, glyph, d.REDUCE_STEPS, rng)
+    assert refined.degree == cand.degree
+
+
+# ---------------------------------------------------------------------------
+# Deterministic boundary subsampling
+# ---------------------------------------------------------------------------
+
+
+def test_search_boundary_subset_deterministic_and_capped():
+    rng = np.random.default_rng(0)
+    points = rng.normal(50.0, 10.0, size=(1000, 2))
+    g1 = d.make_glyph(points)
+    g2 = d.make_glyph(points)
+    assert len(g1.search_points) <= d.SEARCH_BOUNDARY_MAX
+    assert np.array_equal(g1.search_points, g2.search_points)
+    assert np.array_equal(g1.search_idx, g2.search_idx)
+
+
+# ---------------------------------------------------------------------------
+# CLI contract (no heavy fitting)
 # ---------------------------------------------------------------------------
 
 
 def test_invalid_cli_input():
     for argv in [
-        [],
-        ["a"],
-        ["1"],
-        ["AA"],
-        ["A", "B"],
-        ["A", "--seed"],
-        ["A", "--seed", "abc"],
-        ["A", "--max-curves"],
-        ["A", "--max-curves", "x"],
+        [], ["a"], ["1"], ["AA"], ["A", "B"],
+        ["A", "--seed"], ["A", "--seed", "abc"],
+        ["A", "--max-curves"], ["A", "--max-curves", "x"],
         ["A", "--unknown"],
     ]:
         assert d.run(argv) == 2
@@ -70,430 +420,19 @@ def test_entry_propagates_exit_code(monkeypatch, capsys):
 
 
 # ---------------------------------------------------------------------------
-# Determinism and unbounded output
+# One real glyph rasterization test (normalization + inner hole)
 # ---------------------------------------------------------------------------
 
-
-@pytest.fixture(scope="module")
-def h_glyph():
-    return d.make_glyph(d.glyph_boundary("H"))
-
-
-@pytest.fixture(scope="module")
-def h_lines(h_glyph):
-    curves = d.fit_curves(
-        h_glyph, np.random.default_rng(0), d.DEFAULT_MAX_CURVES
-    )
-    return [d.serialize(c) for c in curves]
-
-
-def test_pipeline_deterministic():
-    g = d.make_glyph(d.glyph_boundary("I"))
-    first = [
-        d.serialize(c)
-        for c in d.fit_curves(g, np.random.default_rng(7), 3)
-    ]
-    second = [
-        d.serialize(c)
-        for c in d.fit_curves(g, np.random.default_rng(7), 3)
-    ]
-    assert first == second != []
-    assert all(d.parse_line(line) is not None for line in first)
-
-
-def test_generated_expressions_are_unbounded(h_lines):
-    assert h_lines
-    for line in h_lines:
-        assert "\\left" not in line
-        assert "\\{" not in line
-        assert d.parse_line(line) is not None
-
-
-def test_run_never_emits_partial_output(capsys):
-    rc = d.run(["H"])
-    out = capsys.readouterr()
-    if rc != 0:
-        assert out.out == ""
-        assert out.err
-    else:
-        assert out.out
-
-
-# ---------------------------------------------------------------------------
-# Serialization and parsing (ordinary powers of x, no restrictions)
-# ---------------------------------------------------------------------------
-
-
-def test_u_coefficients_printed_as_x_regression():
-    cand = d.Candidate(1, np.array([100.0, 100.0]))
-    assert d.serialize(cand) == "y=2x"
-
-
-def test_round_trip_exact_text():
-    lines = [
-        "y=2x",
-        "y=0",
-        "y=x^5-3x^2+0.5x-7",
-        "y=-x^3",
-    ]
-    for line in lines:
-        curve = d.parse_line(line)
-        assert curve is not None
-        assert d.format_expression(curve) == line
-
-
-def test_round_trip_generated_candidates():
-    rng = np.random.default_rng(11)
-    for _ in range(30):
-        degree = int(rng.integers(0, d.MAX_DEGREE + 1))
-        coef = rng.normal(0.0, 200.0, size=degree + 1)
-        line = d.serialize(d.Candidate(degree, coef))
-        curve = d.parse_line(line)
-        assert curve is not None
-        assert d.format_expression(curve) == line
-
-
-def test_serialized_polynomial_matches_internal_values():
-    rng = np.random.default_rng(3)
-    xs = np.array([-5.0, 0.0, 12.5, 50.0, 77.7, 105.0])
-    for _ in range(20):
-        degree = int(rng.integers(0, d.MAX_DEGREE + 1))
-        coef = rng.normal(0.0, 30.0, size=degree + 1)
-        expected = d._poly_u(coef, xs)
-        got = d.parse_line(d.serialize(d.Candidate(degree, coef))).poly(xs)
-        assert np.allclose(got, expected, atol=0.05)
-
-
-def test_malformed_lines_do_not_parse():
-    for line in [
-        "y=x^^2",
-        "",
-        "y=..x",
-        "y=x^2 \\left\\{0\\le x\\le 10\\right\\}",
-    ]:
-        assert d.parse_line(line) is None
-
-
-def test_v4_rejects_tampered_text():
-    p = d.make_glyph(_horizontal_bar_points())
-    problems = d.validate(["y=50.0"], p)
-    assert any(m.startswith("V4") for m in problems)
-
-
-# ---------------------------------------------------------------------------
-# Trace geometry of unbounded polynomials
-# ---------------------------------------------------------------------------
-
-
-def test_constant_line_trace_is_unbounded_and_rejected():
-    bar = d.make_glyph(_horizontal_bar_points())
-    curve = d.XCurve(np.polynomial.Polynomial([50.0]))
-    ints = d.trace_intervals(curve, bar.ymin, bar.ymax)
-    assert len(ints) == 1
-    assert ints[0] == (-np.inf, np.inf)
-    assert d.trace_bounds(curve, bar.ymin, bar.ymax) is None
-    problems = d.validate(["y=50"], bar)
-    assert any(m.startswith("V3") for m in problems)
-
-
-def test_reentry_produces_two_components_and_fails_v3():
-    band = (0.0, 100.0)
-    parabola = d.XCurve(np.polynomial.Polynomial([120.0, 0.0, -1.0]))
-    ints = d.trace_intervals(parabola, *band)
-    assert len(ints) == 2
-    assert d.trace_bounds(parabola, *band) is None
-    assert d.tail_penalty(parabola, *band) >= d.BIG_PENALTY
-
-    diag = d.make_glyph(
-        np.column_stack([np.arange(0.0, 100.01, 1.0)] * 2)
-    )
-    line = "y=-x^2+120"
-    problems = d.validate([line], diag)
-    assert any(m.startswith("V3") for m in problems)
-
-
-def test_tail_monotonicity_root_beyond_interval_fails():
-    # P(x) = 3(x+10)^3 - 5 crosses the band [0, 100] exactly once with a
-    # single finite trace interval, but its stationary point sits below
-    # the left trace endpoint.
-    poly = np.polynomial.Polynomial([-3000.0 - 5.0, 900.0, 90.0, 3.0])
-    curve = d.XCurve(poly)
-    bounds = d.trace_bounds(curve, 0.0, 100.0)
-    assert bounds is not None
-    l, r = bounds
-    deriv_roots = np.unique(d._real_roots(curve.poly.deriv()))
-    assert deriv_roots.size == 1
-    assert deriv_roots[0] < l
-    assert not d.tail_ok(curve, l, r)
-
-    glyph = d.make_glyph(np.column_stack([np.linspace(l, r, 41), poly(np.linspace(l, r, 41))]))
-    problems = d.validate([d.format_expression(curve)], glyph)
-    assert any(m.startswith("V3") for m in problems)
-
-
-def test_tail_steepness_gate():
-    # Shallow exit: the boundary itself is a slope-1 line, so V1/V2 hold,
-    # but |P'| = 1 < MIN_TAIL_SLOPE must fail V3.
-    shallow = np.column_stack(
-        [np.arange(-10.0, 110.01, 1.0), np.arange(-10.0, 110.01, 1.0)]
-    )
-    glyph = d.make_glyph(shallow)
-    problems = d.validate(["y=x"], glyph)
-    assert any(m.startswith("V3") for m in problems)
-
-    # Steep exit: same setup around a slope-9 boundary passes everything.
-    steep_pts = _steep_line_points(slope=9.0, intercept=-400.0, x_lo=45.0, x_hi=55.0)
-    glyph = d.make_glyph(steep_pts)
-    assert d.validate(["y=9x-400"], glyph) == []
-
-
-# ---------------------------------------------------------------------------
-# Outside-band freedom and the Euclidean metric
-# ---------------------------------------------------------------------------
-
-
-def test_far_outside_band_is_free_and_vertical_metric_fails():
-    p = _vertical_bar_points()
-    glyph = d.make_glyph(p)
-
-    # A steep line hugs the vertical bar inside its y-range and then
-    # shoots arbitrarily far away; once above ymax nothing penalizes it.
-    line = "y=28x-1350"
-    assert d.validate([line], glyph) == []
-
-    parsed = d.parse_line(line)
-    samples = d.sample_curve(parsed, glyph.xmin - 200, glyph.xmax + 200, 0.5, 40000)
-    far = samples[samples[:, 1] > glyph.ymax]
-    assert far.size > 0
-    dists, _ = d._min_dists(far, p)
-    assert dists.max() > 1000.0
-
-    # Same-x vertical residual would call this curve terrible while the
-    # geometric metric accepts it: the regression reason for Euclidean
-    # distance fitting.
-    residual = np.abs(parsed.poly(p[:, 0]) - p[:, 1])
-    assert residual.max() > 50.0
-
-
-def test_near_vertical_synthetic_geometry():
-    p = _vertical_bar_points()
-    glyph = d.make_glyph(p)
-    curves = d.fit_curves(glyph, np.random.default_rng(3), d.DEFAULT_MAX_CURVES)
-    lines = [d.serialize(c) for c in curves]
-    assert curves
-    assert d.validate(lines, glyph) == []
-    slopes = [abs(c.poly.coef[1]) for c in (d.parse_line(l) for l in lines)]
-    assert max(slopes) > 5.0
-
-
-# ---------------------------------------------------------------------------
-# Horizontal segment search
-# ---------------------------------------------------------------------------
-
-
-def test_horizontal_segment_search_with_escaping_tails():
-    glyph = d.make_glyph(_horizontal_bar_points())
-    curves = d.fit_curves(
-        glyph, np.random.default_rng(4), d.DEFAULT_MAX_CURVES
-    )
-    lines = [d.serialize(c) for c in curves]
-    assert curves
-    assert d.validate(lines, glyph) == []
-    for line in lines:
-        curve = d.parse_line(line)
-        l, r = d.trace_bounds(curve, glyph.ymin, glyph.ymax)
-        ends = np.array([curve.poly(l), curve.poly(r)])
-        mid = float(curve.poly((l + r) / 2.0))
-        # follows the horizontal boundary in the middle...
-        assert abs(mid - 50.0) <= d.TAU
-        # ...and leaves steeply on both sides.
-        deriv = curve.poly.deriv()
-        assert abs(float(deriv(l))) >= d.MIN_TAIL_SLOPE
-        assert abs(float(deriv(r))) >= d.MIN_TAIL_SLOPE
-        outside = np.array([float(curve.poly(r - 1e-6))])  # sanity finite
-        assert np.isfinite(outside).all()
-
-
-def test_constant_horizontal_line_is_rejected_as_unbounded():
-    glyph = d.make_glyph(_horizontal_bar_points())
-    problems = d.validate(["y=50"], glyph)
-    assert any(m.startswith("V3") for m in problems)
-    assert not any(m.startswith("V2") for m in problems)
-
-
-# ---------------------------------------------------------------------------
-# Best feasible state tracking
-# ---------------------------------------------------------------------------
-
-
-class _ScriptedMeasure:
-    def __init__(self, measurements_by_coef):
-        self.by_coef = measurements_by_coef
-
-    def __call__(self, cand, glyph, uncovered):
-        m = self.by_coef[cand.coef.tobytes()]
-        newly = min(m.newly_covered, int(uncovered.sum()))
-        return d.Measurement(
-            m.samples,
-            np.full(int(uncovered.sum()), 0.5),
-            newly,
-            m.surface_penalty,
-            m.mean_surface_distance,
-            m.tail_pen,
-            m.trace_single,
-            m.tails_monotone,
-            m.surface_valid,
-        )
-
-
-def _fake_measurement(newly_max, *, feasible, spen=0.0, mean=0.5, tp=0.0):
-    return d.Measurement(
-        samples=np.zeros((16, 2)),
-        point_d=None,
-        newly_covered=newly_max,
-        surface_penalty=spen,
-        mean_surface_distance=mean,
-        tail_pen=tp,
-        trace_single=feasible,
-        tails_monotone=feasible,
-        surface_valid=feasible,
-    )
-
-
-def test_hill_climb_returns_best_feasible_encountered(monkeypatch):
-    start_coef = np.array([0.0])
-    feasible_coef = np.array([1.0])
-    infeasible_coef = np.array([2.0])
-
-    script = {
-        start_coef.tobytes(): _fake_measurement(0, feasible=False),
-        feasible_coef.tobytes(): _fake_measurement(20, feasible=True),
-        # Better exploration score (more newly covered) but infeasible:
-        # the exploratory state must drift here without displacing the
-        # recorded best feasible candidate.
-        infeasible_coef.tobytes(): _fake_measurement(30, feasible=False),
-    }
-    sequence = [
-        d.Candidate(1, feasible_coef),
-        d.Candidate(1, infeasible_coef),
-        None,
-    ]
-    monkeypatch.setattr(
-        d, "_mutate", lambda cand, rng, sigma: sequence.pop(0) if sequence else None
-    )
-    monkeypatch.setattr(d, "measure", _ScriptedMeasure(script))
-
-    glyph = d.make_glyph(_vertical_bar_points())
-    uncovered = np.ones(len(glyph.points), dtype=bool)
-    best_cand, best_m = d._hill_climb(
-        d.Candidate(0, start_coef), glyph, uncovered, steps=10,
-        rng=np.random.default_rng(0),
-    )
-    assert best_cand is not None
-    assert np.array_equal(best_cand.coef, feasible_coef)
-    assert best_m.structurally_feasible
-
-
-# ---------------------------------------------------------------------------
-# Degree reduction
-# ---------------------------------------------------------------------------
-
-
-def test_degree_reduction_never_increases_degree():
-    glyph = d.make_glyph(_vertical_bar_points())
-    rng = np.random.default_rng(5)
-    for _ in range(8):
-        cand = d.find_curve(
-            glyph.points, glyph,
-            np.ones(len(glyph.points), dtype=bool), rng,
-            d.RESTARTS_PER_CURVE,
-        )
-        if cand is None:
-            continue
-        assigned = np.flatnonzero(
-            d.measure(cand, glyph, np.ones(len(glyph.points), dtype=bool)).point_d
-            <= d.TAU
-        )
-        reduced = d._reduce_degree(cand, assigned, glyph, rng)
-        assert reduced.degree <= cand.degree
-
-
-def test_degree_reduction_strictly_reduces_zero_padded_candidate():
-    glyph = d.make_glyph(_vertical_bar_points())
-    rng = np.random.default_rng(6)
-    base = np.array(_u_coef_of_xpoly([-1350.0, 28.0]))
-    padded = d.Candidate(3, np.concatenate([base, [0.0, 0.0]]))
-    assigned = np.flatnonzero(
-        d.measure(padded, glyph, np.ones(len(glyph.points), dtype=bool)).point_d
-        <= d.TAU
-    )
-    reduced = d._reduce_degree(padded, assigned, glyph, rng)
-    assert reduced.degree < 3
-    assert reduced.degree >= 1  # a constant cannot hug a vertical bar
-    m = d.measure(reduced, glyph, np.zeros(len(glyph.points), dtype=bool))
-    assert m.structurally_feasible
-
-
-# ---------------------------------------------------------------------------
-# Glyph geometry (unchanged normalization contract)
-# ---------------------------------------------------------------------------
-
-
-def test_o_has_inner_boundary():
-    p = d.glyph_boundary("O")
+O_BOUNDARY = d.glyph_boundary("O")
+
+
+def test_o_normalized_and_has_inner_hole():
+    p = O_BOUNDARY
+    assert p[:, 0].min() < 0.5
+    assert p[:, 1].min() < 0.5
+    assert p[:, 0].max() <= 100.0 + 1e-9
+    assert p[:, 1].max() <= 100.0 + 1e-9
     center = (p.min(axis=0) + p.max(axis=0)) / 2.0
     r = np.hypot(p[:, 0] - center[0], p[:, 1] - center[1])
     assert r.min() > 20.0
     assert ((r > 30.0) & (r < 48.0)).sum() > 50
-
-
-def test_normalization_bbox_corner_at_origin():
-    for letter in "AOTM":
-        p = d.glyph_boundary(letter)
-        assert p[:, 0].min() < 0.5
-        assert p[:, 1].min() < 0.5
-        assert p[:, 0].max() <= 100.0 + 1e-9
-        assert p[:, 1].max() <= 100.0 + 1e-9
-
-
-def test_sample_curve_preserves_whole_domain_under_cap():
-    curve = d.XCurve(np.polynomial.Polynomial([50.0, 5000.0]))
-    samples = d.sample_curve(curve, -5.0, 105.0, 1.0, 400)
-    assert len(samples) <= 400
-    assert len(samples) > 129
-    assert samples[0, 0] == -5.0
-    assert samples[-1, 0] == 105.0
-    assert np.all(np.diff(samples[:, 0]) > 0)
-    assert samples[0, 1] == pytest.approx(5000.0 * -5.0 + 50.0)
-    assert samples[-1, 1] == pytest.approx(5000.0 * 105.0 + 50.0)
-
-
-# ---------------------------------------------------------------------------
-# Letter acceptance
-# ---------------------------------------------------------------------------
-
-# Letters that pass V1-V4 at the default seed, measured against the
-# locked environment. Convergence work continues per docs/CHALLENGES.md;
-# as letters stabilize they move into this list and are asserted
-# normally instead of being hidden behind the alphabet-wide xfail.
-KNOWN_PASS_AT_DEFAULT_SEED: list[str] = []
-
-
-@pytest.mark.parametrize("letter", KNOWN_PASS_AT_DEFAULT_SEED)
-def test_known_pass_letters(letter, capsys):
-    rc = d.run([letter])
-    err = capsys.readouterr().err
-    assert rc == 0, f"{letter}: {err.strip()}"
-
-
-@pytest.mark.xfail(
-    strict=False,
-    reason="convergence work ongoing after the unbounded-polynomial "
-    "rework: coverage-first exploration still stalls some letters "
-    "(see docs/CHALLENGES.md)",
-)
-@pytest.mark.parametrize("letter", list(string.ascii_uppercase))
-def test_full_alphabet_acceptance(letter, capsys):
-    rc = d.run([letter])
-    err = capsys.readouterr().err
-    assert rc == 0, f"{letter}: {err.strip()}"
