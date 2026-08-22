@@ -1,6 +1,11 @@
 # SPEC: Single-Letter → Desmos Polynomial Converter
 
-Version 1.1 · Status: draft · Scope frozen: **one letter per run, nothing else**
+Version 2.0 · Status: draft · Scope frozen: **one letter per run, nothing else**
+
+Version 2.0 rework: emitted curves are **unbounded polynomials**. Domain
+restrictions (`\left\{...\right\}`) are no longer part of the output language;
+the relevant portion of each curve is derived from the glyph's vertical band
+instead (§6).
 
 ---
 
@@ -36,8 +41,9 @@ desmos-letter <letter> [--seed N] [--max-curves K]
 
 ### Expression contract (every emitted line)
 
-1. Form `y=<poly>\ \left\{a\le x\le b\right\}` — a domain restriction is
-   **mandatory**; an unrestricted line is invalid output.
+1. Form `y=<poly>` — a plain unbounded polynomial. **No domain restriction** is emitted;
+   an expression containing `\left\{...\right\}` (or any other restriction) is invalid
+   output.
 2. Standard power basis only (`x^k`, decimal coefficients). No scientific notation, no
    functions, no variables other than `x`.
 3. **Minimum sufficient degree**: each curve uses the smallest degree sufficient for the
@@ -46,8 +52,18 @@ desmos-letter <letter> [--seed N] [--max-curves K]
    geometrically in §6.
 4. At most `K` expressions total (default **12**) — keeps results usable in Desmos free
    tier.
-5. Domain endpoints are finite and within `[−5, 105]`; coefficients are finite and
-   `|c| < 10^9`.
+5. Coefficients are finite and `|c| < 10^9`.
+
+### Unbounded-curve semantics
+
+A polynomial is allowed to travel arbitrarily far from the glyph once it is vertically
+above or below it. The governing rule is:
+
+> Whenever the polynomial is inside the glyph's vertical range, it must be tracing the
+> glyph boundary. Once it leaves that vertical range, it should leave steeply, continue
+> monotonically toward infinity, and never re-enter.
+
+Formal treatment: `trace(P)` in §6, tail behaviour in §6.4, validation in §7.
 
 ## 4. Canonical glyph geometry
 
@@ -63,8 +79,10 @@ The input geometry must not depend on fonts installed on the host machine.
    not a promise to preserve the font's typographic baseline metric.
 5. The y-axis points up everywhere downstream.
 
-Normalization happens exactly once. Rasterization, fitting, validation, and serialization
-all use these normalized coordinates.
+Normalizations and all downstream geometry (including the vertical band `ymin`/`ymax`
+used by the trace and tail rules) are always derived from the actual normalized glyph
+boundary points; global constants such as `[0, 100]` or `[-5, 105]` must never be
+assumed in their place.
 
 Exact-output reproducibility is required for a fixed dependency lockfile. A change to the
 canonical font bytes or locked numeric/rendering dependencies may intentionally change the
@@ -90,61 +108,125 @@ example, `O` contributes an outer loop and an inner loop.
 
 The same `(letter, dependency lockfile)` must produce the same `P` on every run.
 
-## 6. Geometric distance and fitting
+## 6. Geometric distance, trace, and fitting
 
 Vertical residual `|c(x_p) - y_p|` is **not** the distance metric in this project. It
 would make vertical and near-vertical glyph segments fundamentally unrepresentable by a
 small number of `y = f(x)` curves.
 
-For a restricted polynomial curve
+For an unbounded polynomial graph and a target point `p = (p_x, p_y)`, distance is
+ordinary Euclidean distance to the nearest point of the **trace** (defined below):
 
 ```
-C = {(x, c(x)) : a ≤ x ≤ b}
+d(p, P) = min_{x in trace(P)} sqrt((x - p_x)^2 + (P(x) - p_y)^2)
 ```
 
-and a target point `p = (p_x, p_y)`, define its distance to the curve as ordinary
-Euclidean distance to the nearest point on the restricted graph:
+In particular, a sufficiently steep polynomial can hug a vertical stroke because
+horizontal error counts correctly as geometric error.
+
+### 6.1 The trace of a polynomial
+
+Let the normalized glyph boundary have vertical extent `[ymin, ymax]` (`ymin ≈ 0`, but
+always computed from the actual boundary). For a polynomial `P`:
 
 ```
-d(p, C) = min_{a ≤ x ≤ b} sqrt((x - p_x)^2 + (c(x) - p_y)^2)
+trace(P) = { x : ymin <= P(x) <= ymax }
 ```
 
-This is the metric used by fitting, degree selection, fitness, and validation. In
-particular, a sufficiently steep polynomial over a narrow x-domain can approximate a
-vertical stroke because horizontal error counts correctly as geometric error.
+This is the part of the graph that lives inside the letter's vertical band. Everything
+outside that y-range is ignored for boundary-distance purposes:
 
-### Assigned points and minimum sufficient degree
+- `P(x) > ymax` or `P(x) < ymin` contributes **zero** surface-distance penalty,
+  regardless of how far from the letter the graph travels.
+- Boundary coverage (§6.6) also counts only distances to trace samples.
 
-The search may assign an inlier subset `Q_i ⊆ P` to each output curve `C_i`; up to the
-allowed global outlier fraction may remain unassigned.
+### 6.2 One finite trace interval
 
-For a fixed assignment and domain, degree `d` is sufficient iff there exists a degree-`d`
-polynomial whose every assigned point satisfies
+Because `degree ≤ 5`, `trace(P)` is computed analytically enough from the real roots of
 
 ```
-d(p, C_i) ≤ τ    for all p in Q_i
+P(x) - ymin    and    P(x) - ymax
 ```
 
-where `τ` is the coverage tolerance from §7. The fitter must test degrees from 0 upward
-and use the first sufficient degree.
+Collect the real roots, sort them, and classify the intervals between them.
 
-### Search objective
+A usable curve must have exactly **one finite non-empty trace interval** `[l, r]`.
+Curves whose in-band set is unbounded, empty, or split into multiple separated intervals
+are rejected. This guarantees that after the polynomial leaves the letter's vertical
+band it never later returns. Disconnected glyphs are not special-cased; they are
+outside the current problem.
+
+### 6.3 Tail behaviour
+
+For a curve with trace interval `[l, r]`:
+
+- **Left tail** (`x < l`) and **right tail** (`x > r`): the polynomial must remain
+  outside `[ymin, ymax]`, be monotone away from the band, and never turn around to
+  re-enter.
+- A sufficient monotonicity rule (the one used): no real root of `P'(x)` exists below
+  `l`, and none exists above `r`.
+- The exits must be steep: with hardcoded `MIN_TAIL_SLOPE = 8`,
+  `|P'(l)| ≥ MIN_TAIL_SLOPE` and `|P'(r)| ≥ MIN_TAIL_SLOPE`.
+
+Nothing after the tails have left the band is rewarded or penalized: what happens
+vertically beyond the glyph range, including intersections between curves far above or
+below the glyph, does not matter.
+
+### 6.4 Surface adherence
+
+The graph is sampled only across its trace interval `[l, r]`. Each sampled point's
+distance to the glyph boundary `𝒫` is Euclidean. A curve is surface-valid iff at least
+95 % of its trace samples lie within `τ` of the boundary. This is the central visual
+constraint.
+
+### 6.5 Search: exploration vs feasibility
 
 Search may be stochastic but **must be reproducible**: the same `(letter, seed, locked
 environment)` produces byte-for-byte identical stdout. The seed has a fixed default.
 
-The primary objective is boundary coverage. Fitness must be monotone in the useful
-direction: moving an uncovered target point closer to the nearest curve, while changing
-nothing else, must never make the solution worse.
+Exploration and feasibility are scored separately — one lexicographic tuple must not do
+both jobs. For every candidate the search computes `newly_covered`, `surface_penalty`
+(`Σ max(0, d - τ)²` over trace samples), `tail_penalty` (wrong trace component count,
+unbounded/empty trace, derivative roots outside the trace interval, exit-slope deficit
+below `MIN_TAIL_SLOPE`; a simple deterministic scalar), `degree`, and
+`mean_surface_distance`. The exploratory hill-climbing score is
 
-A recommended lexicographic objective is:
+```
+(newly_covered, -surface_penalty, -tail_penalty, -degree, -mean_surface_distance)
+```
 
-1. maximize fraction of `P` within `τ` of some curve;
-2. minimize a robust high-percentile target→curve distance;
-3. minimize curve count;
-4. minimize total polynomial degree.
+larger being better, and it may visit infeasible states. During every hill climb the
+search additionally keeps the **best feasible candidate encountered so far** (exactly
+one finite trace interval, tails monotone, exit slopes ≥ `MIN_TAIL_SLOPE`, ≥ 95 % of the
+trace within `τ`, at least `MIN_NEW_POINTS` newly covered points), compared by
+`(newly_covered, -degree, -mean_surface_distance)`, and returns it even if later
+exploratory mutations drift into infeasibility.
 
-The implementation may use a different objective only if it preserves those semantics.
+Seeding biases toward the local contour without contour tracing: for each restart, pick
+`p1` among uncovered boundary points, sample up to 8 candidate partners `p2` from the
+distance bands 3–15 (expanded to 25 when necessary), score each straight segment
+`p1 → p2` at 33 sample points by mean boundary distance, and take the best-scoring,
+more distant `p2` on ties. From `(p1, p2)` up to five initial polynomials are built —
+the ordinary line plus four cubics through `(xl, target_left)`, `(xr, target_right)`
+with `xl/xr` padded 5 units outward and targets `(ymax+5 / ymin−5)` per side, fitted in
+normalized `u = (x-50)/50` coordinates for stability. Refinement starts from the best
+already-feasible seed if any, otherwise from the best exploration score; the two
+boundary points are initialization constraints only and refinement may move away from
+them.
+
+### 6.6 Coverage and assigned points
+
+Boundary coverage works as before: a glyph boundary point is covered if its Euclidean
+distance to the sampled trace of any output polynomial is ≤ `τ`; the search maximizes
+newly covered boundary points.
+
+For degree selection and reduction, the search may assign an inlier subset
+`Q_i ⊆ 𝒫` to each output curve; up to the allowed global outlier fraction may remain
+unassigned. For a fixed assignment, degree `d` is sufficient iff there exists a
+degree-`d` polynomial whose every assigned point satisfies `d(p, C_i) ≤ τ` for all
+`p ∈ Q_i`. The fitter tests degrees from 0 upward and uses the first sufficient degree.
+Reduction refines coefficients only — never degree — and accepts a lower degree only if
+the curve remains fully feasible and still covers every assigned point.
 
 ## 7. Built-in validation gate (the tool grades itself)
 
@@ -156,19 +238,13 @@ Before emitting anything, all checks must pass:
 
 | # | Check | Threshold (defaults) |
 |---|-------|----------------------|
-| V1 | **Boundary coverage:** fraction of `P` whose Euclidean distance to the nearest restricted curve is ≤ `τ` | ≥ **95 %** |
-| V2 | **Curve adherence:** fraction of each curve's graph lying within Euclidean distance `τ` of the glyph boundary | ≥ **95 %** per curve |
-| V3 | **Confinement:** every curve on its own restricted domain stays inside the glyph bbox grown by a margin | margin = **5 units** |
-| V4 | **Round-trip:** every emitted line parses back to the same restricted polynomial via the project's parser | **100 %** |
+| V1 | **Boundary coverage:** fraction of `𝒫` whose Euclidean distance to the union of all polynomial trace portions is ≤ `τ` | ≥ **95 %** |
+| V2 | **Surface adherence:** per curve, fraction of graph samples whose y lies inside `[ymin, ymax]` and within Euclidean distance `τ` of the glyph boundary | ≥ **95 %** per curve |
+| V3 | **Tail behaviour:** exactly one finite trace interval; no re-entry into the vertical glyph range; no derivative root beyond either trace endpoint; exit-slope magnitude ≥ 8 at both ends | all curves |
+| V4 | **Round-trip:** every emitted line parses back to the same polynomial via the project's parser; coefficients finite, `\|c\| < 10^9`, no scientific notation | **100 %** |
 
-For V2, sample each restricted graph densely enough in arc length that adjacent validation
-samples are at most `0.5` normalized units apart. Endpoints are always included. Distance
-from a graph sample to the glyph boundary is Euclidean distance to the nearest point in
-`P`.
-
-V2 exists to reject a curve that happens to cover useful boundary points but draws a long
-spurious excursion through empty space. V3 remains a hard safety bound against numerical
-explosions.
+Samples vertically outside the glyph range are ignored by V1/V2; unbounded tails are
+intentional and never penalized (the old bbox-confinement rule is gone).
 
 Any failure ⇒ exit code 1, print the failed check(s) to stderr, and print **nothing** to
 stdout. No silent bad output, ever.
@@ -186,7 +262,6 @@ stdout. No silent bad output, ever.
   metric: a near-vertical synthetic target that fails under same-x vertical residual but
   passes geometric-distance fitting.
 - End-to-end runtime ≤ **30 s** per letter on a laptop-class machine.
-
 ## 9. Dependencies
 
 `uv`, Python ≥ 3.11, `numpy`, `matplotlib`. Nothing else.
