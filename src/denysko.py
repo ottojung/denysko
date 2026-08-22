@@ -614,10 +614,14 @@ def _mutate_search(
     if r < 0.50:
         k = int(rng.integers(0, cand.degree + 1))
         coef[k] += rng.normal(0.0, sigma_c)
-    elif r < 0.75:
-        coef[: len(basis.q)] += rng.normal(0.0, sigma_c) * basis.q
     else:
-        coef[: len(basis.r)] += rng.normal(0.0, sigma_c) * basis.r
+        vec = basis.r if r >= 0.75 else basis.q
+        # adapt the basis to the current coefficient length: truncate
+        # when degree mutation has lowered it, pad when longer.
+        aligned = np.zeros(len(coef))
+        n = min(len(vec), len(coef))
+        aligned[:n] = vec[:n]
+        coef += rng.normal(0.0, sigma_c) * aligned
     return Candidate(cand.degree, coef)
 
 
