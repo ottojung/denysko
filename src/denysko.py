@@ -159,7 +159,8 @@ def _components_from_breaks(
 
 
 def _adaptive_sample(eval_fn, a: float, b: float, max_step: float, cap: int):
-    xs = np.linspace(a, b, 129)
+    n0 = min(129, max(2, cap // 2))
+    xs = np.linspace(a, b, n0)
     for _ in range(64):
         if xs.size >= cap:
             break
@@ -344,6 +345,21 @@ def analyze_candidate(
 
 def feasible_score(an: Analysis, degree: int):
     return (an.newly_covered, -degree, -an.mean_surface_distance)
+
+
+def structurally_feasible(an: Analysis) -> bool:
+    """Trace, surface, and tail validity, independent of coverage.
+
+    Used where newly-covered counts are meaningless (degree reduction,
+    which keeps a fixed set of assigned points).
+    """
+    return (
+        an.bounds is not None
+        and an.surface_fraction >= MIN_COVERAGE
+        and an.deriv_outside == 0
+        and abs(an.left_slope) >= MIN_TAIL_SLOPE
+        and abs(an.right_slope) >= MIN_TAIL_SLOPE
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +567,7 @@ def _reduce_degree(cand: Candidate, assigned_idx: np.ndarray, glyph: Glyph, rng)
             len(assigned_idx) > 0
             and bool((an.point_d[assigned_idx] <= TAU).all())
         )
-        if an.feasible and covers_all:
+        if structurally_feasible(an) and covers_all:
             cur = trial
         else:
             break
