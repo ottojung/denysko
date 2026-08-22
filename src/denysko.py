@@ -485,6 +485,14 @@ def validate(lines, p):
                 problems.append(
                     f"V1 coverage {coverage:.4f} below {MIN_COVERAGE}"
                 )
+            for i, samples in enumerate(dense):
+                _, sd = _min_dists(samples, p)
+                near_frac = float((sd <= TAU).mean())
+                if near_frac < MIN_COVERAGE:
+                    problems.append(
+                        f"V2 expression {i}: only {near_frac:.4f} of its "
+                        f"graph lies within {TAU} of the glyph boundary"
+                    )
 
     for i, c in enumerate(good):
         coef = c.poly.coef

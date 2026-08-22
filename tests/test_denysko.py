@@ -73,6 +73,50 @@ def test_sample_graph_preserves_whole_domain_under_cap():
     assert samples[-1, 1] == expected_last
 
 
+def _bar_points():
+    xs = np.arange(0.0, 100.01, 0.5)
+    return np.column_stack([xs, np.full(len(xs), 50.0)])
+
+
+def test_v1_coverage_pass_and_fail():
+    p = _bar_points()
+    assert d.validate(["y=50\\ \\left\\{-5\\le x\\le 105\\right\\}"], p) == []
+    problems = d.validate(["y=50\\ \\left\\{10\\le x\\le 20\\right\\}"], p)
+    assert any(m.startswith("V1") for m in problems)
+
+
+def test_v2_boundary_following_curve_passes():
+    p = _bar_points()
+    assert d.validate(["y=50\\ \\left\\{-5\\le x\\le 105\\right\\}"], p) == []
+
+
+def test_v2_excursion_fails_inside_expanded_bbox():
+    p = _bar_points()
+    a = 4.9 / 900.0
+    coef = np.array([50.0 - 1600.0 * a, 100.0 * a, -a])
+    curve = d.XCurve(np.polynomial.Polynomial(coef), 20.0, 80.0)
+    line = d.format_expression(curve)
+    problems = d.validate([line], p)
+    assert any(m.startswith("V2") for m in problems)
+    assert not any(m.startswith("V3") for m in problems)
+
+
+def test_v3_confinement_checked_independently():
+    curve = d.XCurve(np.polynomial.Polynomial([-30.0, 0.0, -1.0]), 0.0, 10.0)
+    problems = d.validate([d.format_expression(curve)], np.zeros((0, 2)))
+    assert any(m.startswith("V3") for m in problems)
+
+    ok = d.XCurve(np.polynomial.Polynomial([50.0]), 0.0, 10.0)
+    assert d.validate([d.format_expression(ok)], np.zeros((0, 2))) == []
+
+
+def test_v4_round_trip_gate():
+    p = _bar_points()
+    tampered = "y=50.0\\ \\left\\{10\\le x\\le 90\\right\\}"
+    problems = d.validate([tampered], p)
+    assert any(m.startswith("V4") for m in problems)
+
+
 def test_malformed_lines_do_not_parse():
     for line in [
         "y=x^^2\\ \\left\\{0\\le x\\le 10\\right\\}",
