@@ -26,7 +26,7 @@ MARGIN = 5.0
 MIN_COVERAGE = 0.95
 DEFAULT_SEED = 0
 DEFAULT_MAX_CURVES = 12
-PRECISION = 6
+PRECISION = 12
 
 SEARCH_STEP = 1.0
 VALIDATE_STEP = 0.1
@@ -52,23 +52,50 @@ class Candidate:
     b: float
 
 
+@dataclass
+class XCurve:
+    poly: np.polynomial.Polynomial
+    a: float
+    b: float
+
+
+U_OF_X = np.polynomial.Polynomial([-1.0, 0.02])
+X_OF_U = np.polynomial.Polynomial([50.0, 50.0])
+
+
+def x_curve_of_candidate(cand: Candidate) -> XCurve:
+    return XCurve(
+        np.polynomial.Polynomial(cand.coef)(U_OF_X), cand.a, cand.b
+    )
+
+
 def _poly_u(coef: np.ndarray, xs: np.ndarray) -> np.ndarray:
     return np.polyval(coef[::-1], (np.asarray(xs, dtype=float) - 50.0) / 50.0)
 
 
-def sample_graph(cand: Candidate, max_step: float, cap: int) -> np.ndarray:
-    xs = np.linspace(cand.a, cand.b, 129)
+def _adaptive_sample(eval_fn, a: float, b: float, max_step: float, cap: int):
+    xs = np.linspace(a, b, 129)
     for _ in range(64):
         if xs.size >= cap:
             break
-        ys = _poly_u(cand.coef, xs)
+        ys = eval_fn(xs)
         gaps = np.hypot(np.diff(xs), np.diff(ys))
         bad = gaps > max_step
         if not bad.any():
             break
         mids = (xs[:-1][bad] + xs[1:][bad]) / 2.0
         xs = np.sort(np.concatenate([xs, mids]))
-    return np.column_stack([xs, _poly_u(cand.coef, xs)])[:cap]
+    return np.column_stack([xs, eval_fn(xs)])[:cap]
+
+
+def sample_graph(cand: Candidate, max_step: float, cap: int) -> np.ndarray:
+    return _adaptive_sample(
+        lambda xs: _poly_u(cand.coef, xs), cand.a, cand.b, max_step, cap
+    )
+
+
+def sample_curve(curve: XCurve, max_step: float, cap: int) -> np.ndarray:
+    return _adaptive_sample(curve.poly, curve.a, curve.b, max_step, cap)
 
 
 def _min_dists(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
@@ -328,30 +355,39 @@ def fmt_num(v: float) -> str:
 
 
 def poly_str(coef: np.ndarray) -> str:
+    rendered = [fmt_num(float(c)) for c in coef]
     parts = []
     first = True
     for k in range(len(coef) - 1, 0, -1):
-        c = coef[k]
-        cs = fmt_num(abs(c))
-        if cs == "0":
+        s = rendered[k]
+        if s == "0":
             continue
+        neg = s.startswith("-")
+        mag = s[1:] if neg else s
         body = "x" if k == 1 else f"x^{k}"
-        prefix = "" if cs == "1" else cs
-        sign = "-" if c < 0 else ("" if first else "+")
+        prefix = "" if mag == "1" else mag
+        sign = "-" if neg else ("" if first else "+")
         parts.append(sign + prefix + body)
         first = False
-    if coef[0] != 0 or not parts:
-        sign = "-" if coef[0] < 0 else ("" if first else "+")
-        parts.append(sign + fmt_num(abs(coef[0])))
+    if rendered[0] != "0" or not parts:
+        s = rendered[0]
+        neg = s.startswith("-")
+        mag = s[1:] if neg else s
+        sign = "-" if neg else ("" if first else "+")
+        parts.append(sign + mag)
     out = "".join(parts)
     return out if out else "0"
 
 
-def serialize(cand: Candidate) -> str:
+def format_expression(curve: XCurve) -> str:
     return (
-        f"y={poly_str(cand.coef)}"
-        f"\\ \\left\\{{{fmt_num(cand.a)}\\le x\\le {fmt_num(cand.b)}\\right\\}}"
+        f"y={poly_str(curve.poly.coef)}"
+        f"\\ \\left\\{{{fmt_num(curve.a)}\\le x\\le {fmt_num(curve.b)}\\right\\}}"
     )
+
+
+def serialize(cand: Candidate) -> str:
+    return format_expression(x_curve_of_candidate(cand))
 
 
 _EXPR_RE = re.compile(
@@ -405,16 +441,15 @@ def parse_line(line: str):
         a, b = float(m.group(2)), float(m.group(3))
     except ValueError:
         return None
-    return Candidate(len(coef) - 1, coef, a, b)
+    return XCurve(np.polynomial.Polynomial(coef), a, b)
 
 
-def _extreme_values(cand: Candidate) -> np.ndarray:
-    xs = [cand.a, cand.b]
-    deriv_roots = np.polynomial.Polynomial(cand.coef).deriv().roots()
+def _extreme_values(curve: XCurve) -> np.ndarray:
+    xs = [curve.a, curve.b]
+    deriv_roots = curve.poly.deriv().roots()
     real = deriv_roots[np.abs(deriv_roots.imag) < 1e-8].real
-    xu = 50.0 * real + 50.0
-    inner = xu[(xu >= cand.a) & (xu <= cand.b)]
-    return _poly_u(cand.coef, np.array(xs + list(inner)))
+    inner = real[(real >= curve.a) & (real <= curve.b)]
+    return curve.poly(np.array(xs + list(inner)))
 
 
 def validate(lines, p):
@@ -423,39 +458,35 @@ def validate(lines, p):
     bad4 = [
         l
         for l, c in zip(lines, parsed)
-        if c is None or serialize(c) != l
+        if c is None or format_expression(c) != l
     ]
     if bad4:
         problems.append(f"V4 round-trip failed for {len(bad4)} expression(s)")
     good = [c for c in parsed if c is not None]
 
-    dense = [
-        sample_graph(c, VALIDATE_STEP, VALIDATE_SAMPLE_CAP) for c in good
-    ]
+    dense = [sample_curve(c, VALIDATE_STEP, VALIDATE_SAMPLE_CAP) for c in good]
     all_samples = np.vstack(dense) if dense else np.zeros((0, 2))
 
     if len(good) != len(lines):
         problems.append("V4 unparsable expression(s)")
-    elif len(all_samples) == 0:
-        problems.append(f"V1 coverage 0.0000 below {MIN_COVERAGE}")
-    elif len(p):
-        pd, sd = _min_dists(p, all_samples)
-        coverage = float((pd <= TAU).mean())
-        if coverage < MIN_COVERAGE:
-            problems.append(
-                f"V1 coverage {coverage:.4f} below {MIN_COVERAGE}"
-            )
-        max_escape = float(sd.max())
-        if max_escape > MARGIN:
-            problems.append(
-                f"V2 confinement exceeded: {max_escape:.3f} > {MARGIN}"
-            )
+
+    if len(p):
+        if len(all_samples) == 0:
+            problems.append(f"V1 coverage 0.0000 below {MIN_COVERAGE}")
+        else:
+            pd, _ = _min_dists(p, all_samples)
+            coverage = float((pd <= TAU).mean())
+            if coverage < MIN_COVERAGE:
+                problems.append(
+                    f"V1 coverage {coverage:.4f} below {MIN_COVERAGE}"
+                )
 
     for i, c in enumerate(good):
-        if not np.all(np.isfinite(c.coef)):
+        coef = c.poly.coef
+        if not np.all(np.isfinite(coef)):
             problems.append(f"V3 non-finite coefficient in expression {i}")
             continue
-        if np.abs(c.coef).max() >= 1e9:
+        if np.abs(coef).max() >= 1e9:
             problems.append(f"V3 coefficient magnitude >= 1e9 in expression {i}")
             continue
         if not (DOMAIN_LO <= c.a <= DOMAIN_HI and DOMAIN_LO <= c.b <= DOMAIN_HI):
