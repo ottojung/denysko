@@ -33,13 +33,15 @@ SEARCH_BOUNDARY_MAX = 256
 VALIDATE_SAMPLE_CAP = 40000
 
 MIN_NEW_POINTS = 8
-MIN_DU = 0.01
+MIN_X_SEPARATION = 0.1
 SEED_MIN_DIST = 3.0
 SEED_MAX_DIST = 15.0
 SEED_EXPANDED_DIST = 25.0
 SEED_P2_CHOICES = 8
 SEED_SEGMENT_PTS = 33
 MIN_TAIL_SLOPE = 8.0
+TAIL_VERTICAL_MARGIN = 5.0
+MAX_TAIL_X_RUN = 5.0
 COEF_MUTATION_PROB = 0.80
 COEF_SIGMA_START, COEF_SIGMA_END = 10.0, 0.2
 
@@ -83,9 +85,15 @@ class Analysis:
     trace_penalty: float
     tail_penalty: float
     bounds: tuple[float, float] | None
-    left_slope: float
-    right_slope: float
     deriv_outside: int
+    left_exit_slope: float
+    right_exit_slope: float
+    left_vertical_x: float
+    right_vertical_x: float
+    left_x_run: float
+    right_x_run: float
+    left_tail_valid: bool
+    right_tail_valid: bool
     feasible: bool
     merit: float
 
@@ -234,6 +242,8 @@ def _analyze(
     roots_ymax = _real_roots(poly - ymax)
     deriv = poly.deriv()
     droots = _real_roots(deriv)
+    roots_abv = _real_roots(poly - (ymax + TAIL_VERTICAL_MARGIN))
+    roots_blw = _real_roots(poly - (ymin - TAIL_VERTICAL_MARGIN))
     breaks = np.unique(np.concatenate([roots_ymin, roots_ymax]))
     comps = _components_from_breaks(breaks, poly, ymin, ymax)
 
@@ -286,25 +296,32 @@ def _analyze(
 
     if bounds is not None:
         l, r = bounds
-        left_slope = float(deriv(l))
-        right_slope = float(deriv(r))
         deriv_outside = int(((droots < l) | (droots > r)).sum())
+        lslope, lvx, lrun, lvalid = _analyze_tail(
+            poly, deriv, droots, ymin, ymax, l, "L", roots_abv, roots_blw
+        )
+        rslope, rvx, rrun, rvalid = _analyze_tail(
+            poly, deriv, droots, ymin, ymax, r, "R", roots_abv, roots_blw
+        )
         tail_penalty = (
             deriv_outside
-            + max(0.0, MIN_TAIL_SLOPE - abs(left_slope)) / MIN_TAIL_SLOPE
-            + max(0.0, MIN_TAIL_SLOPE - abs(right_slope)) / MIN_TAIL_SLOPE
+            + _tail_side_penalty(lrun, lslope, lvalid)
+            + _tail_side_penalty(rrun, rslope, rvalid)
         )
     else:
-        left_slope = right_slope = 0.0
         deriv_outside = 0
+        lslope = rslope = 0.0
+        lvx = rvx = float("inf")
+        lrun = rrun = float("inf")
+        lvalid = rvalid = False
         tail_penalty = 0.0
 
     feasible = (
         bounds is not None
         and surface_fraction >= MIN_COVERAGE
         and deriv_outside == 0
-        and abs(left_slope) >= MIN_TAIL_SLOPE
-        and abs(right_slope) >= MIN_TAIL_SLOPE
+        and lvalid
+        and rvalid
         and newly_covered >= MIN_NEW_POINTS
     )
     merit = (
@@ -329,12 +346,92 @@ def _analyze(
         trace_penalty,
         tail_penalty,
         bounds,
-        left_slope,
-        right_slope,
         deriv_outside,
+        lslope,
+        rslope,
+        lvx,
+        rvx,
+        lrun,
+        rrun,
+        lvalid,
+        rvalid,
         feasible,
         merit,
     )
+
+
+def _analyze_tail(
+    poly,
+    deriv,
+    droots,
+    ymin: float,
+    ymax: float,
+    end: float,
+    side: str,
+    roots_abv,
+    roots_blw,
+) -> tuple[float, float, float, bool]:
+    """Post-exit tail analysis.
+
+    `end` is a trace endpoint (`l` for side "L", `r` for side "R").
+    Returns `(exit_slope, vertical_x, x_run, valid)`:
+
+    - determines whether the graph exited above `ymax` or below `ymin`;
+    - finds the first point outward reaching `±TAIL_VERTICAL_MARGIN`
+      analytically via roots of `P-(ymax+5)` / `P-(ymin-5)`;
+    - measures the horizontal run to that point and the slope there;
+    - validates permanent escape (no derivative roots beyond the trace
+      endpoint and the derivative points away from the band).
+    """
+    eps = 1e-5
+    if side == "R":
+        probe = float(poly(end + eps))
+        above = roots_abv[roots_abv > end]
+        below = roots_blw[roots_blw > end]
+        want = 1.0 if probe > ymax else -1.0 if probe < ymin else 0.0
+        no_turn = not (droots > end).any()
+        run_of = lambda t: t - end
+    else:
+        probe = float(poly(end - eps))
+        above = roots_abv[roots_abv < end]
+        below = roots_blw[roots_blw < end]
+        want = -1.0 if probe > ymax else 1.0 if probe < ymin else 0.0
+        no_turn = not (droots < end).any()
+        run_of = lambda t: end - t
+
+    if want == 0.0:
+        return 0.0, float("inf"), float("inf"), False
+
+    cands = above if probe > ymax else below
+    if len(cands) == 0:
+        return 0.0, float("inf"), float("inf"), False
+
+    t = float(cands[0] if side == "R" else cands[-1])
+    x_run = run_of(t)
+    slope = abs(float(deriv(t)))
+    away = want * np.sign(float(deriv(end + eps if side == "R" else end - eps))) > 0
+    valid = (
+        no_turn
+        and away
+        and x_run <= MAX_TAIL_X_RUN
+        and slope >= MIN_TAIL_SLOPE
+    )
+    return slope, t, x_run, valid
+
+
+def _tail_side_penalty(x_run: float, slope: float, valid: bool) -> float:
+    """Finite exploration penalty for one tail.
+
+    Missing the vertical margin gets a fixed 2.0; an x-run beyond
+    `MAX_TAIL_X_RUN` and a slope deficit contribute proportionally.
+    """
+    if not valid:
+        return 2.0
+    pen = 0.0
+    if np.isfinite(x_run):
+        pen += max(0.0, x_run - MAX_TAIL_X_RUN) / MAX_TAIL_X_RUN
+    pen += max(0.0, MIN_TAIL_SLOPE - slope) / MIN_TAIL_SLOPE
+    return pen
 
 
 def analyze_candidate(
@@ -357,8 +454,8 @@ def structurally_feasible(an: Analysis) -> bool:
         an.bounds is not None
         and an.surface_fraction >= MIN_COVERAGE
         and an.deriv_outside == 0
-        and abs(an.left_slope) >= MIN_TAIL_SLOPE
-        and abs(an.right_slope) >= MIN_TAIL_SLOPE
+        and an.left_tail_valid
+        and an.right_tail_valid
     )
 
 
@@ -414,8 +511,13 @@ def _choose_p2(p: np.ndarray, p1: np.ndarray, ids: np.ndarray, rng):
 def _seed_pair(p: np.ndarray, uncovered_idx: np.ndarray, rng):
     p1 = p[uncovered_idx[int(rng.integers(0, len(uncovered_idx)))]]
     dists = np.hypot(p[:, 0] - p1[0], p[:, 1] - p1[1])
+    dx = np.abs(p[:, 0] - p1[0])
     for rmax in (SEED_MAX_DIST, SEED_EXPANDED_DIST):
-        mask = (dists >= SEED_MIN_DIST) & (dists <= rmax)
+        mask = (
+            (dists >= SEED_MIN_DIST)
+            & (dists <= rmax)
+            & (dx >= MIN_X_SEPARATION)
+        )
         ids = np.flatnonzero(mask)
         if len(ids):
             p2 = _choose_p2(p, p1, ids, rng)
@@ -426,30 +528,24 @@ def _seed_pair(p: np.ndarray, uncovered_idx: np.ndarray, rng):
 
 def _line_seed_u(p1: np.ndarray, p2: np.ndarray) -> Candidate:
     u1, u2 = (p1[0] - 50.0) / 50.0, (p2[0] - 50.0) / 50.0
-    du = u2 - u1
-    if abs(du) < MIN_DU:
-        du = MIN_DU if du >= 0.0 else -MIN_DU
-    slope = (p2[1] - p1[1]) / du
+    slope = (p2[1] - p1[1]) / (u2 - u1)
     intercept = p1[1] - slope * u1
     return Candidate(1, np.array([intercept, slope]))
 
 
 def _bent_seeds_u(p1: np.ndarray, p2: np.ndarray, glyph: Glyph):
-    """Line plus bent tails: L(u) + k*Q(u) and L(u) + k*R(u).
+    """Line plus bent tails preserving y and local slope at the seed points.
 
-    Q(u) = (u-u1)(u-u2) bends both tails the same way (two quadratic
-    seeds: both up / both down). R(u) = (u-u1)(u-u2)(u-m) with
-    m = (u1+u2)/2 sends the two tails in opposite directions (two cubic
-    seeds). k is fit by least squares at the global padded glyph
-    x-extents xmin-5 / xmax+5, so a crossbar seed can curve onto a leg
-    and keep following the surface instead of escaping immediately.
+    Q(u) = (u-u1)^2 (u-u2)^2 gives degree-4 seeds with both tails in the
+    same direction (both up / both down). R(u) = (u-u1)^2 (u-u2)^2 (u-m)
+    with m = (u1+u2)/2 gives degree-5 seeds with opposite tails. Both
+    bases are zero with zero derivative at u1 and u2, so
+    P(u) = L(u) + k*B(u) keeps P(u_i) = p_i.y and P'(u_i) = L'(u_i).
+    k is fit by least squares at the global padded glyph x-extents.
     """
     u1 = (p1[0] - 50.0) / 50.0
     u2 = (p2[0] - 50.0) / 50.0
-    du = u2 - u1
-    if abs(du) < MIN_DU:
-        du = MIN_DU if du >= 0.0 else -MIN_DU
-    slope = (p2[1] - p1[1]) / du
+    slope = (p2[1] - p1[1]) / (u2 - u1)
     intercept = p1[1] - slope * u1
     L = np.array([intercept, slope])
 
@@ -458,11 +554,14 @@ def _bent_seeds_u(p1: np.ndarray, p2: np.ndarray, glyph: Glyph):
     uL = (xL - 50.0) / 50.0
     uR = (xR - 50.0) / 50.0
 
-    Q = np.array([u1 * u2, -(u1 + u2), 1.0])
+    def q_coef(u1, u2):
+        # (u-u1)^2 (u-u2)^2
+        w = np.array([u1 * u2, -(u1 + u2), 1.0])
+        return np.polynomial.polynomial.polymul(w, w)
+
+    Q = q_coef(u1, u2)
     m = (u1 + u2) / 2.0
-    R = np.array(
-        [-m * u1 * u2, u1 * u2 + m * (u1 + u2), -(u1 + u2 + m), 1.0]
-    )
+    R = np.polynomial.polynomial.polymul(Q, np.array([-m, 1.0]))
 
     def fitted(basis, target_lo, target_hi):
         q = np.array([np.polyval(basis[::-1], uL), np.polyval(basis[::-1], uR)])
@@ -514,8 +613,15 @@ def _hill_climb(cand, glyph, uncovered, steps, rng):
 
 
 def find_curve(glyph: Glyph, uncovered: np.ndarray, rng, restarts):
+    """Return (feasible candidate or None, best failed candidate or None).
+
+    The second element is only meaningful for diagnostics when the first
+    is None: it is the candidate whose restart came closest to feasible,
+    judged by exploration merit.
+    """
     uncovered_idx = np.flatnonzero(uncovered)
     best_q = None
+    best_failed = None
     for _ in range(restarts):
         pair = _seed_pair(glyph.search_points, uncovered_idx, rng)
         if pair is None:
@@ -528,6 +634,12 @@ def find_curve(glyph: Glyph, uncovered: np.ndarray, rng, restarts):
             start = max(feasible, key=lambda sm: feasible_score(sm[1], sm[0].degree))[0]
         else:
             start = max(scored, key=lambda sm: sm[1].merit)[0]
+            for s, an in scored:
+                if not an.feasible and (
+                    best_failed is None
+                    or an.merit > best_failed[1].merit
+                ):
+                    best_failed = (s, an)
         result = _hill_climb(start, glyph, uncovered, REFINE_STEPS, rng)
         if result is None:
             continue
@@ -536,7 +648,70 @@ def find_curve(glyph: Glyph, uncovered: np.ndarray, rng, restarts):
             best_q[1], best_q[0].degree
         ):
             best_q = (cand, an)
-    return None if best_q is None else best_q[0]
+        if not an.feasible and (
+            best_failed is None or an.merit > best_failed[1].merit
+        ):
+            best_failed = (cand, an)
+    return (
+        None if best_q is None else best_q[0],
+        None if best_failed is None else best_failed[0],
+    )
+
+
+def _tail_diag(an: Analysis, side: str) -> str:
+    if side == "left":
+        valid, slope, vx, xrun = (
+            an.left_tail_valid, an.left_exit_slope, an.left_vertical_x, an.left_x_run,
+        )
+    else:
+        valid, slope, vx, xrun = (
+            an.right_tail_valid, an.right_exit_slope, an.right_vertical_x, an.right_x_run,
+        )
+    if valid:
+        return "ok"
+    if not np.isfinite(vx):
+        return "no +-5 margin root"
+    parts = []
+    if xrun > MAX_TAIL_X_RUN:
+        parts.append(f"x_run {xrun:.1f}")
+    if slope < MIN_TAIL_SLOPE:
+        parts.append(f"slope {slope:.1f} at +-5 margin")
+    if not parts:
+        return "invalid"
+    return ", ".join(parts)
+
+
+def _report_no_first_curve(glyph: Glyph, cand: Candidate | None):
+    """Print a concise stderr diagnostic when fit_curves finds nothing.
+
+    Used only for zero-curve failures, never on stdout.
+    """
+    if cand is None:
+        print("search: no feasible first curve (no restart produced a candidate)",
+              file=sys.stderr)
+        return
+    an = analyze_candidate(
+        cand, glyph, np.zeros(len(glyph.search_points), dtype=bool)
+    )
+    print("search: no feasible first curve; best restart:", file=sys.stderr)
+    print(f"surface={an.surface_fraction:.2f}", file=sys.stderr)
+    print(f"trace_components={_trace_component_count(glyph, cand)}", file=sys.stderr)
+    print(f"left_tail={_tail_diag(an, 'left')}", file=sys.stderr)
+    print(f"right_tail={_tail_diag(an, 'right')}", file=sys.stderr)
+    print(f"new={an.newly_covered}", file=sys.stderr)
+
+
+def _trace_component_count(glyph: Glyph, cand: Candidate) -> int:
+    xc = x_curve_of_candidate(cand)
+    breaks = np.unique(
+        np.concatenate(
+            [
+                _real_roots(xc.poly - glyph.ymin),
+                _real_roots(xc.poly - glyph.ymax),
+            ]
+        )
+    )
+    return len(_components_from_breaks(breaks, xc.poly, glyph.ymin, glyph.ymax))
 
 
 def _refine_coef_only(cand: Candidate, glyph: Glyph, steps: int, rng):
@@ -592,10 +767,13 @@ def fit_curves(glyph: Glyph, rng, max_curves):
         if len(curves) >= max_curves:
             break
         uncovered_search = ~covered[glyph.search_idx]
-        cand = find_curve(glyph, uncovered_search, rng, RESTARTS_PER_CURVE)
+        cand, failed = find_curve(glyph, uncovered_search, rng, RESTARTS_PER_CURVE)
         if cand is None:
-            cand = find_curve(glyph, uncovered_search, rng, RESCUE_RESTARTS)
+            cand, failed2 = find_curve(glyph, uncovered_search, rng, RESCUE_RESTARTS)
+            failed = failed if failed is not None else failed2
         if cand is None:
+            if len(curves) == 0:
+                _report_no_first_curve(glyph, failed)
             break
         assigned = _assign(glyph, covered, cand)
         curves.append(_reduce_degree(cand, assigned, glyph, rng))
@@ -774,11 +952,8 @@ def validate(lines, glyph: Glyph):
             problems.append("V3 derivative roots beyond trace interval")
             dense.append(None)
             continue
-        if (
-            abs(an.left_slope) < MIN_TAIL_SLOPE
-            or abs(an.right_slope) < MIN_TAIL_SLOPE
-        ):
-            problems.append("V3 exit slope below MIN_TAIL_SLOPE")
+        if not an.left_tail_valid or not an.right_tail_valid:
+            problems.append("V3 tail does not leave the band steeply and permanently")
             dense.append(None)
             continue
         dense.append(an.samples)
