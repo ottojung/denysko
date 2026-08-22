@@ -50,6 +50,15 @@ def test_round_trip_generated_candidates():
         assert d.format_expression(curve) == line
 
 
+def test_normalization_bbox_corner_at_origin():
+    for letter in "AOTM":
+        p = d.glyph_boundary(letter)
+        assert p[:, 0].min() < 0.5
+        assert p[:, 1].min() < 0.5
+        assert p[:, 0].max() <= 100.0 + 1e-9
+        assert p[:, 1].max() <= 100.0 + 1e-9
+
+
 def test_malformed_lines_do_not_parse():
     for line in [
         "y=x^^2\\ \\left\\{0\\le x\\le 10\\right\\}",

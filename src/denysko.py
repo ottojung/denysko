@@ -313,13 +313,12 @@ def glyph_boundary(letter: str) -> np.ndarray:
     mx = pts.max(axis=0)
     w, h = mx[0] - mn[0], mx[1] - mn[1]
     scale = SIZE / max(w, h)
-    cx = (mn[0] + mx[0]) / 2.0
 
     verts = []
     codes = []
     for poly in polys:
         t = np.empty_like(poly)
-        t[:, 0] = (poly[:, 0] - cx) * scale + 50.0
+        t[:, 0] = (poly[:, 0] - mn[0]) * scale
         t[:, 1] = (poly[:, 1] - mn[1]) * scale
         verts.append(t)
         codes.append([Path.MOVETO] + [Path.LINETO] * (len(t) - 1))
