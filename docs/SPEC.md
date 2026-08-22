@@ -207,26 +207,27 @@ environment)` produces byte-for-byte identical stdout. The seed has a fixed defa
 
 Exploration and feasibility are judged separately. Every candidate is measured once by a
 single-pass analysis (convert `u → x`, roots of `P-ymin`, `P-ymax`, `P'` and the two
-margin levels `P-(ymax+5)` / `P-(ymin-5)`, trace components, one trace sample, one
-distance pass) producing normalized metrics:
+margin levels `P-(ymax+5)` / `P-(ymin-5)`, trace components, one sample pass over every
+finite component, one distance pass) producing normalized metrics:
 
 ```
 coverage_fraction      = newly_covered / max(1, n_uncovered)
 bad_surface_fraction   = fraction of sampled in-band graph points with distance > τ
 mean_surface_excess    = mean(max(0, distance - τ)) / τ
-trace_penalty          = 0 for exactly one finite non-empty trace; else 2.0 empty,
-                         2.0 unbounded, +1.0 per extra component
-tail_penalty           = # derivative roots outside trace
-                         + left_missing_margin_penalty
-                         + right_missing_margin_penalty
-                         + left_x_run_penalty + right_x_run_penalty
-                         + left_slope_deficit + right_slope_deficit
+trace_penalty          = 2.0 * extra_component_fraction  (multiple finite components)
+                         + 2.0 if any unbounded component; 2.0 if empty
+extra_component_fraction = extra_arc / max(total_arc, 1e-9)
+tail_penalty           = per-side: turns + direction + margin + x-run + slope
 x_run_penalty          = max(0, x_run - MAX_TAIL_X_RUN) / MAX_TAIL_X_RUN
 slope_deficit          = max(0, MIN_TAIL_SLOPE - |P'(t)|) / MIN_TAIL_SLOPE
 ```
 
-A tail that never reaches the ±5 vertical margin gets a finite missing-margin
-penalty (2.0) rather than making merit undefined; feasibility itself stays hard.
+Surface and coverage metrics score the union of **all** finite trace components, so a
+spurious extra stroke cannot hide behind the widest component. `trace_penalty` is
+continuous in the extra-component arc (shrinking a spurious component improves merit
+gradually). A tail that never reaches the ±5 margin estimates its remaining vertical
+fraction by probing at `end ± MAX_TAIL_X_RUN` (penalty `1.0 + remaining_fraction`) plus
+a fixed wrong-direction term and a turn count; feasibility itself stays hard.
 
 The **exploratory merit** is a single scalar, larger being better:
 
@@ -241,43 +242,44 @@ merit = coverage_fraction
 
 It may visit infeasible states; severe surface violations dominate coverage, invalid
 tails are expensive, and small temporary imperfections remain crossable. During every
-hill climb the search additionally keeps the **best feasible candidate encountered so
-far** — feasible iff exactly one finite trace, ≥ 95 % trace adherence within `τ`, no
-derivative roots outside the trace, both tails leave the band permanently and reach the
-±5 vertical margin within `MAX_TAIL_X_RUN` with `|P'| ≥ MIN_TAIL_SLOPE` there, and
+hill climb the search maintains three states separately — the current state, the
+**best exploratory state** (the highest-merit candidate seen anywhere, returned for
+diagnostics when nothing is feasible), and the **best feasible candidate** — feasible
+iff exactly one finite trace, ≥ 95 % trace adherence within `τ`, no derivative roots
+outside the trace, both tails leave the band permanently and reach the ±5 vertical
+margin within `MAX_TAIL_X_RUN` with `|P'| ≥ MIN_TAIL_SLOPE` there, and
 `newly_covered ≥ MIN_NEW_POINTS` — compared by `(newly_covered, -degree,
--mean_surface_distance)`, and returns it regardless of the final exploratory state.
-Mutation is 80 % single-coefficient / 20 % degree; there is no domain mutation.
+-mean_surface_distance)`. Mutation is 80 % single-coefficient / 20 % degree; there is
+no domain mutation.
 
 Seeding biases toward the local contour without contour tracing: for each restart, pick
 `p1` among uncovered boundary points, sample up to 8 candidate partners `p2` from the
 distance bands 3–15 (expanded to 25 when necessary) whose x-separation from `p1` is at
 least `MIN_X_SEPARATION`, score each straight segment `p1 → p2` at 33 sample points by
-mean boundary distance, and take the best-scoring, more distant `p2` on ties. From
-`(p1, p2)` exactly five initial polynomials are built, all in normalized
-`u = (x-50)/50` coordinates:
+`(mean boundary distance, max boundary distance, -point distance)`, and take the
+best-scoring, more distant `p2` on ties. From `(p1, p2)` exactly five initial
+polynomials are built, all in normalized `u = (x-50)/50` coordinates:
 
 1. the ordinary line `L(u)` through `p1, p2`;
-2. two **degree-4 same-tail seeds** `L(u) + k·Q(u)` with
-   `Q(u) = (u-u1)² (u-u2)²` — both tails up, both tails down;
-3. two **degree-5 opposite-tail seeds** `L(u) + k·R(u)` with
-   `R(u) = (u-u1)² (u-u2)² (u-m)`, `m = (u1+u2)/2` — left up / right down,
-   left down / right up.
+2. four **degree-5 two-parameter bent seeds** `P(u) = L(u) + aQ(u) + bR(u)` with
+   `Q(u) = (u-u1)² (u-u2)²` and `R(u) = Q(u)(u-m)`, `m = (u1+u2)/2` — one for each
+   tail orientation (up/up, down/down, up/down, down/up).
 
-The squared bases vanish with zero derivative at `u1` and `u2`, so every bent seed
+Both `Q` and `R` vanish with zero derivative at `u1` and `u2`, so every bent seed
 preserves both the seed values and the local stroke slope: `P(u_i) = p_i.y` and
-`P'(u_i) = L'(u_i)`. The scalar `k` is fit by least squares at the global padded glyph
-x-extents `xL = xmin - 5`, `xR = xmax + 5` toward the requested tail level
-(`k = Σ q_i (target_i - L_i) / Σ q_i²`, skipped when the denominator is tiny), so a
-crossbar seed can curve onto a leg and keep following the surface rather than escaping
-immediately. Refinement starts from the best already-feasible seed if any, otherwise
-from the best merit; the two boundary points are initialization constraints only and
-refinement may move away from them.
+`P'(u_i) = L'(u_i)`. The pair `(a, b)` is solved exactly from the two tail targets at
+the global padded glyph x-extents `xL = xmin - 5`, `xR = xmax + 5`
+(`[Q(uL), R(uL); Q(uR), R(uR)] · [a, b] = [TL - L(uL), TR - L(uR)]`; a singular or
+ill-conditioned system skips that seed), so each seed hits both requested tail levels
+exactly. A crossbar seed can thus curve onto a leg and keep following the surface
+rather than escaping immediately. Refinement starts from the best already-feasible
+seed if any, otherwise from the best merit; the two boundary points are initialization
+constraints only and refinement may move away from them.
 
 Search geometry is deliberately cheap: a deterministic evenly-spaced subset of at most
 `SEARCH_BOUNDARY_MAX` boundary points and at most `SEARCH_GRAPH_MAX` trace samples
-drive every hill-climb step; dense, full-boundary evaluation is reserved for accepted
-curves and final validation.
+per component drive every hill-climb step; dense, full-boundary evaluation is reserved
+for accepted curves and final validation.
 
 ### 6.6 Coverage and assigned points
 
