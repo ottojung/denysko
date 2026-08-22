@@ -80,14 +80,14 @@ def _bar_points():
 
 def test_v1_coverage_pass_and_fail():
     p = _bar_points()
-    assert d.validate(["y=50\\ \\left\\{-5\\le x\\le 105\\right\\}"], p) == []
+    assert d.validate(["y=50\\ \\left\\{0\\le x\\le 100\\right\\}"], p) == []
     problems = d.validate(["y=50\\ \\left\\{10\\le x\\le 20\\right\\}"], p)
     assert any(m.startswith("V1") for m in problems)
 
 
 def test_v2_boundary_following_curve_passes():
     p = _bar_points()
-    assert d.validate(["y=50\\ \\left\\{-5\\le x\\le 105\\right\\}"], p) == []
+    assert d.validate(["y=50\\ \\left\\{0\\le x\\le 100\\right\\}"], p) == []
 
 
 def test_v2_excursion_fails_inside_expanded_bbox():

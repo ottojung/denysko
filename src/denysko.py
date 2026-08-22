@@ -35,6 +35,7 @@ SEARCH_SAMPLE_CAP = 1200
 VALIDATE_SAMPLE_CAP = 40000
 
 MIN_NEW_POINTS = 8
+ACCEPT_MAX_ESCAPE_FRACTION = 0.05
 SEED_MIN_DIST = 3.0
 SEED_MAX_DIST = 15.0
 SEED_EXPANDED_DIST = 25.0
@@ -137,19 +138,18 @@ def _search_score(cand: Candidate, p: np.ndarray, uncovered: np.ndarray):
     samples = sample_graph(cand, SEARCH_STEP, SEARCH_SAMPLE_CAP)
     sel = _box_filter(p, samples)
     if len(samples) == 0 or len(sel) == 0:
-        return (-10**9, -(10.0**18), 0, -cand.degree, 10.0**18), 10**9, 0
+        return (-(10.0**18), -(10.0**18), -cand.degree, 10.0**18), 1.0, 0
     curve_d, point_d = _min_dists(samples, p[sel])
-    escaped = int((curve_d > TAU).sum())
     penalty = float((np.clip(curve_d - TAU, 0.0, None) ** 2).sum())
     newly = int(((point_d <= TAU) & uncovered[sel]).sum())
+    escape_frac = float((curve_d > TAU).mean())
     score = (
-        -escaped,
-        -penalty,
         newly,
+        -penalty,
         -cand.degree,
         -float(curve_d.mean()),
     )
-    return score, escaped, newly
+    return score, escape_frac, newly
 
 
 def _mutate(cand: Candidate, rng, sigma_c: float, sigma_d: float):
@@ -239,8 +239,14 @@ def find_curve(p, uncovered, rng, restarts):
         seed = _seed_candidate(rng, p, uncovered_idx)
         if seed is None:
             continue
-        cand, score, esc, new = _hill_climb(seed, p, uncovered, REFINE_STEPS, rng)
-        if esc == 0 and new >= MIN_NEW_POINTS and (best_q is None or score > best_q[1]):
+        cand, score, escape_frac, new = _hill_climb(
+            seed, p, uncovered, REFINE_STEPS, rng
+        )
+        qualifies = (
+            new >= MIN_NEW_POINTS
+            and escape_frac <= ACCEPT_MAX_ESCAPE_FRACTION
+        )
+        if qualifies and (best_q is None or score > best_q[1]):
             best_q = (cand, score)
     return best_q[0] if best_q is not None else None
 
@@ -258,25 +264,25 @@ def _reduction_score(cand, assigned):
     samples = sample_graph(cand, SEARCH_STEP, SEARCH_SAMPLE_CAP)
     sel = _box_filter(assigned, samples)
     if len(samples) == 0 or len(sel) == 0:
-        return (False, -1, -cand.degree, 10.0**18), False
+        return (-1, -(10.0**18), -cand.degree, 10.0**18), 1.0
     curve_d, point_d = _min_dists(samples, assigned[sel])
-    escaped = bool((curve_d > TAU).any())
+    penalty = float((np.clip(curve_d - TAU, 0.0, None) ** 2).sum())
     covered_n = int((point_d <= TAU).sum())
+    escape_frac = float((curve_d > TAU).mean())
     score = (
-        not escaped,
         covered_n,
+        -penalty,
         -cand.degree,
         -float(curve_d.mean()),
     )
-    return score, escaped
+    return score, escape_frac
 
 
 def _reduce_degree(cand, assigned_pts, rng):
-    target = cand.degree
     cur = cand
     while cur.degree > 0:
         trial = Candidate(cur.degree - 1, cur.coef[:-1].copy(), cur.a, cur.b)
-        score, escaped = _reduction_score(trial, assigned_pts)
+        score, _ = _reduction_score(trial, assigned_pts)
         for t in range(REDUCE_STEPS):
             sigma_c, sigma_d = _sigmas(t, REDUCE_STEPS)
             mutant = _mutate(trial, rng, sigma_c, sigma_d)
@@ -285,8 +291,11 @@ def _reduce_degree(cand, assigned_pts, rng):
             mscore, _ = _reduction_score(mutant, assigned_pts)
             if mscore > score:
                 trial, score = mutant, mscore
-        final_score, final_escaped = _reduction_score(trial, assigned_pts)
-        if not final_escaped and final_score[1] == len(assigned_pts):
+        final_score, final_frac = _reduction_score(trial, assigned_pts)
+        if (
+            final_score[0] == len(assigned_pts)
+            and final_frac <= ACCEPT_MAX_ESCAPE_FRACTION
+        ):
             cur = trial
         else:
             break
@@ -486,7 +495,7 @@ def validate(lines, p):
                     f"V1 coverage {coverage:.4f} below {MIN_COVERAGE}"
                 )
             for i, samples in enumerate(dense):
-                _, sd = _min_dists(samples, p)
+                sd, _ = _min_dists(samples, p)
                 near_frac = float((sd <= TAU).mean())
                 if near_frac < MIN_COVERAGE:
                     problems.append(
