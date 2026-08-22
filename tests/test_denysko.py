@@ -59,6 +59,20 @@ def test_normalization_bbox_corner_at_origin():
         assert p[:, 1].max() <= 100.0 + 1e-9
 
 
+def test_sample_graph_preserves_whole_domain_under_cap():
+    coef = np.array([50.0, 5000.0])
+    samples = d.sample_graph(d.Candidate(1, coef, -5.0, 105.0), 1.0, 400)
+    assert len(samples) <= 400
+    assert len(samples) > 129
+    assert samples[0, 0] == -5.0
+    assert samples[-1, 0] == 105.0
+    assert np.all(np.diff(samples[:, 0]) > 0)
+    expected_first = d._poly_u(coef, np.array([-5.0]))[0]
+    expected_last = d._poly_u(coef, np.array([105.0]))[0]
+    assert samples[0, 1] == expected_first
+    assert samples[-1, 1] == expected_last
+
+
 def test_malformed_lines_do_not_parse():
     for line in [
         "y=x^^2\\ \\left\\{0\\le x\\le 10\\right\\}",

@@ -85,7 +85,13 @@ def _adaptive_sample(eval_fn, a: float, b: float, max_step: float, cap: int):
             break
         mids = (xs[:-1][bad] + xs[1:][bad]) / 2.0
         xs = np.sort(np.concatenate([xs, mids]))
-    return np.column_stack([xs, eval_fn(xs)])[:cap]
+    if xs.size > cap:
+        idx = np.round(np.linspace(0.0, xs.size - 1.0, cap)).astype(np.int64)
+        idx[0] = 0
+        idx[-1] = xs.size - 1
+        idx = np.unique(idx)
+        xs = xs[idx]
+    return np.column_stack([xs, eval_fn(xs)])
 
 
 def sample_graph(cand: Candidate, max_step: float, cap: int) -> np.ndarray:
