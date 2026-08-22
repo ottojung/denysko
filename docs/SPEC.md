@@ -262,19 +262,48 @@ polynomials are built, all in normalized `u = (x-50)/50` coordinates:
 
 1. the ordinary line `L(u)` through `p1, p2`;
 2. four **degree-5 two-parameter bent seeds** `P(u) = L(u) + aQ(u) + bR(u)` with
-   `Q(u) = (u-u1)² (u-u2)²` and `R(u) = Q(u)(u-m)`, `m = (u1+u2)/2` — one for each
-   tail orientation (up/up, down/down, up/down, down/up).
+   `Q(u) = (u-ul)² (u-ur)²` and `R(u) = Q(u)(u-m)`, `m = (ul+ur)/2`, anchored at the
+   line's **provisional trace endpoints** `[l0, r0]` (with `ul = u(l0)`,
+   `ur = u(r0)`) — one for each tail orientation (up/up, down/down, up/down,
+   down/up).
 
-Both `Q` and `R` vanish with zero derivative at `u1` and `u2`, so every bent seed
-preserves both the seed values and the local stroke slope: `P(u_i) = p_i.y` and
-`P'(u_i) = L'(u_i)`. The pair `(a, b)` is solved exactly from the two tail targets at
-the global padded glyph x-extents `xL = xmin - 5`, `xR = xmax + 5`
-(`[Q(uL), R(uL); Q(uR), R(uR)] · [a, b] = [TL - L(uL), TR - L(uR)]`; a singular or
-ill-conditioned system skips that seed), so each seed hits both requested tail levels
-exactly. A crossbar seed can thus curve onto a leg and keep following the surface
-rather than escaping immediately. Refinement starts from the best already-feasible
-seed if any, otherwise from the best merit; the two boundary points are initialization
-constraints only and refinement may move away from them.
+The provisional endpoints are where the local straight stroke would naturally leave
+the glyph's vertical band, derived analytically from intersections of the line with
+`ymin`/`ymax`; for an unbounded (horizontal/nearly horizontal) line a finite working
+window is defined instead around the seed-pair midpoint with half-width
+`UNBOUNDED_SEED_HALF_WIDTH`, clamped to the padded glyph extents. Working-window
+metadata is used only for seed construction; the resulting candidates must still
+satisfy the ordinary global trace rules once analyzed.
+
+Because both `Q` and `R` vanish with zero derivative at `ul` and `ur`, every bent seed
+follows the provisional straight surface route all the way to its natural band exits
+and bends only outside them: `P(ul) = L(ul)`, `P(ur) = L(ur)`, `P'(ul) = L'(ul)`,
+`P'(ur) = L'(ur)`. The pair `(a, b)` is solved exactly so that `P` reaches the
+requested tail levels (`up = ymax + TAIL_VERTICAL_MARGIN`,
+`down = ymin - TAIL_VERTICAL_MARGIN`) at
+
+```
+xL = l0 - SEED_TAIL_X_RUN      xR = r0 + SEED_TAIL_X_RUN
+SEED_TAIL_X_RUN = MAX_TAIL_X_RUN
+```
+
+(`[Q(uL), R(uL); Q(uR), R(uR)] · [a, b] = [TL - L(xL), TR - L(xR)]`; a singular or
+ill-conditioned system skips that seed). Tail target positions are therefore relative
+to the provisional trace exits, aligned with the actual tail rule — never global glyph
+x-extents. The line itself remains a seed for naturally steep strokes and
+lower-degree solutions.
+
+Every generated seed is independently refined: each restart hill-climbs all five
+seeds and compares their best feasible and best exploratory states. To keep total
+work constant, `REFINE_STEPS` is interpreted as a **per-restart refinement budget**
+rather than per-seed steps; it is split deterministically across the seeds
+(`steps_per_seed = REFINE_STEPS // len(seeds)`, remainder distributed to the first
+seeds). Rescue restarts keep their existing count under the same interpretation.
+Bent-seed hills use structured mutations — 50 % coefficient / 25 % Q-direction /
+25 % R-direction, where Q bends both tails together and R alters left-vs-right
+asymmetry — with degree mutation suppressed during the first half of refinement so
+the constructed quintic basin is refined before structural exploration resumes; the
+plain line keeps the ordinary coefficient/degree behaviour throughout.
 
 Search geometry is deliberately cheap: a deterministic evenly-spaced subset of at most
 `SEARCH_BOUNDARY_MAX` boundary points and at most `SEARCH_GRAPH_MAX` trace samples
@@ -319,6 +348,9 @@ stdout. No silent bad output, ever.
 ## 8. Acceptance criteria
 
 - All 26 letters pass V1–V4 with defaults.
+
+  > This remains the long-term target; the current trace model has known
+  > representability limitations documented in CHALLENGES.md.
 - The results are visually recognizable as outlines without large spurious strokes.
 - Three reference letters are pinned in CI with exact-output regression under the locked
   environment and default seed:

@@ -71,7 +71,7 @@ contract with handcrafted post-exit tests:
 - **Case D** — a curve reaching the ±5 margin only after more than 5
   horizontal units: invalid.
 
-## Seed construction: two-parameter degree-5 bent seeds
+## Seed construction: endpoint-anchored degree-5 bent seeds
 
 Seeds are built from the local-contour `p1, p2` pair (segment-scored by
 `(mean segment distance, max segment distance, -point distance)`, `p2` must be
@@ -80,20 +80,31 @@ exactly five initial candidates in `u = (x-50)/50` coordinates:
 
 1. the ordinary line `L(u)` through `p1, p2`;
 2. four **degree-5 bent seeds** `P(u) = L(u) + aQ(u) + bR(u)` with
-   `Q(u) = (u-u1)² (u-u2)²` and `R(u) = Q(u)(u-m)`, `m = (u1+u2)/2` — one for
-   each tail orientation (up/up, down/down, up/down, down/up).
+   `Q(u) = (u-ul)² (u-ur)²` and `R(u) = Q(u)(u-m)`, `m = (ul+ur)/2`, anchored
+   at the line's **provisional trace endpoints** `[l0, r0]` — one for each
+   tail orientation (up/up, down/down, up/down, down/up).
 
-Both `Q` and `R` vanish with zero derivative at `u1` and `u2`, so every bent
-seed preserves the seed values and the local stroke slope
-(`P(u_i) = p_i.y`, `P'(u_i) = L'(u_i)`). The pair `(a, b)` is solved exactly
-from the two tail targets at the global padded glyph x-extents
-(`xL = xmin - 5`, `xR = xmax + 5`), so each seed hits both requested tail
-levels exactly; a singular/ill-conditioned system skips that seed. The earlier
-single-`k` degree-4/degree-5 family was removed as unnecessarily restrictive.
+The provisional endpoints are the line's natural band exits (analytic
+intersections with `ymin`/`ymax`); for an unbounded horizontal line a working
+window of half-width `UNBOUNDED_SEED_HALF_WIDTH = 15` around the seed-pair
+midpoint is used instead, clamped to the padded glyph extents. Because both
+bases vanish with zero derivative at `ul`/`ur`, every bent seed follows the
+provisional straight surface route all the way to its natural band exits and
+bends only outside them. The pair `(a, b)` is solved exactly so each seed hits
+its requested tail levels at `xL = l0 - SEED_TAIL_X_RUN` /
+`xR = r0 + SEED_TAIL_X_RUN` with `SEED_TAIL_X_RUN = MAX_TAIL_X_RUN`; a
+singular/ill-conditioned system skips that seed. Tail target positions are
+therefore relative to the provisional exits — never global glyph x-extents.
 
 Exact-same-x pairs are rejected at selection time (`_seed_pair`), and
 `_line_seed_u` never fabricates an x-separation; it computes the actual line
 through the two accepted points.
+
+Every generated seed is independently refined: `REFINE_STEPS` is a
+**per-restart budget** split deterministically across the five hills, so
+exploring all basins costs no more work than refining one. Bent-seed hills use
+structured mutations (50 % coefficient / 25 % Q-direction / 25 % R-direction)
+with degree mutation suppressed during their first half.
 
 ## Exploration merit
 
@@ -110,9 +121,12 @@ merit = coverage_fraction
 
 The inputs are continuous so greedy hill climbing has useful gradients:
 
-- **Surface metrics score ALL finite trace components.** A candidate whose
-  second component is a huge spurious stroke through empty space can no longer
-  hide it by reporting only the widest component's adherence.
+- **Surface metrics score ALL finite trace components**, and unbounded
+  in-band components are sampled over a finite viewport so a horizontal
+  stroke earns its real surface/coverage while keeping the +2.0 structural
+  penalty. A candidate whose second component is a huge spurious stroke
+  through empty space can no longer hide it by reporting only the widest
+  component's adherence.
 - **trace_penalty is continuous**: `2.0 * extra_component_fraction` where
   `extra_component_fraction = extra_arc / total_arc` over all sampled
   components (+2.0 for an unbounded component, 2.0 for an empty trace).
@@ -121,10 +135,12 @@ The inputs are continuous so greedy hill climbing has useful gradients:
 - **tail_penalty is continuous per side**: a missing ±5 margin root probes at
   `end ± MAX_TAIL_X_RUN` and charges `1.0 + remaining_vertical_fraction`; a
   wrong direction adds a fixed larger penalty; when a margin root exists the
-  x-run and slope deficits are proportional; derivative roots beyond the trace
-  endpoint count as turns. A near-valid tail scores much better than a bad
-  one, and a one-component/nearly-valid candidate naturally out-ranks a
-  two-component candidate.
+  x-run and slope deficits are proportional; derivative roots beyond the
+  trace endpoint count as turns **once each** (the side penalties are the
+  only place turns are charged — `deriv_outside` remains a separate field
+  for hard feasibility and diagnostics). A near-valid tail scores much better
+  than a bad one, and a one-component/nearly-valid candidate naturally
+  out-ranks a two-component candidate.
 
 The coverage/surface/trace/degree weights are intentionally untouched.
 
@@ -148,45 +164,67 @@ curves and final validation.
 ## Manual behavior for real letters (current)
 
 The default pytest suite intentionally does not run real-letter fitting.
-Manual acceptance is a separate development step:
+Manual acceptance is a separate development step, run in the order
+`V`, `A`, `C`, `O` (`V` first: its useful outer geometry is simple and
+x-monotone). Current results (default seed, this environment/lockfile):
+`fit_curves()` finds **no feasible first curve** for all four letters and
+`validate()` reports V1 = 0. The zero-curve diagnostics (stderr) describe the
+actual best explored state across all restarts **and all five seed hills**:
 
-```
-uv run denysko V
-```
+- `V` — winner seed=`line`, degree 1, merit -1.71, surface 0.85, new=64,
+  single trace `[53.42, 91.60]`, both tails direction ok, margin reached at
+  x_run 1.91 with slope **2.61 < 8**, turns 0.
+- `A` — winner seed=`line`, degree 1, merit -0.97, surface 1.00, new=81,
+  single trace `[2.31, 37.02]`, margin slopes **2.87 < 8**.
+- `C` — winner seed=`line`, degree 1, merit -1.96, surface 0.53, new=60,
+  single trace `[10.33, 20.04]`, margin slopes 10.27 (tails fine).
+- `O` — winner seed=`down/down`, degree 4, merit -2.51, surface 0.41, new=2,
+  single trace `[65.34, 66.62]`, margin slopes 17.25/16.46 (steep but the
+  covered sliver is tiny).
 
-Current results (default seed, on this environment/lockfile). `fit_curves()`
-finds **no feasible first curve** for all real letters tried; `validate()`
-then reports V1 = 0. The zero-curve diagnostics (stderr) describe the actual
-**best explored state** across all restarts, with its real `new=` count and
-per-tail detail:
+## Measured evidence from this iteration
 
-- `V` — best explored: degree-1 line, merit -1.71, surface 0.85, new=64,
-  single trace, both tails reach the margin within x_run 1.92 but with slope
-  **2.61 < 8**. Blocker: margin slope far below `MIN_TAIL_SLOPE`.
-- `A` — best explored: degree-1 line, merit -0.97, surface 1.00, new=82,
-  single trace, margin slope **2.85 < 8**. Blocker: same shallow-leg slope.
-- `C` — best explored: degree-4, merit -1.86, surface 0.65, new=75, single
-  trace, tails fine (9.39 / 9.82). Blocker: **surface 0.65 < 0.95**.
-- `O` — best explored: degree-4, merit -1.37, surface 0.70, new=86, single
-  trace, left slope 8.44 (ok), right slope **7.54 < 8**. Blocker: one tail
-  just short of `MIN_TAIL_SLOPE` plus surface below 0.95.
+The iteration's goal was to give the degree-5 escape-capable seed family a
+fair chance. What was measured:
 
-So the remaining per-letter blockers are now visible and concrete:
+1. **All-five-seed refinement works, but the line still wins V/A/C.**
+   Instrumenting one `V` restart shows each basin's best exploratory merit:
+   line -2.68 -> -2.60, up/up -7.81 -> -7.17, down/down -6.96 -> -5.40,
+   up/down -8.08 -> -7.21, down/up -6.71 -> -4.95. The structured Q/R
+   mutations and continuous penalties genuinely improve every bent basin
+   (down/up gains +1.76 merit in its 24 steps), but none closes the ~2.5-point
+   gap to the line within the fixed per-restart budget.
+2. **Why the bent seeds start so far behind: the exact-solve fights its own
+   feasibility rule.** Pinning P(xL) = target at exactly xL = l0 -
+   MAX_TAIL_X_RUN forces an average post-exit slope of margin/run = 5/5 = 1 —
+   *shallower* than any stroke steeper than 1. On a slope-2.5 diagonal the
+   natural-orientation seed arrives at the ±5 margin with |P'| ≈ 1.16 (< the
+   line's own 2.5), overshoots to about -5.6, turns, and re-enters the band
+   further out. Every bent seed therefore starts as a multi-component trace
+   (ncomp 2–4, trace_penalty ≈ 1.3–1.6, i.e. a built-in -2.6..-3.2 merit
+   handicap) even though its interior follows the stroke.
+3. **Unbounded horizontal lines finally score usefully.** A constant y=50
+   line over a crossbar glyph analyzes (search mode) at surface_fraction
+   1.00 with real coverage while remaining structurally unbounded
+   (trace_penalty 2.0, infeasible). The optimizer now has a meaningful
+   gradient toward bending it into a finite trace instead of seeing zero.
+4. `O`'s best explored state switched from the line to a degree-4
+   `down/down` bend — evidence that the new basins can win where the local
+   geometry suits them — but it covers only 2 boundary points (surface 0.41).
 
-1. `V`/`A`: the best single-trace candidate is a straight leg line whose
-   post-exit margin slope (~2.6-2.9) is far below `MIN_TAIL_SLOPE = 8`. The
-   search must find a curve that hugs the leg and bends to vertical shortly
-   after leaving the band.
-2. `C`: the best explored curve follows part of the outer geometry but its
-   surface adherence is 0.65 — it does not hug enough of the boundary within
-   `τ`.
-3. `O`: close — one tail slope at 7.54 (just under 8) and surface 0.70.
+The precise blocker for `V`/`A` is therefore no longer generic convergence:
+the seed family that could fix their too-shallow margins starts handicapped
+by construction-induced extra components, and the fixed budget cannot erase
+that handicap before the line's clean single-component state wins the
+comparison. Candidate next steps (not taken in this iteration): solve the
+bent-seed targets with the run as an inequality (reach ±margin *within*
+`SEED_TAIL_X_RUN` rather than exactly at it), or drop position constraints in
+favor of slope constraints at the exits.
 
 A synthetic steep vertical bar is solved end-to-end (two feasible degree-1
 curves, `validate()` passes all of V1-V4), so the pipeline mechanics (seeds,
-merit, feasibility, reduction, validation) are correct on geometries where
-feasible curves exist; the real-letter failures are search convergence
-failures on the seed geometries, not validation failures.
+merit, feasibility, reduction, validation) remain correct on geometries where
+feasible curves exist.
 
 ## The global-trace limitation (explicit)
 
