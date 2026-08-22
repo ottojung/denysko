@@ -91,13 +91,91 @@ def test_tail_derivative_root_rejection():
     assert not an.feasible
 
 
-def test_tail_slope_rejection():
+def test_tail_case_a_shallow_forever_invalid():
+    """A line crossing the band with slope 2 stays slope 2: never steep."""
     glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
     an = d.analyze_candidate(
         d.Candidate(1, np.array([50.0, 50.0])),  # y = x, slope 1 < 8
         glyph, np.zeros(len(glyph.search_points), dtype=bool),
     )
-    assert abs(an.left_slope) < d.MIN_TAIL_SLOPE
+    assert not an.left_tail_valid or not an.right_tail_valid
+    assert not an.feasible
+
+
+def test_tail_case_b_shallow_at_endpoint_steep_outside_valid():
+    """Follows a boundary, crosses the band shallowly, then turns steep.
+
+    A Hermite quintic has trace-endpoint slopes ~3.5 (< 8) but reaches
+    the +-5 vertical margin within ~0.75 x-units with |P'| ~ 10.8,
+    so both tails are valid under the post-exit rule.
+    """
+    def fit_hermite(points):
+        xs = np.array([p[0] for p in points])
+        ys = np.array([p[1] for p in points])
+        ds = np.array([p[2] for p in points])
+        n = len(points)
+        A = np.zeros((2 * n, 6))
+        b = np.zeros(2 * n)
+        for i, (x, y, dy) in enumerate(points):
+            A[2 * i] = [x**k for k in range(6)]
+            A[2 * i + 1] = [k * x ** (k - 1) if k > 0 else 0 for k in range(6)]
+            b[2 * i] = y
+            b[2 * i + 1] = dy
+        coef, *_ = np.linalg.lstsq(A, b, rcond=None)
+        return coef
+
+    coef_x = fit_hermite([
+        (-8.0, -5.0, 12.0),
+        (-5.0, 0.0, 2.0),
+        (5.0, 100.0, 2.0),
+        (8.0, 105.0, 12.0),
+    ])
+    xc = d.XCurve(np.polynomial.Polynomial(coef_x))
+    roots = np.sort(
+        np.concatenate(
+            [d._real_roots(xc.poly - 0.0), d._real_roots(xc.poly - 100.0)]
+        )
+    )
+    l, r = roots[0], roots[-1]
+    xs = np.arange(l, r + 0.001, 0.1)
+    glyph = d.make_glyph(np.column_stack([xs, xc.poly(xs)]))
+
+    an = d._analyze(
+        xc, 5, glyph, np.zeros(len(glyph.points), dtype=bool), dense=True
+    )
+    assert an.bounds is not None
+    assert abs(an.bounds[0]) < 8.0  # endpoint slopes are shallow (< 8)
+    assert an.left_tail_valid
+    assert an.right_tail_valid
+    assert d.structurally_feasible(an)
+    assert d.validate([d.format_expression(xc)], glyph) == []
+
+
+def test_tail_case_c_steep_but_turns_back_invalid():
+    """Reaches the outside margin steeply but turns back and re-enters."""
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
+    # y = -x^2 + 120 rises out the top, peaks, then falls back through the
+    # band: two trace components, so the curve is not a single permanent exit.
+    coef_u = np.polynomial.Polynomial([120.0, 0.0, -1.0])(d.X_OF_U).coef
+    an = d.analyze_candidate(
+        d.Candidate(2, coef_u),
+        glyph, np.zeros(len(glyph.search_points), dtype=bool),
+    )
+    assert an.bounds is None
+    assert an.trace_penalty >= 1.0
+    assert not an.feasible
+
+
+def test_tail_case_d_steep_too_late_invalid():
+    """Reaches the +-5 vertical margin only after >5 horizontal units."""
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
+    # y = 50 + 0.5x: exits the band slowly, so the margin is far away
+    coef_u = np.polynomial.Polynomial([50.0, 0.5])(d.X_OF_U).coef
+    an = d.analyze_candidate(
+        d.Candidate(1, coef_u),
+        glyph, np.zeros(len(glyph.search_points), dtype=bool),
+    )
+    assert not an.left_tail_valid or not an.right_tail_valid
     assert not an.feasible
 
 
@@ -144,7 +222,7 @@ def test_connected_shape_validator_handcrafted():
         shallow, 1, glyph, np.zeros(len(glyph.points), dtype=bool), dense=True
     )
     assert not d.structurally_feasible(an)
-    assert abs(an.left_slope) < d.MIN_TAIL_SLOPE
+    assert not an.left_tail_valid or not an.right_tail_valid
 
 
 def test_euclidean_distance_tiny_cloud():
@@ -194,20 +272,29 @@ def test_five_initial_seeds():
     p1, p2 = glyph.search_points[5], glyph.search_points[15]
     seeds = d._initial_seeds(p1, p2, glyph)
     assert len(seeds) == 5
-    assert sorted(s.degree for s in seeds) == [1, 2, 2, 3, 3]
+    assert sorted(s.degree for s in seeds) == [1, 4, 4, 5, 5]
 
 
-def test_bend_seeds_pass_through_p1_p2():
+def test_bend_seeds_preserve_value_and_derivative():
     glyph = _tiny_glyph()
     p1, p2 = glyph.search_points[5], glyph.search_points[15]
     u1 = (p1[0] - 50.0) / 50.0
     u2 = (p2[0] - 50.0) / 50.0
+    line = np.array([
+        p1[1] - ((p2[1] - p1[1]) / (u2 - u1)) * u1,
+        (p2[1] - p1[1]) / (u2 - u1),
+    ])
     for s in d._bent_seeds_u(p1, p2, glyph):
+        # values preserved
         assert np.polyval(s.coef[::-1], u1) == pytest.approx(p1[1], abs=1e-9)
         assert np.polyval(s.coef[::-1], u2) == pytest.approx(p2[1], abs=1e-9)
+        # derivative preserved: P'(u) == L'(u) at the seed points
+        dp = np.polyder(s.coef[::-1])
+        assert np.polyval(dp, u1) == pytest.approx(line[1], abs=1e-9)
+        assert np.polyval(dp, u2) == pytest.approx(line[1], abs=1e-9)
 
 
-def test_quadratic_both_up_bends_above_band():
+def test_quartic_both_up_bends_above_band():
     glyph = _tiny_glyph()
     p1, p2 = glyph.search_points[5], glyph.search_points[15]
     u1 = (p1[0] - 50.0) / 50.0
@@ -215,16 +302,15 @@ def test_quadratic_both_up_bends_above_band():
     line = np.array([p1[1] - ((p2[1] - p1[1]) / (u2 - u1)) * u1, (p2[1] - p1[1]) / (u2 - u1)])
     xL = glyph.xmin - 5.0
     xR = glyph.xmax + 5.0
-    up = [s for s in d._bent_seeds_u(p1, p2, glyph) if s.degree == 2]
+    up = [s for s in d._bent_seeds_u(p1, p2, glyph) if s.degree == 4]
     assert up
-    # the "both up" quadratic must lie above the line at both padded ends
     above = [s for s in up
              if np.polyval(s.coef[::-1], (xL - 50.0) / 50.0) > _line_val(line, xL)
              and np.polyval(s.coef[::-1], (xR - 50.0) / 50.0) > _line_val(line, xR)]
     assert above
 
 
-def test_cubic_opposite_tails():
+def test_quintic_opposite_tails():
     glyph = _tiny_glyph()
     p1, p2 = glyph.search_points[5], glyph.search_points[15]
     u1 = (p1[0] - 50.0) / 50.0
@@ -232,13 +318,30 @@ def test_cubic_opposite_tails():
     line = np.array([p1[1] - ((p2[1] - p1[1]) / (u2 - u1)) * u1, (p2[1] - p1[1]) / (u2 - u1)])
     xL = glyph.xmin - 5.0
     xR = glyph.xmax + 5.0
-    cub = [s for s in d._bent_seeds_u(p1, p2, glyph) if s.degree == 3]
-    assert cub
-    # opposite-tail cubics: one side above the line, the other below
-    opp = [s for s in cub
+    quin = [s for s in d._bent_seeds_u(p1, p2, glyph) if s.degree == 5]
+    assert quin
+    opp = [s for s in quin
            if (np.polyval(s.coef[::-1], (xL - 50.0) / 50.0) > _line_val(line, xL)
                and np.polyval(s.coef[::-1], (xR - 50.0) / 50.0) < _line_val(line, xR))]
     assert opp
+
+
+def test_same_x_pair_rejected_as_line_seed():
+    """Vertical pairs (same x) must not be returned as line seeds."""
+    p = np.array([[50.0, 20.0], [50.0, 40.0]])
+    rng = np.random.default_rng(0)
+    result = d._seed_pair(p, np.array([0, 1]), rng)
+    assert result is None
+
+
+def test_line_seed_passes_through_accepted_pair():
+    p1 = np.array([50.0, 20.0])
+    p2 = np.array([51.0, 30.0])
+    cand = d._line_seed_u(p1, p2)
+    u1 = (p1[0] - 50.0) / 50.0
+    u2 = (p2[0] - 50.0) / 50.0
+    assert np.polyval(cand.coef[::-1], u1) == pytest.approx(20.0, abs=1e-12)
+    assert np.polyval(cand.coef[::-1], u2) == pytest.approx(30.0, abs=1e-12)
 
 
 # ---------------------------------------------------------------------------
@@ -246,11 +349,39 @@ def test_cubic_opposite_tails():
 # ---------------------------------------------------------------------------
 
 
+def _fake_analysis(**kw):
+    base = dict(
+        samples=np.zeros((0, 2)),
+        sample_d=np.zeros(0),
+        point_d=np.zeros(0),
+        newly_covered=0,
+        coverage_fraction=0.0,
+        surface_fraction=1.0,
+        bad_surface_fraction=0.0,
+        mean_surface_excess=0.0,
+        surface_penalty=0.0,
+        mean_surface_distance=0.0,
+        trace_penalty=0.0,
+        tail_penalty=0.0,
+        bounds=(0.0, 1.0),
+        deriv_outside=0,
+        left_exit_slope=10.0,
+        right_exit_slope=-10.0,
+        left_vertical_x=0.0,
+        right_vertical_x=1.0,
+        left_x_run=1.0,
+        right_x_run=1.0,
+        left_tail_valid=True,
+        right_tail_valid=True,
+        feasible=True,
+        merit=0.0,
+    )
+    base.update(kw)
+    return d.Analysis(**base)
+
+
 def test_merit_formula():
-    an = d.Analysis(
-        samples=np.zeros((10, 2)),
-        sample_d=np.zeros(10),
-        point_d=np.zeros(10),
+    an = _fake_analysis(
         newly_covered=40,
         coverage_fraction=0.8,
         surface_fraction=0.9,
@@ -258,14 +389,7 @@ def test_merit_formula():
         mean_surface_excess=0.2,
         surface_penalty=1.0,
         mean_surface_distance=0.5,
-        trace_penalty=0.0,
         tail_penalty=1.0,
-        bounds=(0.0, 100.0),
-        left_slope=10.0,
-        right_slope=-10.0,
-        deriv_outside=0,
-        feasible=True,
-        merit=0.0,
     )
     expected = (
         0.8
@@ -275,37 +399,23 @@ def test_merit_formula():
         - 1.0 * 1.0
         - 0.005 * 3
     )
-    an.merit = expected
-    assert d.analyze_candidate is not None  # keep import used
     assert expected == pytest.approx(0.8 - 0.4 - 0.1 - 1.0 - 0.015)
 
 
 def test_feasible_score_ordering():
-    a = d.Analysis(
-        samples=np.zeros((0, 2)), sample_d=np.zeros(0), point_d=np.zeros(0),
-        newly_covered=50, coverage_fraction=1.0, surface_fraction=1.0,
-        bad_surface_fraction=0.0, mean_surface_excess=0.0, surface_penalty=0.0,
-        mean_surface_distance=0.4, trace_penalty=0.0, tail_penalty=0.0,
-        bounds=(0.0, 1.0), left_slope=10.0, right_slope=-10.0, deriv_outside=0,
-        feasible=True, merit=0.0,
+    a = _fake_analysis(
+        newly_covered=50, coverage_fraction=1.0,
+        mean_surface_distance=0.4,
     )
-    b = d.Analysis(
-        samples=np.zeros((0, 2)), sample_d=np.zeros(0), point_d=np.zeros(0),
-        newly_covered=50, coverage_fraction=1.0, surface_fraction=1.0,
-        bad_surface_fraction=0.0, mean_surface_excess=0.0, surface_penalty=0.0,
-        mean_surface_distance=0.9, trace_penalty=0.0, tail_penalty=0.0,
-        bounds=(0.0, 1.0), left_slope=10.0, right_slope=-10.0, deriv_outside=0,
-        feasible=True, merit=0.0,
+    b = _fake_analysis(
+        newly_covered=50, coverage_fraction=1.0,
+        mean_surface_distance=0.9,
     )
     assert d.feasible_score(a, 2) > d.feasible_score(b, 2)
     # lower degree wins ties on coverage
-    c = d.Analysis(
-        samples=np.zeros((0, 2)), sample_d=np.zeros(0), point_d=np.zeros(0),
-        newly_covered=50, coverage_fraction=1.0, surface_fraction=1.0,
-        bad_surface_fraction=0.0, mean_surface_excess=0.0, surface_penalty=0.0,
-        mean_surface_distance=0.4, trace_penalty=0.0, tail_penalty=0.0,
-        bounds=(0.0, 1.0), left_slope=10.0, right_slope=-10.0, deriv_outside=0,
-        feasible=True, merit=0.0,
+    c = _fake_analysis(
+        newly_covered=50, coverage_fraction=1.0,
+        mean_surface_distance=0.4,
     )
     assert d.feasible_score(c, 1) > d.feasible_score(a, 3)
 
@@ -324,16 +434,16 @@ def test_hill_climb_returns_best_feasible(monkeypatch):
         key = cand.coef.tobytes()
         feasible = key == feasible_coef.tobytes()
         newly = 20 if feasible else 30
-        return d.Analysis(
+        return _fake_analysis(
             samples=np.zeros((4, 2)), sample_d=np.zeros(4),
             point_d=np.zeros(len(glyph.search_points)),
             newly_covered=newly, coverage_fraction=0.5,
             surface_fraction=1.0 if feasible else 0.5,
             bad_surface_fraction=0.0 if feasible else 0.5,
-            mean_surface_excess=0.0, surface_penalty=0.0,
-            mean_surface_distance=0.5, trace_penalty=0.0,
-            tail_penalty=0.0, bounds=(0.0, 1.0) if feasible else None,
-            left_slope=10.0, right_slope=-10.0, deriv_outside=0,
+            mean_surface_distance=0.5,
+            bounds=(0.0, 1.0) if feasible else None,
+            left_tail_valid=feasible,
+            right_tail_valid=feasible,
             feasible=feasible, merit=0.5 if feasible else 1.0,
         )
 
