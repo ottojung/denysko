@@ -63,7 +63,7 @@ above or below it. The governing rule is:
 > glyph boundary. Once it leaves that vertical range, it should leave steeply, continue
 > monotonically toward infinity, and never re-enter.
 
-Formal treatment: `trace(P)` in §6, tail behaviour in §6.4, validation in §7.
+Formal treatment: `trace(P)` in §6, tail behaviour in §6.3, validation in §7.
 
 ## 4. Canonical glyph geometry
 
@@ -158,19 +158,40 @@ outside the current problem.
 
 ### 6.3 Tail behaviour
 
-For a curve with trace interval `[l, r]`:
+The slope at the exact trace endpoints `l, r` is **not** the steepness gate:
+a polynomial following the glyph surface may naturally cross `ymin`/`ymax`
+with a shallow slope (an `A` leg reaches the bottom at slope ~2-3; a rounded
+glyph may touch top/bottom tangentially). The rule is:
 
-- **Left tail** (`x < l`) and **right tail** (`x > r`): the polynomial must remain
-  outside `[ymin, ymax]`, be monotone away from the band, and never turn around to
-  re-enter.
-- A sufficient monotonicity rule (the one used): no real root of `P'(x)` exists below
-  `l`, and none exists above `r`.
-- The exits must be steep: with hardcoded `MIN_TAIL_SLOPE = 8`,
-  `|P'(l)| ≥ MIN_TAIL_SLOPE` and `|P'(r)| ≥ MIN_TAIL_SLOPE`.
+> follow the glyph faithfully until leaving its vertical band; then, once
+> outside, bend rapidly toward vertical and never return.
 
-Nothing after the tails have left the band is rewarded or penalized: what happens
-vertically beyond the glyph range, including intersections between curves far above or
-below the glyph, does not matter.
+For each trace endpoint the analysis determines whether the graph exited
+above `ymax` or below `ymin`, then locates the first point farther outward
+where it reaches
+
+```
+ymax + TAIL_VERTICAL_MARGIN      (exited above)
+ymin - TAIL_VERTICAL_MARGIN      (exited below)
+```
+
+with `TAIL_VERTICAL_MARGIN = 5`, analytically via polynomial roots of
+`P-(ymax+5)` / `P-(ymin-5)` (the nearest root in the tail direction; no such
+root means the tail is invalid). Let that point be `t`. A valid tail requires:
+
+- the horizontal run from the trace endpoint to `t` is at most
+  `MAX_TAIL_X_RUN = 5` (right: `t - r ≤ 5`; left: `l - t ≤ 5`);
+- `|P'(t)| ≥ MIN_TAIL_SLOPE = 8`;
+- no real root of `P'(x)` beyond the trace endpoint (right: none above `r`;
+  left: none below `l`);
+- the derivative points away from the band immediately outside the trace:
+  right tail exited above ⇒ `P' > 0`, exited below ⇒ `P' < 0`; left tail
+  (moving toward `-∞`) exited above ⇒ `P' < 0`, exited below ⇒ `P' > 0`.
+
+This guarantees that after leaving the glyph band the curve continues away
+and never returns. Nothing after the tail has left the band is rewarded or
+penalized: what happens vertically beyond the glyph range, including
+intersections between curves far above or below the glyph, does not matter.
 
 ### 6.4 Surface adherence
 
@@ -185,8 +206,9 @@ Search may be stochastic but **must be reproducible**: the same `(letter, seed, 
 environment)` produces byte-for-byte identical stdout. The seed has a fixed default.
 
 Exploration and feasibility are judged separately. Every candidate is measured once by a
-single-pass analysis (convert `u → x`, roots of `P-ymin`, `P-ymax` and `P'`, trace
-components, one trace sample, one distance pass) producing normalized metrics:
+single-pass analysis (convert `u → x`, roots of `P-ymin`, `P-ymax`, `P'` and the two
+margin levels `P-(ymax+5)` / `P-(ymin-5)`, trace components, one trace sample, one
+distance pass) producing normalized metrics:
 
 ```
 coverage_fraction      = newly_covered / max(1, n_uncovered)
@@ -195,9 +217,16 @@ mean_surface_excess    = mean(max(0, distance - τ)) / τ
 trace_penalty          = 0 for exactly one finite non-empty trace; else 2.0 empty,
                          2.0 unbounded, +1.0 per extra component
 tail_penalty           = # derivative roots outside trace
+                         + left_missing_margin_penalty
+                         + right_missing_margin_penalty
+                         + left_x_run_penalty + right_x_run_penalty
                          + left_slope_deficit + right_slope_deficit
-slope_deficit          = max(0, MIN_TAIL_SLOPE - |exit_slope|) / MIN_TAIL_SLOPE
+x_run_penalty          = max(0, x_run - MAX_TAIL_X_RUN) / MAX_TAIL_X_RUN
+slope_deficit          = max(0, MIN_TAIL_SLOPE - |P'(t)|) / MIN_TAIL_SLOPE
 ```
+
+A tail that never reaches the ±5 vertical margin gets a finite missing-margin
+penalty (2.0) rather than making merit undefined; feasibility itself stays hard.
 
 The **exploratory merit** is a single scalar, larger being better:
 
@@ -214,26 +243,31 @@ It may visit infeasible states; severe surface violations dominate coverage, inv
 tails are expensive, and small temporary imperfections remain crossable. During every
 hill climb the search additionally keeps the **best feasible candidate encountered so
 far** — feasible iff exactly one finite trace, ≥ 95 % trace adherence within `τ`, no
-derivative roots outside the trace, both exit slopes ≥ `MIN_TAIL_SLOPE`, and
+derivative roots outside the trace, both tails leave the band permanently and reach the
+±5 vertical margin within `MAX_TAIL_X_RUN` with `|P'| ≥ MIN_TAIL_SLOPE` there, and
 `newly_covered ≥ MIN_NEW_POINTS` — compared by `(newly_covered, -degree,
 -mean_surface_distance)`, and returns it regardless of the final exploratory state.
 Mutation is 80 % single-coefficient / 20 % degree; there is no domain mutation.
 
 Seeding biases toward the local contour without contour tracing: for each restart, pick
 `p1` among uncovered boundary points, sample up to 8 candidate partners `p2` from the
-distance bands 3–15 (expanded to 25 when necessary), score each straight segment
-`p1 → p2` at 33 sample points by mean boundary distance, and take the best-scoring,
-more distant `p2` on ties. From `(p1, p2)` exactly five initial polynomials are built,
-all in normalized `u = (x-50)/50` coordinates:
+distance bands 3–15 (expanded to 25 when necessary) whose x-separation from `p1` is at
+least `MIN_X_SEPARATION`, score each straight segment `p1 → p2` at 33 sample points by
+mean boundary distance, and take the best-scoring, more distant `p2` on ties. From
+`(p1, p2)` exactly five initial polynomials are built, all in normalized
+`u = (x-50)/50` coordinates:
 
 1. the ordinary line `L(u)` through `p1, p2`;
-2. two **bent quadratics** `L(u) + k·Q(u)` with `Q(u) = (u-u1)(u-u2)` — both tails up,
-   both tails down;
-3. two **opposite-tail cubics** `L(u) + k·R(u)` with `R(u) = (u-u1)(u-u2)(u-m)`,
-   `m = (u1+u2)/2` — left up / right down, left down / right up.
+2. two **degree-4 same-tail seeds** `L(u) + k·Q(u)` with
+   `Q(u) = (u-u1)² (u-u2)²` — both tails up, both tails down;
+3. two **degree-5 opposite-tail seeds** `L(u) + k·R(u)` with
+   `R(u) = (u-u1)² (u-u2)² (u-m)`, `m = (u1+u2)/2` — left up / right down,
+   left down / right up.
 
-The scalar `k` is fit by least squares at the global padded glyph x-extents
-`xL = xmin - 5`, `xR = xmax + 5` toward the requested tail level
+The squared bases vanish with zero derivative at `u1` and `u2`, so every bent seed
+preserves both the seed values and the local stroke slope: `P(u_i) = p_i.y` and
+`P'(u_i) = L'(u_i)`. The scalar `k` is fit by least squares at the global padded glyph
+x-extents `xL = xmin - 5`, `xR = xmax + 5` toward the requested tail level
 (`k = Σ q_i (target_i - L_i) / Σ q_i²`, skipped when the denominator is tiny), so a
 crossbar seed can curve onto a leg and keep following the surface rather than escaping
 immediately. Refinement starts from the best already-feasible seed if any, otherwise
@@ -271,7 +305,7 @@ Before emitting anything, all checks must pass:
 |---|-------|----------------------|
 | V1 | **Boundary coverage:** fraction of `𝒫` whose Euclidean distance to the union of all polynomial trace portions is ≤ `τ` | ≥ **95 %** |
 | V2 | **Surface adherence:** per curve, fraction of graph samples whose y lies inside `[ymin, ymax]` and within Euclidean distance `τ` of the glyph boundary | ≥ **95 %** per curve |
-| V3 | **Tail behaviour:** exactly one finite trace interval; no re-entry into the vertical glyph range; no derivative root beyond either trace endpoint; exit-slope magnitude ≥ 8 at both ends | all curves |
+| V3 | **Tail behaviour:** exactly one finite trace interval; no re-entry into the vertical glyph range; no derivative root beyond either trace endpoint; each tail reaches `ymin−5`/`ymax+5` within `MAX_TAIL_X_RUN` with slope magnitude ≥ 8 there | all curves |
 | V4 | **Round-trip:** every emitted line parses back to the same polynomial via the project's parser; coefficients finite, `\|c\| < 10^9`, no scientific notation | **100 %** |
 
 Samples vertically outside the glyph range are ignored by V1/V2; unbounded tails are
