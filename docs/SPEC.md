@@ -11,7 +11,7 @@ instead (§6).
 
 ## 1. Mission
 
-Given exactly one uppercase letter, emit a small set of restricted `y = f(x)` polynomial
+Given exactly one uppercase letter, emit a small set of unbounded `y = f(x)` polynomial
 curves that, pasted into Desmos, render the **outline** of that letter so it is recognizable
 at a glance.
 
@@ -184,35 +184,66 @@ constraint.
 Search may be stochastic but **must be reproducible**: the same `(letter, seed, locked
 environment)` produces byte-for-byte identical stdout. The seed has a fixed default.
 
-Exploration and feasibility are scored separately — one lexicographic tuple must not do
-both jobs. For every candidate the search computes `newly_covered`, `surface_penalty`
-(`Σ max(0, d - τ)²` over trace samples), `tail_penalty` (wrong trace component count,
-unbounded/empty trace, derivative roots outside the trace interval, exit-slope deficit
-below `MIN_TAIL_SLOPE`; a simple deterministic scalar), `degree`, and
-`mean_surface_distance`. The exploratory hill-climbing score is
+Exploration and feasibility are judged separately. Every candidate is measured once by a
+single-pass analysis (convert `u → x`, roots of `P-ymin`, `P-ymax` and `P'`, trace
+components, one trace sample, one distance pass) producing normalized metrics:
 
 ```
-(newly_covered, -surface_penalty, -tail_penalty, -degree, -mean_surface_distance)
+coverage_fraction      = newly_covered / max(1, n_uncovered)
+bad_surface_fraction   = fraction of sampled in-band graph points with distance > τ
+mean_surface_excess    = mean(max(0, distance - τ)) / τ
+trace_penalty          = 0 for exactly one finite non-empty trace; else 2.0 empty,
+                         2.0 unbounded, +1.0 per extra component
+tail_penalty           = # derivative roots outside trace
+                         + left_slope_deficit + right_slope_deficit
+slope_deficit          = max(0, MIN_TAIL_SLOPE - |exit_slope|) / MIN_TAIL_SLOPE
 ```
 
-larger being better, and it may visit infeasible states. During every hill climb the
-search additionally keeps the **best feasible candidate encountered so far** (exactly
-one finite trace interval, tails monotone, exit slopes ≥ `MIN_TAIL_SLOPE`, ≥ 95 % of the
-trace within `τ`, at least `MIN_NEW_POINTS` newly covered points), compared by
-`(newly_covered, -degree, -mean_surface_distance)`, and returns it even if later
-exploratory mutations drift into infeasibility.
+The **exploratory merit** is a single scalar, larger being better:
+
+```
+merit = coverage_fraction
+        - 4.0 * bad_surface_fraction
+        - 0.5 * mean_surface_excess
+        - 2.0 * trace_penalty
+        - 1.0 * tail_penalty
+        - 0.005 * degree
+```
+
+It may visit infeasible states; severe surface violations dominate coverage, invalid
+tails are expensive, and small temporary imperfections remain crossable. During every
+hill climb the search additionally keeps the **best feasible candidate encountered so
+far** — feasible iff exactly one finite trace, ≥ 95 % trace adherence within `τ`, no
+derivative roots outside the trace, both exit slopes ≥ `MIN_TAIL_SLOPE`, and
+`newly_covered ≥ MIN_NEW_POINTS` — compared by `(newly_covered, -degree,
+-mean_surface_distance)`, and returns it regardless of the final exploratory state.
+Mutation is 80 % single-coefficient / 20 % degree; there is no domain mutation.
 
 Seeding biases toward the local contour without contour tracing: for each restart, pick
 `p1` among uncovered boundary points, sample up to 8 candidate partners `p2` from the
 distance bands 3–15 (expanded to 25 when necessary), score each straight segment
 `p1 → p2` at 33 sample points by mean boundary distance, and take the best-scoring,
-more distant `p2` on ties. From `(p1, p2)` up to five initial polynomials are built —
-the ordinary line plus four cubics through `(xl, target_left)`, `(xr, target_right)`
-with `xl/xr` padded 5 units outward and targets `(ymax+5 / ymin−5)` per side, fitted in
-normalized `u = (x-50)/50` coordinates for stability. Refinement starts from the best
-already-feasible seed if any, otherwise from the best exploration score; the two
-boundary points are initialization constraints only and refinement may move away from
-them.
+more distant `p2` on ties. From `(p1, p2)` exactly five initial polynomials are built,
+all in normalized `u = (x-50)/50` coordinates:
+
+1. the ordinary line `L(u)` through `p1, p2`;
+2. two **bent quadratics** `L(u) + k·Q(u)` with `Q(u) = (u-u1)(u-u2)` — both tails up,
+   both tails down;
+3. two **opposite-tail cubics** `L(u) + k·R(u)` with `R(u) = (u-u1)(u-u2)(u-m)`,
+   `m = (u1+u2)/2` — left up / right down, left down / right up.
+
+The scalar `k` is fit by least squares at the global padded glyph x-extents
+`xL = xmin - 5`, `xR = xmax + 5` toward the requested tail level
+(`k = Σ q_i (target_i - L_i) / Σ q_i²`, skipped when the denominator is tiny), so a
+crossbar seed can curve onto a leg and keep following the surface rather than escaping
+immediately. Refinement starts from the best already-feasible seed if any, otherwise
+from the best merit; the two boundary points are initialization constraints only and
+refinement may move away from them.
+
+Search geometry is deliberately cheap: a deterministic evenly-spaced subset of at most
+`SEARCH_BOUNDARY_MAX` boundary points and at most `SEARCH_GRAPH_MAX` trace samples
+drive every hill-climb step; dense, full-boundary evaluation is reserved for accepted
+curves and final validation.
 
 ### 6.6 Coverage and assigned points
 
