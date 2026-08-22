@@ -42,6 +42,8 @@ SEED_SEGMENT_PTS = 33
 MIN_TAIL_SLOPE = 8.0
 TAIL_VERTICAL_MARGIN = 5.0
 MAX_TAIL_X_RUN = 5.0
+SEED_TAIL_X_RUN = MAX_TAIL_X_RUN
+UNBOUNDED_SEED_HALF_WIDTH = 15.0
 COEF_MUTATION_PROB = 0.80
 COEF_SIGMA_START, COEF_SIGMA_END = 10.0, 0.2
 
@@ -65,6 +67,34 @@ class HillResult:
     best_feasible_analysis: Analysis | None
     best_exploratory_candidate: Candidate
     best_exploratory_analysis: Analysis
+
+
+@dataclass
+class SearchBasis:
+    """Structured deformation basis for endpoint-anchored seed hills.
+
+    Q bends both tails together; R alters left-vs-right asymmetry. Both
+    vanish with zero derivative at the provisional trace endpoints.
+    """
+    q: np.ndarray
+    r: np.ndarray
+
+
+@dataclass
+class SeedEntry:
+    """One initial seed with its family name and optional search basis."""
+    name: str
+    candidate: Candidate
+    basis: SearchBasis | None
+
+
+@dataclass
+class RestartResult:
+    best_feasible_candidate: Candidate | None
+    best_feasible_analysis: Analysis | None
+    best_exploratory_candidate: Candidate | None
+    best_exploratory_analysis: Analysis | None
+    best_seed_name: str | None
 
 
 @dataclass
@@ -296,20 +326,27 @@ def _analyze(
     finite = [(a, b) for a, b in comps if np.isfinite(a) and np.isfinite(b)]
     all_sampled = []
     arcs = []
+    view_lo, view_hi = glyph.xmin, glyph.xmax
     for a, b in comps:
         if np.isfinite(a) and np.isfinite(b):
             raw = sample_curve(xc, a, b, step, cap)
-            in_band = (raw[:, 1] >= ymin) & (raw[:, 1] <= ymax)
-            s = raw[in_band]
-            all_sampled.append(s)
-            if len(s) < 2:
-                arcs.append(0.0)
-            else:
-                arcs.append(
-                    float(np.hypot(np.diff(s[:, 0]), np.diff(s[:, 1])).sum())
-                )
         else:
+            # Unbounded in-band component: sample it over a finite
+            # exploratory viewport so a horizontal stroke scores its real
+            # surface/coverage instead of zero, while remaining
+            # structurally penalized (arc stays infinite).
+            raw = sample_curve(xc, view_lo, view_hi, step, cap)
+        in_band = (raw[:, 1] >= ymin) & (raw[:, 1] <= ymax)
+        s = raw[in_band]
+        all_sampled.append(s)
+        if not (np.isfinite(a) and np.isfinite(b)):
             arcs.append(float("inf"))
+        elif len(s) < 2:
+            arcs.append(0.0)
+        else:
+            arcs.append(
+                float(np.hypot(np.diff(s[:, 0]), np.diff(s[:, 1])).sum())
+            )
     samples = (
         np.vstack(all_sampled) if all_sampled else np.zeros((0, 2))
     )
@@ -346,9 +383,12 @@ def _analyze(
         deriv_outside = int(((droots < l) | (droots > r)).sum())
         ltail = _analyze_tail(poly, deriv, droots, ymin, ymax, l, "L", roots_abv, roots_blw)
         rtail = _analyze_tail(poly, deriv, droots, ymin, ymax, r, "R", roots_abv, roots_blw)
+        # Each side penalty already includes its own derivative-turn count
+        # (left.turns + right.turns == deriv_outside), so adding
+        # deriv_outside here would double-count every turn. It remains a
+        # separate field for hard feasibility and diagnostics only.
         tail_penalty = (
-            float(deriv_outside)
-            + _tail_side_penalty(ltail, ymin, ymax, poly, deriv, l, "L")
+            _tail_side_penalty(ltail, ymin, ymax, poly, deriv, l, "L")
             + _tail_side_penalty(rtail, ymin, ymax, poly, deriv, r, "R")
         )
     else:
@@ -527,6 +567,10 @@ def _mutate(cand: Candidate, rng, sigma_c: float) -> Candidate | None:
         k = int(rng.integers(0, cand.degree + 1))
         coef[k] += rng.normal(0.0, sigma_c)
         return Candidate(cand.degree, coef)
+    return _mutate_degree(cand, rng, sigma_c)
+
+
+def _mutate_degree(cand: Candidate, rng, sigma_c: float) -> Candidate | None:
     can_inc = cand.degree < MAX_DEGREE
     can_dec = cand.degree > 0
     if can_inc and (not can_dec or rng.random() < 0.5):
@@ -536,6 +580,45 @@ def _mutate(cand: Candidate, rng, sigma_c: float) -> Candidate | None:
     if can_dec:
         return Candidate(cand.degree - 1, cand.coef[:-1].copy())
     return None
+
+
+def _mutate_search(
+    cand: Candidate,
+    basis: SearchBasis | None,
+    rng,
+    sigma_c: float,
+    allow_degree: bool,
+) -> Candidate | None:
+    """One search mutation.
+
+    Plain-line hills keep the ordinary 80 % coefficient / 20 % degree
+    behaviour. Structured endpoint-anchored hills use 50 % coefficient /
+    25 % Q-direction / 25 % R-direction moves (Q bends both tails
+    together, R alters left-vs-right asymmetry), with degree mutation
+    only enabled in the second half of refinement so early steps refine
+    the constructed quintic basin instead of destroying it.
+    """
+    if basis is None:
+        if not allow_degree:
+            coef = cand.coef.copy()
+            k = int(rng.integers(0, cand.degree + 1))
+            coef[k] += rng.normal(0.0, sigma_c)
+            return Candidate(cand.degree, coef)
+        return _mutate(cand, rng, sigma_c)
+
+    if allow_degree and rng.random() < 0.20:
+        return _mutate_degree(cand, rng, sigma_c)
+
+    r = rng.random()
+    coef = cand.coef.copy()
+    if r < 0.50:
+        k = int(rng.integers(0, cand.degree + 1))
+        coef[k] += rng.normal(0.0, sigma_c)
+    elif r < 0.75:
+        coef[: len(basis.q)] += rng.normal(0.0, sigma_c) * basis.q
+    else:
+        coef[: len(basis.r)] += rng.normal(0.0, sigma_c) * basis.r
+    return Candidate(cand.degree, coef)
 
 
 def _mutate_coef_only(cand: Candidate, rng, sigma_c: float) -> Candidate:
@@ -595,43 +678,83 @@ def _line_seed_u(p1: np.ndarray, p2: np.ndarray) -> Candidate:
     return Candidate(1, np.array([intercept, slope]))
 
 
-def _bent_seeds_u(p1: np.ndarray, p2: np.ndarray, glyph: Glyph):
-    """Line plus two-parameter degree-5 bent seeds.
+def _provisional_trace_window(
+    p1: np.ndarray, p2: np.ndarray, line: Candidate, glyph: Glyph
+) -> tuple[float, float]:
+    """Provisional in-band trace endpoints [l0, r0] for a seed line.
 
-    P(u) = L(u) + a Q(u) + b R(u) with Q(u) = (u-u1)^2 (u-u2)^2 and
-    R(u) = Q(u) (u-m), m = (u1+u2)/2. Both bases vanish with zero
-    derivative at u1, u2, so every bent seed preserves the seed values
-    and the local stroke slope. The pair (a, b) is solved exactly from
-    the two tail targets at the global padded glyph x-extents, so each
-    seed hits both requested tail levels exactly.
+    For a line with one finite trace interval these are its natural band
+    exits, derived analytically from intersections with ymin/ymax. For an
+    unbounded (horizontal/nearly horizontal) line a finite working window
+    is defined around the seed-pair midpoint with a fixed half-width,
+    clamped to the padded glyph extents. Used only for seed construction.
     """
-    u1 = (p1[0] - 50.0) / 50.0
-    u2 = (p2[0] - 50.0) / 50.0
-    slope = (p2[1] - p1[1]) / (u2 - u1)
-    intercept = p1[1] - slope * u1
-    L = np.array([intercept, slope])
+    xc = x_curve_of_candidate(line)
+    breaks = np.unique(
+        np.concatenate(
+            [
+                _real_roots(xc.poly - glyph.ymin),
+                _real_roots(xc.poly - glyph.ymax),
+            ]
+        )
+    )
+    comps = _components_from_breaks(breaks, xc.poly, glyph.ymin, glyph.ymax)
+    finite = [
+        (a, b) for a, b in comps if np.isfinite(a) and np.isfinite(b)
+    ]
+    unbounded = any(
+        not (np.isfinite(a) and np.isfinite(b)) for a, b in comps
+    )
+    if len(finite) == 1 and not unbounded:
+        l0, r0 = finite[0]
+    else:
+        center = 0.5 * (p1[0] + p2[0])
+        l0 = center - UNBOUNDED_SEED_HALF_WIDTH
+        r0 = center + UNBOUNDED_SEED_HALF_WIDTH
+    lo, hi = glyph.xmin - 5.0, glyph.xmax + 5.0
+    l0 = min(max(l0, lo), hi)
+    r0 = min(max(r0, lo), hi)
+    if r0 <= l0:
+        l0, r0 = lo, hi
+    return float(l0), float(r0)
 
-    xL = glyph.xmin - 5.0
-    xR = glyph.xmax + 5.0
-    uL = (xR - 50.0) / 50.0 * 0.0 + (xL - 50.0) / 50.0
-    uR = (xR - 50.0) / 50.0
 
-    def q_coef(u1, u2):
-        w = np.array([u1 * u2, -(u1 + u2), 1.0])
-        return np.polynomial.polynomial.polymul(w, w)
+def _seed_family(p1: np.ndarray, p2: np.ndarray, glyph: Glyph):
+    """Five seeds anchored at the line's provisional trace exits.
 
-    Q = q_coef(u1, u2)
-    m = (u1 + u2) / 2.0
+    The line `L` is kept for naturally steep strokes and lower-degree
+    solutions. Four degree-5 bent seeds P(u) = L(u) + aQ(u) + bR(u) use
+    Q(u) = (u-ul)^2 (u-ur)^2 and R(u) = Q(u)(u-m), m = (ul+ur)/2, where
+    ul/ur correspond to the provisional trace endpoints l0/r0. Both bases
+    vanish with zero derivative there, so each bent seed follows the
+    provisional straight surface route all the way to its natural band
+    exits, then bends outside the band. The pair (a,b) is solved exactly
+    so that P reaches the requested tail levels at xL = l0 -
+    SEED_TAIL_X_RUN and xR = r0 + SEED_TAIL_X_RUN.
+    """
+    line = _line_seed_u(p1, p2)
+    l0, r0 = _provisional_trace_window(p1, p2, line, glyph)
+    ul = (l0 - 50.0) / 50.0
+    ur = (r0 - 50.0) / 50.0
+
+    w = np.array([ul * ur, -(ul + ur), 1.0])
+    Q = np.polynomial.polynomial.polymul(w, w)
+    m = 0.5 * (ul + ur)
     R = np.polynomial.polynomial.polymul(Q, np.array([-m, 1.0]))
 
+    Lcoef = line.coef
+    xL = l0 - SEED_TAIL_X_RUN
+    xR = r0 + SEED_TAIL_X_RUN
+    uL = (xL - 50.0) / 50.0
+    uR = (xR - 50.0) / 50.0
+    LvL = float(np.polyval(Lcoef[::-1], uL))
+    LvR = float(np.polyval(Lcoef[::-1], uR))
+
     def solve_seed(target_lo, target_hi):
-        qL, qR = np.polyval(Q[::-1], uL), np.polyval(Q[::-1], uR)
-        rL, rR = np.polyval(R[::-1], uL), np.polyval(R[::-1], uR)
+        qL, qR = float(np.polyval(Q[::-1], uL)), float(np.polyval(Q[::-1], uR))
+        rL, rR = float(np.polyval(R[::-1], uL)), float(np.polyval(R[::-1], uR))
         M = np.array([[qL, rL], [qR, rR]])
-        rhs = np.array(
-            [target_lo - np.polyval(L[::-1], uL),
-             target_hi - np.polyval(L[::-1], uR)]
-        )
+        rhs = np.array([target_lo - LvL, target_hi - LvR])
         try:
             cond = np.linalg.cond(M)
             if cond > 1e12 or not np.isfinite(cond):
@@ -642,37 +765,46 @@ def _bent_seeds_u(p1: np.ndarray, p2: np.ndarray, glyph: Glyph):
         if not (np.isfinite(a) and np.isfinite(b)):
             return None
         coef = np.zeros(len(R))
-        coef[: len(L)] = L
+        coef[: len(Lcoef)] = Lcoef
         q_pad = np.zeros(len(R))
         q_pad[: len(Q)] = Q
         coef += a * q_pad + b * R
         return Candidate(len(R) - 1, coef)
 
-    up = glyph.ymax + 5.0
-    dn = glyph.ymin - 5.0
-    seeds = [
-        solve_seed(up, up),
-        solve_seed(dn, dn),
-        solve_seed(up, dn),
-        solve_seed(dn, up),
-    ]
-    return [s for s in seeds if s is not None]
+    up = glyph.ymax + TAIL_VERTICAL_MARGIN
+    dn = glyph.ymin - TAIL_VERTICAL_MARGIN
+    entries = [SeedEntry("line", line, None)]
+    for name, tl, tr in (
+        ("up/up", up, up),
+        ("down/down", dn, dn),
+        ("up/down", up, dn),
+        ("down/up", dn, up),
+    ):
+        cand = solve_seed(tl, tr)
+        if cand is not None:
+            entries.append(SeedEntry(name, cand, SearchBasis(Q, R)))
+    return entries
 
 
-def _initial_seeds(p1: np.ndarray, p2: np.ndarray, glyph: Glyph):
-    return [_line_seed_u(p1, p2)] + _bent_seeds_u(p1, p2, glyph)
-
-
-def _hill_climb(cand, glyph, uncovered, steps, rng) -> HillResult:
+def _hill_climb(cand, glyph, uncovered, steps, rng, basis=None) -> HillResult:
     """Greedy hill climb tracking current, best exploratory, and best
     feasible states separately. The best exploratory state is the
-    highest-merit candidate seen anywhere (including the start)."""
+    highest-merit candidate seen anywhere (including the start).
+
+    When a structured SearchBasis is supplied, mutations use the
+    Q/R-direction moves and degree mutation is suppressed during the
+    first half of refinement so the constructed quintic basin is refined
+    before structural exploration resumes.
+    """
     cur = cand
     cur_an = analyze_candidate(cur, glyph, uncovered)
     best_explore = (cur, cur_an)
     best_feasible = (cur, cur_an) if cur_an.feasible else None
+    half = steps // 2
     for t in range(steps):
-        mutant = _mutate(cur, rng, _coef_sigma(t, steps))
+        mutant = _mutate_search(
+            cur, basis, rng, _coef_sigma(t, steps), allow_degree=(t >= half)
+        )
         if mutant is None:
             continue
         man = analyze_candidate(mutant, glyph, uncovered)
@@ -694,33 +826,77 @@ def _hill_climb(cand, glyph, uncovered, steps, rng) -> HillResult:
     )
 
 
+def _split_steps(total: int, n: int):
+    """Deterministic split of a per-restart refinement budget across n
+    seeds; the remainder goes to the first seeds."""
+    base = max(0, total) // max(1, n)
+    rem = max(0, total) - base * max(1, n)
+    return [base + (1 if i < rem else 0) for i in range(n)]
+
+
+def _run_restart(
+    entries, glyph: Glyph, uncovered: np.ndarray, rng, total_steps: int
+) -> RestartResult:
+    """Independently refine every seed family member, then compare.
+
+    The per-restart refinement budget is split deterministically across
+    the seeds rather than multiplied, so exploring all five basins costs
+    the same total work as refining one.
+    """
+    steps_list = _split_steps(total_steps, len(entries))
+    best_feasible = None
+    best_explore = None
+    best_name = None
+    for entry, steps in zip(entries, steps_list):
+        result = _hill_climb(
+            entry.candidate, glyph, uncovered, steps, rng, basis=entry.basis
+        )
+        if result.best_feasible_candidate is not None:
+            cand, an = (
+                result.best_feasible_candidate,
+                result.best_feasible_analysis,
+            )
+            if best_feasible is None or feasible_score(
+                an, cand.degree
+            ) > feasible_score(best_feasible[1], best_feasible[0].degree):
+                best_feasible = (cand, an)
+        if (
+            best_explore is None
+            or result.best_exploratory_analysis.merit > best_explore[1].merit
+        ):
+            best_explore = (
+                result.best_exploratory_candidate,
+                result.best_exploratory_analysis,
+            )
+            best_name = entry.name
+    return RestartResult(
+        None if best_feasible is None else best_feasible[0],
+        None if best_feasible is None else best_feasible[1],
+        None if best_explore is None else best_explore[0],
+        None if best_explore is None else best_explore[1],
+        best_name,
+    )
+
+
 def find_curve(glyph: Glyph, uncovered: np.ndarray, rng, restarts):
     """Return (feasible candidate or None, best explored candidate or None,
-    best explored analysis or None).
+    best explored analysis or None, winning seed family name or None).
 
-    The best exploratory state is the highest-merit candidate+analysis
-    seen across all restarts (seeds and hill climbs), used for
-    diagnostics when no feasible curve is found.
+    The best exploratory state is the highest-merit candidate seen across
+    all restarts and all five seed hills, used for diagnostics when no
+    feasible curve is found.
     """
     uncovered_idx = np.flatnonzero(uncovered)
     best_q = None
     best_explore = None
+    best_name = None
     for _ in range(restarts):
         pair = _seed_pair(glyph.search_points, uncovered_idx, rng)
         if pair is None:
             continue
         p1, p2 = pair
-        seeds = _initial_seeds(p1, p2, glyph)
-        scored = [(s, analyze_candidate(s, glyph, uncovered)) for s in seeds]
-        feasible = [sm for sm in scored if sm[1].feasible]
-        if feasible:
-            start = max(feasible, key=lambda sm: feasible_score(sm[1], sm[0].degree))[0]
-        else:
-            start = max(scored, key=lambda sm: sm[1].merit)[0]
-        for s, an in scored:
-            if best_explore is None or an.merit > best_explore[1].merit:
-                best_explore = (s, an)
-        result = _hill_climb(start, glyph, uncovered, REFINE_STEPS, rng)
+        entries = _seed_family(p1, p2, glyph)
+        result = _run_restart(entries, glyph, uncovered, rng, REFINE_STEPS)
         if result.best_feasible_candidate is not None:
             cand, an = (
                 result.best_feasible_candidate,
@@ -731,25 +907,32 @@ def find_curve(glyph: Glyph, uncovered: np.ndarray, rng, restarts):
             ):
                 best_q = (cand, an)
         if (
-            result.best_exploratory_analysis.merit
-            > best_explore[1].merit
+            result.best_exploratory_analysis is not None
+            and (
+                best_explore is None
+                or result.best_exploratory_analysis.merit > best_explore[1].merit
+            )
         ):
             best_explore = (
                 result.best_exploratory_candidate,
                 result.best_exploratory_analysis,
             )
+            best_name = result.best_seed_name
     return (
         None if best_q is None else best_q[0],
         None if best_explore is None else best_explore[0],
         None if best_explore is None else best_explore[1],
+        best_name,
     )
 
 
 def _tail_detail(info: TailInfo) -> str:
-    if not info.margin_root_exists:
-        return "margin=no"
-    parts = [f"margin=yes", f"x_run={info.x_run:.2f}", f"slope={info.slope:.2f}", f"turns={info.turns}"]
-    return "\n  ".join(parts)
+    direction = "ok" if info.direction_ok else "bad"
+    margin = "yes" if info.margin_root_exists else "no"
+    return (
+        f"direction={direction}\n  margin={margin}\n  x_run={info.x_run:.2f}\n"
+        f"  slope={info.slope:.2f}\n  turns={info.turns}"
+    )
 
 
 def _report_no_first_curve(
@@ -757,31 +940,35 @@ def _report_no_first_curve(
     cand: Candidate | None,
     an: Analysis | None,
     uncovered: np.ndarray,
+    seed_name: str | None,
 ):
     """Print a concise stderr diagnostic when fit_curves finds nothing.
 
     Describes the actual best explored state (the highest-merit candidate
-    across all restarts), using the real uncovered mask so `new=` is the
-    genuine newly-covered count. Never on stdout.
+    across all restarts and all five seed hills), using the real
+    uncovered mask so `new=` is the genuine newly-covered count. Never on
+    stdout.
     """
     if cand is None or an is None:
         print("search: no feasible first curve (no restart produced a candidate)",
               file=sys.stderr)
         return
     print("search: no feasible first curve; best explored state:", file=sys.stderr)
+    print(f"seed={seed_name if seed_name is not None else 'unknown'}", file=sys.stderr)
     print(f"degree={cand.degree}", file=sys.stderr)
     print(f"merit={an.merit:.2f}", file=sys.stderr)
     print(f"surface={an.surface_fraction:.2f}", file=sys.stderr)
     print(f"new={an.newly_covered}", file=sys.stderr)
     print(f"trace_components={an.n_components}", file=sys.stderr)
     print(f"extra_trace_fraction={an.extra_component_fraction:.2f}", file=sys.stderr)
-    if an.bounds is None:
-        print("tails=not analyzed: trace is not single-component", file=sys.stderr)
-    else:
+    if an.bounds is not None:
+        print(f"trace_bounds=[{an.bounds[0]:.2f}, {an.bounds[1]:.2f}]", file=sys.stderr)
         print("left_tail:", file=sys.stderr)
         print("  " + _tail_detail(an.left_tail), file=sys.stderr)
         print("right_tail:", file=sys.stderr)
         print("  " + _tail_detail(an.right_tail), file=sys.stderr)
+    else:
+        print("tails=not analyzed: trace is not single-component", file=sys.stderr)
 
 
 def _refine_coef_only(cand: Candidate, glyph: Glyph, steps: int, rng):
@@ -837,17 +1024,21 @@ def fit_curves(glyph: Glyph, rng, max_curves):
         if len(curves) >= max_curves:
             break
         uncovered_search = ~covered[glyph.search_idx]
-        cand, expl, expl_an = find_curve(glyph, uncovered_search, rng, RESTARTS_PER_CURVE)
+        cand, expl, expl_an, expl_name = find_curve(
+            glyph, uncovered_search, rng, RESTARTS_PER_CURVE
+        )
         if cand is None:
-            cand2, expl2, expl_an2 = find_curve(
+            cand2, expl2, expl_an2, name2 = find_curve(
                 glyph, uncovered_search, rng, RESCUE_RESTARTS
             )
             cand = cand2
             if expl is None or (expl2 is not None and expl_an2.merit > expl_an.merit):
-                expl, expl_an = expl2, expl_an2
+                expl, expl_an, expl_name = expl2, expl_an2, name2
         if cand is None:
             if len(curves) == 0:
-                _report_no_first_curve(glyph, expl, expl_an, uncovered_search)
+                _report_no_first_curve(
+                    glyph, expl, expl_an, uncovered_search, expl_name
+                )
             break
         assigned = _assign(glyph, covered, cand)
         curves.append(_reduce_degree(cand, assigned, glyph, rng))

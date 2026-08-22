@@ -270,6 +270,144 @@ def test_connected_shape_validator_handcrafted():
     assert not an.left_tail.valid or not an.right_tail.valid
 
 
+# ---------------------------------------------------------------------------
+# Endpoint-anchored seed geometry (deterministic construction)
+# ---------------------------------------------------------------------------
+
+
+def _diagonal_glyph():
+    """Long diagonal stroke y = 2.5x - 5 across a finite in-band span."""
+    xs = np.arange(2.0, 40.01, 0.5)
+    return d.make_glyph(np.column_stack([xs, 2.5 * xs - 5.0]))
+
+
+def test_endpoint_anchored_seed_geometry():
+    """A natural-orientation bent seed follows the provisional straight
+    route through the band, anchors value+slope at both provisional
+    exits, and escapes past each exit within MAX_TAIL_X_RUN."""
+    glyph = _diagonal_glyph()
+    p1, p2 = glyph.search_points[10], glyph.search_points[20]
+    entries = {e.name: e for e in d._seed_family(p1, p2, glyph)}
+    line = entries["line"].candidate
+    l0, r0 = d._provisional_trace_window(p1, p2, line, glyph)
+    Lx = d.x_curve_of_candidate(line)
+
+    seed = entries["down/up"].candidate  # rising stroke: exits low-left, high-right
+    Sx = d.x_curve_of_candidate(seed)
+
+    # values and derivatives equal the line at both provisional exits
+    for t in (l0, r0):
+        assert Sx.poly(t) == pytest.approx(float(Lx.poly(t)), abs=1e-9)
+        assert Sx.poly.deriv()(t) == pytest.approx(
+            float(Lx.poly.deriv()(t)), abs=1e-9
+        )
+
+    # the whole interior stays close to the line and inside the band
+    mid = np.linspace(l0, r0, 201)
+    dev = np.abs(Sx.poly(mid) - Lx.poly(mid))
+    assert dev.max() <= d.TAIL_VERTICAL_MARGIN
+    interior = Sx.poly(mid)
+    assert interior.min() >= glyph.ymin - 1e-9
+    assert interior.max() <= glyph.ymax + 1e-9
+
+    # both margins are reached strictly inside MAX_TAIL_X_RUN
+    tgt_l = glyph.ymin - d.TAIL_VERTICAL_MARGIN
+    tgt_r = glyph.ymax + d.TAIL_VERTICAL_MARGIN
+    grid_l = np.linspace(l0 - d.SEED_TAIL_X_RUN, l0, 20001)[::-1]
+    grid_r = np.linspace(r0, r0 + d.SEED_TAIL_X_RUN, 20001)
+    cross_l = grid_l[np.where(Sx.poly(grid_l) < tgt_l)[0][0]]
+    cross_r = grid_r[np.where(Sx.poly(grid_r) > tgt_r)[0][0]]
+    assert l0 - cross_l <= d.MAX_TAIL_X_RUN
+    assert cross_r - r0 <= d.MAX_TAIL_X_RUN
+
+
+def test_unbounded_horizontal_line_exploratory_scoring():
+    """A horizontal crossbar line scores real surface/coverage during
+    exploration despite being structurally unbounded."""
+    xs = np.arange(30.0, 71.0, 1.0)
+    rows = np.vstack([
+        np.column_stack([xs, np.full(len(xs), 49.6)]),
+        np.column_stack([xs, np.full(len(xs), 50.4)]),
+    ])
+    glyph = d.make_glyph(rows)
+    uncovered = np.ones(len(glyph.search_points), dtype=bool)
+
+    const_u = np.polynomial.Polynomial([50.0])(d.X_OF_U).coef
+    an = d.analyze_candidate(d.Candidate(0, const_u), glyph, uncovered)
+    assert an.surface_fraction >= 0.95      # recognized as a great local stroke
+    assert an.newly_covered > 0             # coverage is real, not zero
+    assert an.bounds is None                # trace is unbounded -> infeasible
+    assert not an.feasible                  # topology still rejected
+    assert an.trace_penalty == pytest.approx(2.0)  # unbounded penalty kept
+
+    # bending it produces a fully finite in-band set
+    p1, p2 = np.array([40.0, 50.0]), np.array([55.0, 50.0])
+    entries = {e.name: e for e in d._seed_family(p1, p2, glyph)}
+    xc = d.x_curve_of_candidate(entries["down/up"].candidate)
+    breaks = np.unique(
+        np.concatenate([
+            d._real_roots(xc.poly - glyph.ymin),
+            d._real_roots(xc.poly - glyph.ymax),
+        ])
+    )
+    comps = d._components_from_breaks(breaks, xc.poly, glyph.ymin, glyph.ymax)
+    assert all(np.isfinite(a) and np.isfinite(b) for a, b in comps)
+
+
+def test_turn_penalty_not_double_counted():
+    """One outside derivative root contributes one unit of turn penalty,
+    not two: the total equals the sum of the two side penalties."""
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
+    coef_u = np.polynomial.Polynomial([-3005.0, 900.0, 90.0, 3.0])(d.X_OF_U).coef
+    cand = d.Candidate(3, coef_u)
+    an = d.analyze_candidate(cand, glyph, np.zeros(len(glyph.search_points), dtype=bool))
+    assert an.bounds is not None
+    assert an.deriv_outside >= 1
+    # composition identity: deriv_outside is fully accounted for by the sides
+    assert an.deriv_outside == an.left_tail.turns + an.right_tail.turns
+
+    xc = d.x_curve_of_candidate(cand)
+    l, r = an.bounds
+    lp = d._tail_side_penalty(
+        an.left_tail, glyph.ymin, glyph.ymax, xc.poly, xc.poly.deriv(), l, "L"
+    )
+    rp = d._tail_side_penalty(
+        an.right_tail, glyph.ymin, glyph.ymax, xc.poly, xc.poly.deriv(), r, "R"
+    )
+    assert an.tail_penalty == pytest.approx(lp + rp)
+
+
+def test_tail_side_penalty_counts_turns_once():
+    info1 = d.TailInfo(True, 1.0, 10.0, True, 1, False)
+    info2 = d.TailInfo(True, 1.0, 10.0, True, 2, False)
+    poly = np.polynomial.Polynomial([0.0])
+    glyph_ = (0.0, 100.0)
+    p1v = d._tail_side_penalty(info1, *glyph_, poly, poly.deriv(), 50.0, "R")
+    p2v = d._tail_side_penalty(info2, *glyph_, poly, poly.deriv(), 50.0, "R")
+    assert p2v - p1v == pytest.approx(1.0)
+
+
+def test_missing_margin_gradient():
+    """A tail that nearly reaches the +-5 margin scores better than one
+    that barely leaves the band (no flat invalid-tail plateau)."""
+    ymin, ymax = 0.0, 100.0
+    end = 30.0
+    info = d.TailInfo(False, float("inf"), 0.0, True, 0, False)
+    # exited below: P(x) = -s (x - end); probe at end+5 gives -5s
+    near = np.polynomial.Polynomial([0.96 * end, -0.96])   # probe -> -4.8
+    far = np.polynomial.Polynomial([0.10 * end, -0.10])    # probe -> -0.5
+    pen_near = d._tail_side_penalty(
+        info, ymin, ymax, near, near.deriv(), end, "R"
+    )
+    pen_far = d._tail_side_penalty(
+        info, ymin, ymax, far, far.deriv(), end, "R"
+    )
+    assert pen_near < pen_far
+    assert pen_near == pytest.approx(1.0 + (5.0 - 4.8) / 5.0)
+    assert pen_far == pytest.approx(1.0 + (5.0 - 0.5) / 5.0)
+    assert pen_far - pen_near > 0.5  # a useful gradient, not flat
+
+
 def test_euclidean_distance_tiny_cloud():
     a = np.array([[0.0, 0.0], [1.0, 0.0]])
     b = np.array([[0.0, 2.0]])
@@ -311,44 +449,71 @@ def _tiny_glyph():
 def test_five_initial_seeds():
     glyph = _tiny_glyph()
     p1, p2 = glyph.search_points[5], glyph.search_points[15]
-    seeds = d._initial_seeds(p1, p2, glyph)
-    assert len(seeds) == 5
-    assert sorted(s.degree for s in seeds) == [1, 5, 5, 5, 5]
+    entries = d._seed_family(p1, p2, glyph)
+    assert len(entries) == 5
+    assert [e.name for e in entries] == [
+        "line", "up/up", "down/down", "up/down", "down/up",
+    ]
+    assert sorted(e.candidate.degree for e in entries) == [1, 5, 5, 5, 5]
+    # only the line has no structured basis
+    assert entries[0].basis is None
+    for e in entries[1:]:
+        assert e.basis is not None
 
 
-def test_bent_seeds_preserve_value_and_derivative():
+def test_bent_seeds_preserve_value_and_derivative_at_trace_exits():
+    """Bent seeds are anchored at the provisional trace endpoints."""
     glyph = _tiny_glyph()
     p1, p2 = glyph.search_points[5], glyph.search_points[15]
-    u1 = (p1[0] - 50.0) / 50.0
-    u2 = (p2[0] - 50.0) / 50.0
-    line = np.array([
-        p1[1] - ((p2[1] - p1[1]) / (u2 - u1)) * u1,
-        (p2[1] - p1[1]) / (u2 - u1),
-    ])
-    for s in d._bent_seeds_u(p1, p2, glyph):
-        assert s.degree == 5
-        # values preserved
-        assert np.polyval(s.coef[::-1], u1) == pytest.approx(p1[1], abs=1e-9)
-        assert np.polyval(s.coef[::-1], u2) == pytest.approx(p2[1], abs=1e-9)
-        # derivative preserved: P'(u) == L'(u) at the seed points
-        dp = np.polyder(s.coef[::-1])
-        assert np.polyval(dp, u1) == pytest.approx(line[1], abs=1e-9)
-        assert np.polyval(dp, u2) == pytest.approx(line[1], abs=1e-9)
+    line = d._line_seed_u(p1, p2)
+    l0, r0 = d._provisional_trace_window(p1, p2, line, glyph)
+    ul = (l0 - 50.0) / 50.0
+    ur = (r0 - 50.0) / 50.0
+    Lx = d.x_curve_of_candidate(line)
+    LvL, LvR = float(Lx.poly(l0)), float(Lx.poly(r0))
+    dvL = float(Lx.poly.deriv()(l0))
+    for e in d._seed_family(p1, p2, glyph)[1:]:
+        xc = d.x_curve_of_candidate(e.candidate)
+        assert xc.poly(l0) == pytest.approx(LvL, abs=1e-9)
+        assert xc.poly(r0) == pytest.approx(LvR, abs=1e-9)
+        assert xc.poly.deriv()(l0) == pytest.approx(dvL, abs=1e-9)
+        assert xc.poly.deriv()(r0) == pytest.approx(dvL, abs=1e-9)
 
 
-def test_bent_seeds_hit_both_tail_targets_exactly():
+def test_bent_seeds_hit_tail_targets_at_provisional_exits():
     glyph = _tiny_glyph()
     p1, p2 = glyph.search_points[5], glyph.search_points[15]
-    xL = glyph.xmin - 5.0
-    xR = glyph.xmax + 5.0
-    uL = (xL - 50.0) / 50.0
-    uR = (xR - 50.0) / 50.0
-    up = glyph.ymax + 5.0
-    dn = glyph.ymin - 5.0
+    line = d._line_seed_u(p1, p2)
+    l0, r0 = d._provisional_trace_window(p1, p2, line, glyph)
+    xL = l0 - d.SEED_TAIL_X_RUN
+    xR = r0 + d.SEED_TAIL_X_RUN
+    up = glyph.ymax + d.TAIL_VERTICAL_MARGIN
+    dn = glyph.ymin - d.TAIL_VERTICAL_MARGIN
     targets = [(up, up), (dn, dn), (up, dn), (dn, up)]
-    for s, (tl, tr) in zip(d._bent_seeds_u(p1, p2, glyph), targets):
-        assert np.polyval(s.coef[::-1], uL) == pytest.approx(tl, abs=1e-6)
-        assert np.polyval(s.coef[::-1], uR) == pytest.approx(tr, abs=1e-6)
+    for e, (tl, tr) in zip(d._seed_family(p1, p2, glyph)[1:], targets):
+        xc = d.x_curve_of_candidate(e.candidate)
+        assert xc.poly(xL) == pytest.approx(tl, abs=1e-6)
+        assert xc.poly(xR) == pytest.approx(tr, abs=1e-6)
+
+
+def test_unbounded_line_gets_working_window():
+    """A horizontal line inside the band has no finite trace; the seed
+    family must still anchor its bends around a finite working window."""
+    xs = np.arange(30.0, 71.0, 1.0)
+    rows = np.vstack([
+        np.column_stack([xs, np.full(len(xs), 49.6)]),
+        np.column_stack([xs, np.full(len(xs), 50.4)]),
+    ])
+    glyph = d.make_glyph(rows)
+    p1, p2 = np.array([40.0, 50.0]), np.array([55.0, 50.0])
+    line = d._line_seed_u(p1, p2)
+    l0, r0 = d._provisional_trace_window(p1, p2, line, glyph)
+    assert np.isfinite(l0) and np.isfinite(r0)
+    center = 0.5 * (p1[0] + p2[0])
+    assert l0 == pytest.approx(center - d.UNBOUNDED_SEED_HALF_WIDTH)
+    assert r0 == pytest.approx(center + d.UNBOUNDED_SEED_HALF_WIDTH)
+    # and the seed family still contains all five members
+    assert len(d._seed_family(p1, p2, glyph)) == 5
 
 
 def test_same_x_pair_rejected_as_line_seed():
@@ -572,17 +737,18 @@ def test_hill_climb_returns_best_exploratory_with_no_feasible(monkeypatch):
 
 
 def test_diagnostics_use_real_newly_covered(capsys):
-    # A multi-component candidate with real uncovered points: the report
+    # A single-component candidate with real uncovered points: the report
     # must show the actual newly_covered count, not 0 from an all-false mask.
     glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
     cand = d.Candidate(1, np.polynomial.Polynomial([50.0, 50.0])(d.X_OF_U).coef)
     uncovered = np.ones(len(glyph.search_points), dtype=bool)
     an = d.analyze_candidate(cand, glyph, uncovered)
     assert an.newly_covered > 0
-    d._report_no_first_curve(glyph, cand, an, uncovered)
+    d._report_no_first_curve(glyph, cand, an, uncovered, "line")
     out = capsys.readouterr().err
     assert "new=" in out
     assert f"new={an.newly_covered}" in out
+    assert "seed=line" in out
 
 
 def test_tail_diagnostic_says_not_analyzed_for_multi_component(capsys):
@@ -591,10 +757,25 @@ def test_tail_diagnostic_says_not_analyzed_for_multi_component(capsys):
     uncovered = np.ones(len(glyph.search_points), dtype=bool)
     an = d.analyze_candidate(cand, glyph, uncovered)
     assert an.bounds is None
-    d._report_no_first_curve(glyph, cand, an, uncovered)
+    d._report_no_first_curve(glyph, cand, an, uncovered, "up/up")
     out = capsys.readouterr().err
     assert "tails=not analyzed: trace is not single-component" in out
     assert "trace_components=2" in out
+    assert "seed=up/up" in out
+
+
+def test_single_trace_diagnostic_reports_trace_bounds_and_tails(capsys):
+    glyph = d.make_glyph(np.column_stack([np.arange(0.0, 101.0, 1.0)] * 2))
+    cand = d.Candidate(1, np.polynomial.Polynomial([50.0, 50.0])(d.X_OF_U).coef)
+    uncovered = np.ones(len(glyph.search_points), dtype=bool)
+    an = d.analyze_candidate(cand, glyph, uncovered)
+    d._report_no_first_curve(glyph, cand, an, uncovered, "down/up")
+    out = capsys.readouterr().err
+    assert f"trace_bounds=[{an.bounds[0]:.2f}, {an.bounds[1]:.2f}]" in out
+    assert "direction=" in out
+    assert "margin=" in out
+    assert "turns=" in out
+    assert "seed=down/up" in out
 
 
 # ---------------------------------------------------------------------------
@@ -617,6 +798,80 @@ def test_degree_reduction_coef_only_refinement_keeps_degree():
     cand = d.Candidate(3, np.array([1.0, 2.0, 3.0, 4.0]))
     refined, _ = d._refine_coef_only(cand, glyph, d.REDUCE_STEPS, rng)
     assert refined.degree == cand.degree
+
+
+# ---------------------------------------------------------------------------
+# Per-restart budget split and all-seed refinement
+# ---------------------------------------------------------------------------
+
+
+def test_split_steps_preserves_budget():
+    assert d._split_steps(120, 5) == [24, 24, 24, 24, 24]
+    split = d._split_steps(122, 5)
+    assert sum(split) == 122
+    # remainder distributed deterministically to the first seeds
+    assert split == [25, 25, 24, 24, 24]
+    assert d._split_steps(120, 1) == [120]
+
+
+def test_run_restart_refines_every_seed(monkeypatch):
+    """Every generated seed is independently refined, with the total
+    refinement budget split across them rather than multiplied."""
+    glyph = _diagonal_glyph()
+    p1, p2 = glyph.search_points[10], glyph.search_points[20]
+    entries = d._seed_family(p1, p2, glyph)
+
+    recorded = []
+
+    def fake_hill_climb(cand, glyph_, uncovered_, steps, rng, basis=None):
+        recorded.append((steps, cand.degree, basis is not None))
+        return d.HillResult(
+            None, None,
+            cand,
+            _fake_analysis(
+                samples=np.zeros((4, 2)), sample_d=np.zeros(4),
+                point_d=np.zeros(len(glyph.search_points)),
+                feasible=False,
+            ),
+        )
+
+    monkeypatch.setattr(d, "_hill_climb", fake_hill_climb)
+    rng = np.random.default_rng(0)
+    result = d._run_restart(entries, glyph, np.ones(len(glyph.search_points), dtype=bool), rng, d.REFINE_STEPS)
+
+    assert len(recorded) == len(entries)          # every seed gets a hill
+    assert sum(s for s, _, _ in recorded) <= d.REFINE_STEPS  # budget not multiplied
+    assert sum(s for s, _, _ in recorded) == d.REFINE_STEPS
+    steps_list = [s for s, _, _ in recorded]
+    assert all(steps_list[i] >= steps_list[i + 1] for i in range(len(steps_list) - 1))
+    # structured bases are passed through to the bent-seed hills
+    assert recorded[0][2] is False                # line: no basis
+    for _, _, has_basis in recorded[1:]:
+        assert has_basis
+    assert result.best_seed_name is not None
+
+
+def test_structured_mutations_preserve_degree_early(monkeypatch):
+    """During the first half of a structured hill, degree mutation is
+    suppressed so the quintic basin is refined first."""
+    glyph = _diagonal_glyph()
+    entries = {e.name: e for e in d._seed_family(
+        glyph.search_points[10], glyph.search_points[20], glyph
+    )}
+    basis = entries["down/up"].basis
+    rng = np.random.default_rng(0)
+    cand = entries["down/up"].candidate
+
+    seen_degrees = set()
+    for t in range(50):
+        mutant = d._mutate_search(
+            cand, basis, rng, d._coef_sigma(t, 100), allow_degree=(t >= 25)
+        )
+        if t < 25:
+            assert mutant.degree == cand.degree
+        seen_degrees.add(mutant.degree)
+    # after the first half, degree mutation may appear (degree-5 can only drop)
+    assert min(seen_degrees) <= cand.degree
 
 
 # ---------------------------------------------------------------------------
