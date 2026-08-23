@@ -74,10 +74,14 @@ def _escape_bound(sigma: int, offset: float, corridor: Corridor):
     return edge + sigma * (TAU + ESCAPE_RATE * offset)
 
 
+CORRIDOR_PAD = 30.0   # corridor window padding: ramp rows reach out here
+
+
 def _side_rows(corridor: Corridor, sigma: int, side: str,
                n_esc: int, max_off: float | None = None):
     """Value rows (one-sided) along the continuous escape ramp."""
-    offs = np.linspace(ESC_OFFSETS[0], max_off or ESC_OFFSETS[-1], n_esc)
+    off_max = max_off or ESC_OFFSETS[-1]
+    offs = np.linspace(ESC_OFFSETS[0], off_max, n_esc)
     sgn = -1.0 if side == "L" else 1.0
     x_end = corridor.xs[0] if side == "L" else corridor.xs[-1]
     xs_e = x_end + sgn * offs

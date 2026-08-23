@@ -28,10 +28,11 @@ from src.topology import (
     SLIVER_SPAN,
     ESC_OFFSETS,
     glyph_geometry,
-    build_route_graph,
+    build_stroke_route_graph,
     enumerate_complete_routes,
-    select_routes_min_cover,
-    build_route_corridor,
+    select_routes_min_cover,)
+from src.topology import (
+    _route_corridor_from_stroke as build_route_corridor,
     route_edge_coverage,
     route_coverage_fraction,
 )
@@ -212,10 +213,10 @@ def validate_lines(lines, geom, fits, corridors):
 
 
 def build_phase1(letter: str):
-    """Phases 1-2: fill-mask routing graph, complete routes, exact
-    minimum selection."""
+    """Phases 1-2: stroke-skeleton routing graph, complete routes,
+    exact minimum selection."""
     geom = glyph_geometry(letter)
-    graph = build_route_graph(geom)
+    graph = build_stroke_route_graph(geom)
     candidates = enumerate_complete_routes(graph)
     chosen_idx = select_routes_min_cover(graph, candidates)
     chosen = [candidates[j] for j in chosen_idx]
