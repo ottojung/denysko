@@ -434,3 +434,27 @@ def test_entry_propagates_exit_code(monkeypatch, capsys):
     assert ei.value.code == 0
     out = capsys.readouterr().out
     assert all(line.startswith("y=") for line in out.splitlines())
+
+
+def test_stale_pinch_branch_terminates():
+    """A branch that vanishes for more than PINCH_COLS columns must get
+    its own sink at its disappearance point - never reconnect later or
+    survive to the global right edge."""
+    from src.topology import PINCH_COLS
+
+    gap = PINCH_COLS + 2
+    cols = (
+        [[(4, 6)]] * 8
+        + [[]] * gap                    # branch disappears too long
+        + [[(2, 4), (6, 8)]] * 24       # unrelated later structure
+        + [[(4, 6)]] * 8
+    )
+    graph = build_route_graph(_graph_from_columns(cols))
+    step = 100.0 / 512
+    gap_lo = 8 * step
+    gap_hi = (8 + gap) * step
+    sinks_mid = [v for v in graph.vertices
+                 if v.kind == "sink" and gap_lo <= v.x <= gap_hi]
+    assert sinks_mid                    # explicit disappearance sink
+    for e in graph.edges:               # no edge crosses the empty gap
+        assert not (e.xs[0] < gap_lo and e.xs[-1] > gap_hi)

@@ -278,9 +278,15 @@ def build_route_graph(geom: GlyphGeometry) -> RouteGraph:
     for i in range(W):
         runs = runs_per_col[i]
 
-        # pinch reconnection
+        # pinch reconnection; stale branches terminate for good
         still_lost = {}
         for bid, trk in lost.items():
+            if i - trk["last_col"] > PINCH_COLS:
+                e = edges[trk["edge"]]
+                if e.v_to < 0:
+                    e.v_to = new_vertex((trk["last_col"] + 0.5) * step,
+                                        "sink")
+                continue
             a0, a1 = trk["last_rows"]
             rematch = None
             for ri, run in enumerate(runs):
