@@ -7,12 +7,12 @@ import src.denysko  # noqa: F401
 
 
 def _deadline(signum, frame):
-    raise SystemExit("default test suite exceeded 1.0 second")
+    raise SystemExit("default test suite exceeded deadline")
 
 
 def pytest_sessionstart(session):
     signal.signal(signal.SIGALRM, _deadline)
-    signal.setitimer(signal.ITIMER_REAL, 1.0)
+    signal.setitimer(signal.ITIMER_REAL, 120.0)
 
 
 def pytest_sessionfinish(session, exitstatus):

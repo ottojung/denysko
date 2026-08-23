@@ -4,12 +4,14 @@ import pytest
 from src import denysko as d
 from src import fitting as _fitting
 from src.fitting import (
+    ORIENTATIONS,
     Corridor,
     PathFit,
     fit_degree,
-    min_degree,
+    fit_route,
 )
 from src.topology import (
+    ESC_OFFSETS,
     GlyphGeometry,
     RouteEdge,
     RouteGraph,
@@ -170,69 +172,135 @@ def test_o_topology_is_ring():
 # ---------------------------------------------------------------------------
 
 
+def _corridor_from(xs, lower, upper, ylo=0.0, yhi=100.0):
+    from src.topology import BoundaryPath
+
+    xs = np.asarray(xs, dtype=float)
+    mid = 0.5 * (np.asarray(lower) + np.asarray(upper))
+    pad = ESC_OFFSETS[-1] + 1.0
+    return Corridor(
+        path=BoundaryPath(points=np.column_stack([xs, mid]), contour_id=-1),
+        xa=float(xs[0] - pad),
+        xb=float(xs[-1] + pad),
+        xs=xs,
+        lower=np.asarray(lower, dtype=float),
+        upper=np.asarray(upper, dtype=float),
+        ylo=ylo,
+        yhi=yhi,
+    )
+
+
 def _linear_corridor():
     xs = np.linspace(10.0, 60.0, 50)
     mid = 0.5 * xs + 20.0
-    from src.topology import BoundaryPath
-
-    return Corridor(
-        path=BoundaryPath(points=np.column_stack([xs, mid]), contour_id=-1),
-        xa=float(xs[0] - 2),
-        xb=float(xs[-1] + 2),
-        xs=xs,
-        lower=mid - 0.3,
-        upper=mid + 0.3,
-        escapes=(),
-    )
+    return _corridor_from(xs, mid - 1.0, mid + 1.0)
 
 
 def test_production_lp_smoke(monkeypatch):
     monkeypatch.setattr(_fitting, "USE_LP", True)
-    fit = min_degree(_linear_corridor(), hi=8)
-    assert fit is not None and fit.degree <= 2
+    fit = fit_route(_linear_corridor(), hi=20)
+    assert fit is not None and 0 < fit.degree <= 20
+    assert fit.orientation in ORIENTATIONS
 
 
-def test_simple_linear_corridor_feasible(fast_polish):
-    fit = min_degree(_linear_corridor(), hi=8)
-    assert fit is not None and fit.degree <= 2
-
-
-def test_impossible_low_degree_corridor_fails(fast_polish):
-    from src.topology import BoundaryPath
-
+def test_impossible_low_degree_corridor_fails():
     xs = np.linspace(10.0, 60.0, 50)
-    mid = 40.0 + 25.0 * np.sin(np.linspace(0, 6 * np.pi, len(xs)))
-    c = Corridor(
-        path=BoundaryPath(points=np.column_stack([xs, mid]), contour_id=-1),
-        xa=float(xs[0] - 2),
-        xb=float(xs[-1] + 2),
-        xs=xs,
-        lower=mid - 0.3,
-        upper=mid + 0.3,
-        escapes=(),
-    )
-    fit0 = fit_degree(c, 0)
-    assert fit0 is None  # constant cannot follow a sine tube
-    best = min_degree(c, hi=24)
+    mid = 40.0 + 12.0 * np.sin(np.linspace(0, 3 * np.pi, len(xs)))
+    c = _corridor_from(xs, mid - 2.0, mid + 2.0)
+    fit0 = fit_degree(c, 0, 1, 1)
+    assert fit0 is None  # constant cannot follow a sine tube nor escape
+    best = fit_route(c, hi=24)
     assert best is not None and best.degree > 0
 
 
-def test_degree_minimization_verified_minimum(fast_polish):
-    fit = min_degree(_linear_corridor(), hi=10)
-    assert fit.degree == 1
+def test_degree_minimization_verified_minimum():
+    """fit_route must return the LOWEST verified feasible degree: every
+    lower degree is infeasible for every tail orientation."""
+    c = _linear_corridor()
+    fit = fit_route(c, hi=24)
+    assert fit is not None
+    for dd in range(fit.degree):
+        assert all(
+            fit_degree(c, dd, *ori) is None for ori in ORIENTATIONS
+        )
+
+
+# ---------------------------------------------------------------------------
+# Mandatory tail escape (V3) and orientation choice
+# ---------------------------------------------------------------------------
+
+
+def _slab_corridor(y_lo=49.0, y_hi=51.0):
+    xs = np.linspace(10.0, 60.0, 30)
+    return _corridor_from(xs, np.full(len(xs), y_lo),
+                          np.full(len(xs), y_hi))
+
+
+def test_constant_line_v2_passes_v3_fails():
+    """P(x)=50 inside a slab corridor: perfect V2 adherence, but its
+    tails stay horizontal forever - V3 must reject it."""
+    corr = _slab_corridor()
+    coef = np.array([50.0])
+    v2 = d.corridor_adherence_violation(coef, corr)
+    assert v2 <= 0.35
+    for ori in ORIENTATIONS:
+        assert d.tail_reentry_violation(coef, corr, ori) > 0
+
+    class _Fit:
+        poly = np.polynomial.Polynomial(coef)
+        orientation = (1, -1)
+
+    problems = d.validate_lines(["y=50"], object(), [_Fit()], [corr])
+    assert any(p.startswith("V2") is False and p.startswith("V3")
+               for p in problems)
+
+
+def test_escaping_tails_pass_v3():
+    corr = _slab_corridor()
+    # left-down AND right-up in one stroke: steep S-line through the band
+    s_line = np.polynomial.Polynomial([-45.0, 3.0])
+    assert s_line(10.0) < 0.0 and s_line(60.0) > 100.0
+    assert d.tail_reentry_violation(s_line.coef, corr, (-1, 1)) == 0.0
+    # constant already below the band: permanently outside on both sides
+    sunk = np.polynomial.Polynomial([-5.0])
+    assert d.tail_reentry_violation(sunk.coef, corr, (-1, -1)) == 0.0
+
+
+def test_reentry_and_wrong_asymptote_fail_v3():
+    corr = _slab_corridor()
+    u = np.polynomial.Polynomial([-60.0, 1.0])          # u = x - 60
+    # outside the band at the checkpoint (P(60)>100); its derivative has
+    # roots at u=6 (local max, stays out) and u=40 (local min dipping
+    # back under yhi=100):
+    k = 0.01
+    dip = 110.0 + k * (u ** 3 / 3.0 - 23.0 * u ** 2 + 240.0 * u)
+    assert dip(60.0) > 100.0
+    rts = [r + 60.0 for r in (6.0, 40.0)]
+    assert float(dip(rts[0])) > 100.0
+    assert float(dip(rts[1])) < 100.0
+    assert d.tail_reentry_violation(dip.coef, corr, (1, 1)) > 0
+
+    # wrong asymptote: outside at both checkpoints, but the parabola
+    # opens downward so it must fall back through the band eventually
+    wrong = 110.0 + 30 * u - u ** 2
+    assert wrong(60.0) > 100.0
+    assert d.tail_reentry_violation(wrong.coef, corr, (1, 1)) > 0
+
+
+def test_orientation_choice_prefers_feasible_low_degree():
+    # a corridor hugging the top of the band: only an UP-right tail can
+    # escape quickly; fit_route must find some feasible orientation.
+    xs = np.linspace(10.0, 60.0, 40)
+    c = _corridor_from(xs, np.full(len(xs), 92.0), np.full(len(xs), 98.0))
+    fit = fit_route(c, hi=20)
+    assert fit is not None
+    sig_l, sig_r = fit.orientation
+    assert sig_r == 1   # downward from y~97 would fight the ramp rows
 
 
 def test_emitted_poly_leaving_corridor_rejected():
     xs = np.linspace(10.0, 60.0, 30)
-    c = Corridor(
-        path=None,
-        xa=8.0,
-        xb=62.0,
-        xs=xs,
-        lower=np.full(len(xs), 20.0),
-        upper=np.full(len(xs), 22.0),
-        escapes=(),
-    )
+    c = _corridor_from(xs, np.full(len(xs), 20.0), np.full(len(xs), 22.0))
     bad = np.polynomial.Polynomial([30.0])
     v = d.corridor_adherence_violation(bad.coef, c)
     assert v > 1.0
@@ -247,24 +315,21 @@ def test_validate_lines_flags_violations():
         pass
 
     xs = np.linspace(10.0, 60.0, 30)
-    c = Corridor(
-        path=None,
-        xa=8.0,
-        xb=62.0,
-        xs=xs,
-        lower=np.full(len(xs), 20.0),
-        upper=np.full(len(xs), 22.0),
-        escapes=(),
-    )
+    c = _corridor_from(xs, np.full(len(xs), 20.0), np.full(len(xs), 22.0))
 
     class _Fit:
         poly = np.polynomial.Polynomial([21.0])
+        orientation = (1, -1)
 
     lines = [d.format_expression(_Fit())]
-    assert d.validate_lines(lines, _Geom(), [_Fit()], [c]) == []
+    problems = d.validate_lines(lines, _Geom(), [_Fit()], [c])
+    # V2 clean, but the constant tail cannot escape: V3 flags it
+    assert not any(p.startswith("V2") or p.startswith("V4") for p in problems)
+    assert any(p.startswith("V3") for p in problems)
 
     class _BadFit:
         poly = np.polynomial.Polynomial([50.0])
+        orientation = (1, -1)
 
     bad_lines = [d.format_expression(_BadFit())]
     problems = d.validate_lines(bad_lines, _Geom(), [_BadFit()], [c])

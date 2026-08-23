@@ -26,6 +26,7 @@ from src.topology import (
     DEFAULT_MAX_CURVES,
     CORRIDOR_EPS,
     SLIVER_SPAN,
+    ESC_OFFSETS,
     glyph_geometry,
     build_route_graph,
     enumerate_complete_routes,
@@ -35,7 +36,12 @@ from src.topology import (
     route_coverage_fraction,
 )
 from src import fitting
-from src.fitting import INITIAL_FIT_DEGREE, PathFit, min_degree
+from src.fitting import (
+    INITIAL_FIT_DEGREE,
+    PathFit,
+    fit_route,
+    tail_reentry_violation,
+)
 
 PRECISION = 12
 
@@ -167,24 +173,12 @@ def corridor_adherence_violation(poly_coef, corridor, grid=500):
     return float(max(0.0, np.max(np.maximum(lo - vals, vals - hi))))
 
 
-def tail_reentry_violation(poly_coef, corridor):
-    """V3 permanent-tail check.
-
-    All route endpoints are side exits ('far'): the tail leaves the
-    drawn x-region immediately at a glyph edge column, so no fitting
-    rows exist beyond the window and no analytic ramp argument applies.
-    The polynomial is unconstrained past the window by construction;
-    this check is retained as an extension point and currently always
-    reports zero violations.
-    """
-    return 0.0
-
-
 def validate_lines(lines, geom, fits, corridors):
     """Independent validation of the EMITTED text (Phases 5).
 
     V2: parsed polynomials adhere to their route corridors.
-    V3: no permanent-tail re-entry violations.
+    V3: tails escape the glyph band vertically and permanently
+        (analytic root analysis using each fit's chosen orientation).
     V4: serialization round-trip is exact.
     V1 (route-edge coverage) is enforced by the caller before fitting.
     """
@@ -205,7 +199,8 @@ def validate_lines(lines, geom, fits, corridors):
         v2 = corridor_adherence_violation(coef, corr)
         if v2 > CORRIDOR_EPS:
             problems.append(f"V2 curve {i}: corridor violation {v2:.3f}")
-        v3 = tail_reentry_violation(coef, corr)
+        ori = getattr(fit, "orientation", (1, -1))
+        v3 = tail_reentry_violation(coef, corr, ori)
         if v3:
             problems.append(f"V3 curve {i}: tail re-entry {v3:.3f}")
     return problems
@@ -242,7 +237,7 @@ def fit_selected(selected):
     fits = []
     failures = []
     for i, corridor in enumerate(selected):
-        fit = min_degree(corridor, hi=INITIAL_FIT_DEGREE)
+        fit = fit_route(corridor, hi=INITIAL_FIT_DEGREE)
         if fit is None:
             failures.append(i)
         fits.append(fit)
@@ -389,7 +384,7 @@ def debug_entry() -> int:
 
     target = selected if args.index is None else [selected[args.index]]
     for i, c in enumerate(target):
-        fit = min_degree(c, hi=INITIAL_FIT_DEGREE)
+        fit = fit_route(c, hi=INITIAL_FIT_DEGREE)
         status = (
             f"min degree {fit.degree}" if fit is not None
             else f"infeasible at {INITIAL_FIT_DEGREE}"

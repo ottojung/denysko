@@ -41,10 +41,10 @@ SLIVER_SPAN = 1.0                # route edges shorter than this are slivers
 CORRIDOR_MARGIN = 0.4            # interior safety margin (actually applied)
 MIN_CORRIDOR_WIDTH = 0.05        # never produce an inverted/empty interval
 CORRIDOR_EPS = 0.35              # solver-numerics tolerance (see CHALLENGES)
-MIN_CORRIDOR_WIDTH = 0.05        # never produce an inverted interval
 SELECT_COVERAGE_TARGET = 0.97    # route-edge coverage buffer
-ESCAPE_RATE = 2.5                       # legacy ramp rate
-ESC_OFFSETS = (1.0, 2.0, 3.5, 5.5, 8.0)   # legacy ramp offsets
+ESCAPE_RATE = 2.5                # tail ramp: clearance growth per unit x
+ESC_OFFSETS = (3.0, 6.0, 10.0, 16.0)   # ramp checkpoints beyond ends
+ESC_SLOPE_MIN = 0.05             # min outward |dP/dx| along the ramp
 
 
 def _font_path() -> str:
@@ -549,8 +549,9 @@ class Corridor:
     """Allowed region for one complete route.
 
     Piecewise-linear [lower(x), upper(x)] from the route's slice
-    intervals (with interior safety margin applied). Escapes are
-    side-exit policies for the two route endpoints.
+    intervals (with interior safety margin applied). (ylo, yhi) is the
+    glyph vertical band the tails must escape permanently; escape
+    directions are a deterministic fitting-time choice per side.
     """
 
     path: BoundaryPath
@@ -559,47 +560,14 @@ class Corridor:
     xs: np.ndarray
     lower: np.ndarray
     upper: np.ndarray
-    escapes: tuple
-
-    def escape_regions(self, xs):
-        xs = np.asarray(xs, dtype=float)
-        return (
-            xs < self.xs[0],
-            xs > self.xs[-1],
-            None,
-            None,
-        )
+    ylo: float
+    yhi: float
 
     def lower_at(self, x):
         return np.interp(x, self.xs, self.lower)
 
     def upper_at(self, x):
         return np.interp(x, self.xs, self.upper)
-
-
-@dataclass
-class EscapeSpec:
-    """Side-exit escape policy for a complete route endpoint.
-
-    The tail leaves the drawn x-region immediately (the route endpoint
-    sits at a glyph x-edge), so no fitting rows exist; Phase 5 checks a
-    finite pad strip beyond the window instead.
-    """
-
-    kind: str            # 'far' (side exit)
-    side: str            # 'L' or 'R'
-    sigma: int           # +1 up / -1 down: direction of eventual divergence
-    x_end: float
-    edge: float          # nearer band edge
-    y_end: float
-    off_edge: float
-    rows: list           # empty for side exits
-
-
-def _sigma_band(y_end: float, geom: GlyphGeometry) -> int:
-    """Escape direction toward the nearer band edge (ties go up)."""
-    return 1 if (geom.ymax - y_end) <= (y_end - geom.ymin) else -1
-
 
 
 def build_route_corridor(graph: RouteGraph, edge_ids: tuple,
@@ -630,20 +598,7 @@ def build_route_corridor(graph: RouteGraph, edge_ids: tuple,
     path = BoundaryPath(points=np.column_stack([xs, center]),
                         contour_id=-1)
 
-    y_end_l = float(lower[0]); y_end_r = float(upper[-1])
-    sig_l = _sigma_band(y_end_l, geom)
-    sig_r = _sigma_band(y_end_r, geom)
-    esc_l = EscapeSpec(
-        "far", "L", sig_l, float(xs[0]),
-        geom.ymax if sig_l == 1 else geom.ymin,
-        y_end_l, 0.0, [],
-    )
-    esc_r = EscapeSpec(
-        "far", "R", sig_r, float(xs[-1]),
-        geom.ymax if sig_r == 1 else geom.ymin,
-        y_end_r, 0.0, [],
-    )
-    pad = 2.0
+    pad = ESC_OFFSETS[-1] + 1.0   # window covers all escape checkpoints
     return Corridor(
         path=path,
         xa=float(xs[0] - pad),
@@ -651,7 +606,8 @@ def build_route_corridor(graph: RouteGraph, edge_ids: tuple,
         xs=xs,
         lower=lower,
         upper=upper,
-        escapes=(esc_l, esc_r),
+        ylo=float(geom.ymin),
+        yhi=float(geom.ymax),
     )
 
 
