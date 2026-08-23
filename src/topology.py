@@ -138,7 +138,8 @@ class BoundaryPath:
     points: np.ndarray
     contour_id: int
     source_edge_ids: tuple
-    covered: np.ndarray | None = None
+    arc_points: np.ndarray | None = None   # raw source-arc vertices
+    covered: np.ndarray | None = None      # TAU bookkeeping only
 
 
 VERTICAL_PATH_X_SPAN = 0.5
@@ -452,20 +453,53 @@ def build_corridors(paths, geom: GlyphGeometry) -> list[Corridor]:
     x-edge (its tail leaves the drawn region immediately).
     """
     out = []
+    arcs = []
     for p in paths:
-        own = p.covered if p.covered is not None else np.zeros(
-            len(geom.points), bool
-        )
-        foreign = geom.points[~own]
+        # Topology identity: this path's own source arc is the raw
+        # contour vertices of its source edges. Competing geometry is
+        # everything assigned to a DIFFERENT source arc - independent of
+        # incidental TAU-proximity bookkeeping (p.covered may contain
+        # points from a nearby distinct stroke; those must still
+        # constrain this corridor).
+        if p.arc_points is None or len(p.arc_points) == 0:
+            ids = list(p.source_edge_ids)
+            contour = geom.contours[p.contour_id]
+            cn = (
+                contour[:-1]
+                if len(contour) > 1 and np.allclose(contour[0], contour[-1])
+                else contour
+            )
+            seg_pts = [cn[i] for i in ids] + [
+                cn[(ids[-1] + 1) % len(cn)]
+            ]
+            seg = np.asarray(seg_pts, dtype=float)
+            # densify: corner vertices alone would place competition
+            # geometry unrealistically far away
+            p.arc_points = _resample(seg, max(16, int(
+                np.hypot(*np.diff(seg, axis=0).T).sum() / 1.0
+            )))
+        arcs.append(p.arc_points)
+
+    def competing(pt, my_idx):
+        best, best_d = None, np.inf
+        for j, arc in enumerate(arcs):
+            if j == my_idx:
+                continue
+            d = float(np.hypot(arc[:, 0] - pt[0], arc[:, 1] - pt[1]).min())
+            if d < best_d:
+                best_d, best = d, arc
+        if best is None:
+            return TAU
+        return float(best_d)
+
+    out = []
+    for my_idx, p in enumerate(paths):
         widths = []
         for pt in p.points:
-            if len(foreign):
-                d = float(np.hypot(
-                    foreign[:, 0] - pt[0], foreign[:, 1] - pt[1]
-                ).min())
-            else:
-                d = TAU
-            widths.append(min(TAU, max(MIN_CORRIDOR_WIDTH, 0.5 * d)))
+            d_comp = competing(pt, my_idx)
+            widths.append(
+                min(TAU, max(MIN_CORRIDOR_WIDTH, 0.5 * d_comp))
+            )
         widths = np.asarray(widths)
         xs = p.points[:, 0]
         esc_l = _make_escape(p.points[0], "L", geom)
