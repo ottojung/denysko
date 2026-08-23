@@ -280,51 +280,51 @@ TAU = 2.0
 MIN_COVERAGE = 0.95
 DEFAULT_MAX_CURVES = 12
 
-ESC_OFFSETS = (0.75, 1.5, 2.5, 4.0, 6.0)
-ESC_RATE = 2.5          # vertical clearance per unit x beyond the exit
 MIN_CORRIDOR_WIDTH = 0.4
+ESC_OFFSETS = (1.0, 2.0, 3.5, 5.5, 8.0)
+ESCAPE_RATE = 2.5          # band-clearance growth per unit x (band exits)
+BAND_EDGE_TOL = 1.5        # endpoint this close to a glyph x-edge is "at" it
+FAR_ROWS = (3.0, 8.0)      # beyond-window distances for non-return rows
+FAR_CLEARANCE = 3.0
 
 
 @dataclass
-class Escape:
-    """Outward escape corridor on one end of a path.
+class EscapeSpec:
+    """Outward escape constraints for one end of a path.
 
-    The polynomial must satisfy, for every offset o in ESC_OFFSETS:
-        sigma * P(x_end + side_sign * o) >= sigma * (edge + ESC_RATE * o)
-    where edge is ymax (sigma=+1) or ymin (sigma=-1). Equivalently the
-    corridor requires leaving the glyph's vertical band and keeps
-    demanding growing outward clearance at rate ESC_RATE.
+    kind='band': the endpoint lies inside the glyph's x-span, so the
+    tail must leave the vertical band: at offsets ESC_OFFSETS past the
+    end, P must clear the nearer band edge with ESC_RATE growth
+    (inequalities, not exact targets). kind='far': the endpoint sits at
+    a glyph x-edge, so the tail immediately leaves the drawn region;
+    only far-field rows forbid swinging back into the band later.
     """
 
-    side: str      # 'L' or 'R'
-    sigma: int     # +1 upward escape, -1 downward escape
+    kind: str            # 'band' or 'far'
+    side: str            # 'L' or 'R'
+    sigma: int           # +1 upward exit, -1 downward exit
     x_end: float
-    edge: float    # band edge being exited (ymax for up, ymin for down)
-
-    def bound(self, x: float) -> float:
-        """Required inequality bound at absolute position x."""
-        off = abs(x - self.x_end)
-        return self.edge + self.sigma * ESC_RATE * off
+    edge: float          # band edge being exited (ymax up / ymin down)
+    y_end: float         # path endpoint y (ramp anchor)
+    rows: list           # [(x, lo, hi)] absolute one-sided rows
 
 
 @dataclass
 class Corridor:
     """Allowed region for one path's polynomial.
 
-    Inside the path domain the polynomial must remain within the
-    piecewise-linear [lower, upper] interval; past either end it must
-    satisfy the escape inequalities. The corridor fixes topology: the
-    polynomial belongs to this route and may not jump to another stroke.
+    Interior: piecewise-linear [lower(x), upper(x)] around the path.
+    Escapes: explicit one-sided rows (band exits or far-field
+    non-return). Topology is fixed by the corridor itself.
     """
 
     path: BoundaryPath
-    xa: float               # fitting window start (includes left escape run)
-    xb: float               # fitting window end (includes right escape run)
-    xs: np.ndarray          # interior width nodes (sorted)
+    xa: float
+    xb: float
+    xs: np.ndarray
     lower: np.ndarray
     upper: np.ndarray
-    esc_left: Escape
-    esc_right: Escape
+    escapes: tuple       # (EscapeSpec left, EscapeSpec right)
 
     def lower_at(self, x):
         return np.interp(x, self.xs, self.lower)
@@ -333,49 +333,98 @@ class Corridor:
         return np.interp(x, self.xs, self.upper)
 
 
-def _escape_for(endpoint_y: float, side: str, x_end: float, geom: GlyphGeometry) -> Escape:
-    mid = 0.5 * (geom.ymin + geom.ymax)
-    sigma = 1 if endpoint_y >= mid else -1
+def _sigma_band(y_end: float, geom: GlyphGeometry) -> int:
+    """Band-exit direction toward the nearer band edge (ties go up)."""
+    return 1 if (geom.ymax - y_end) <= (y_end - geom.ymin) else -1
+
+
+def _make_escape(endpoint: np.ndarray, side: str, geom: GlyphGeometry) -> EscapeSpec:
+    x_end = float(endpoint[0])
+    y_end = float(endpoint[1])
+    # Band escapes always exit toward the NEARER band edge and anchor the
+    # ramp at the endpoint itself, so the required slope stays at
+    # ESCAPE_RATE regardless of how deep inside the band the route sits.
+    # (A mass-based direction here can pair an upward climb with the
+    # downward edge distance, producing a 50-unit instant cliff.)
+    at_left_edge = (x_end - geom.xmin) <= BAND_EDGE_TOL
+    at_right_edge = (geom.xmax - x_end) <= BAND_EDGE_TOL
+    if (side == "L" and at_left_edge) or (side == "R" and at_right_edge):
+        # tail immediately leaves the drawn x-region; forbid returning
+        sigma = _sigma_band(y_end, geom)
+        edge = geom.ymax if sigma == 1 else geom.ymin
+        sign = -1.0 if side == "L" else 1.0
+        base = x_end + sign * 2.0
+        rows = []
+        for d in FAR_ROWS:
+            x = base + sign * d
+            lo = geom.ymax + FAR_CLEARANCE if sigma == 1 else -np.inf
+            hi = geom.ymin - FAR_CLEARANCE if sigma == -1 else np.inf
+            rows.append((x, lo, hi))
+        return EscapeSpec("far", side, sigma, x_end, edge, y_end, rows)
+
+    sigma = _sigma_band(y_end, geom)
     edge = geom.ymax if sigma == 1 else geom.ymin
-    return Escape(side=side, sigma=sigma, x_end=x_end, edge=edge)
+    sign = -1.0 if side == "L" else 1.0
+    # Ramp anchored at the path endpoint (continuous with the fitted
+    # route), moving outward at ESCATE_RATE; endpoints deep inside the
+    # band get a proportionally longer run so the slope stays gentle.
+    edge_dist = abs(edge - y_end)
+    run = max(ESC_OFFSETS[-1], edge_dist / ESCAPE_RATE + 1.0)
+    # linear ramp from the endpoint down/up to the final clearance:
+    # constant slope, no kink at the joint, no instant cliff.
+    slope = (edge_dist + ESCAPE_RATE * run) / run
+    offs = np.linspace(0.0, run, len(ESC_OFFSETS) + 1)
+    rows = []
+    for off in offs:
+        x = x_end + sign * off
+        level = y_end + sigma * slope * off
+        lo = level if sigma == 1 else -np.inf
+        hi = level if sigma == -1 else np.inf
+        rows.append((x, lo, hi))
+    return EscapeSpec("band", side, sigma, x_end, edge, y_end, rows)
 
 
 def build_corridors(paths, geom: GlyphGeometry) -> list[Corridor]:
     """Construct the allowed region around every path.
 
-    Interior width is based on surface tolerance but shrinks near
-    competing geometry: the local half-width is half the distance to the
-    nearest boundary sample NOT covered by this path, clamped to a
-    nonzero floor, so a corridor never silently merges two distinct
-    nearby strokes. Each end gains an escape corridor of ESC_OFFSETS
-    length directing the polynomial outside the glyph's vertical band.
+    Interior width hugs surface tolerance but shrinks near competing
+    geometry (half the distance to the nearest boundary sample NOT
+    covered by this path, floored), so corridors never merge distinct
+    strokes. Each end gets an EscapeSpec: a band exit with growing
+    clearance when the endpoint is interior to the glyph's x-span, or
+    far-field non-return rows when the endpoint already sits on a glyph
+    x-edge (its tail leaves the drawn region immediately).
     """
     out = []
     for p in paths:
-        own = p.covered if p.covered is not None else np.zeros(len(geom.points), bool)
+        own = p.covered if p.covered is not None else np.zeros(
+            len(geom.points), bool
+        )
         foreign = geom.points[~own]
         widths = []
         for pt in p.points:
             if len(foreign):
-                d = float(np.hypot(foreign[:, 0] - pt[0], foreign[:, 1] - pt[1]).min())
+                d = float(np.hypot(
+                    foreign[:, 0] - pt[0], foreign[:, 1] - pt[1]
+                ).min())
             else:
                 d = TAU
             widths.append(min(TAU, max(MIN_CORRIDOR_WIDTH, 0.5 * d)))
         widths = np.asarray(widths)
         xs = p.points[:, 0]
-        lower = p.points[:, 1] - widths
-        upper = p.points[:, 1] + widths
-        pad = ESC_OFFSETS[-1]
+        esc_l = _make_escape(p.points[0], "L", geom)
+        esc_r = _make_escape(p.points[-1], "R", geom)
+        pad_l = ESC_OFFSETS[-1] if esc_l.kind == "band" else 2.0
+        pad_r = ESC_OFFSETS[-1] if esc_r.kind == "band" else 2.0
         out.append(
             Corridor(
                 path=p,
-                xa=float(xs[0] - pad),
-                xb=float(xs[-1] + pad),
+                xa=float(xs[0] - pad_l),
+                xb=float(xs[-1] + pad_r),
                 xs=xs,
-                lower=lower,
-                upper=upper,
-                esc_left=_escape_for(p.points[0, 1], "L", xs[0], geom),
-                esc_right=_escape_for(p.points[-1, 1], "R", xs[-1], geom),
+                lower=p.points[:, 1] - widths,
+                upper=p.points[:, 1] + widths,
+                escapes=(esc_l, esc_r),
             )
         )
     return out
