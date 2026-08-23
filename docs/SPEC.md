@@ -6,8 +6,8 @@ Version 3.0 is an architectural rewrite: topology is solved **before** polynomia
 fitting. The pipeline is
 
 ```text
-Phase 1  fill mask -> vertical-sweep routing graph -> complete routes
-         -> exact minimum route selection
+Phase 1  fill mask -> medial-axis stroke skeleton -> stroke/junction
+         route graph (+ ring cuts) -> complete routes -> exact minimum cover
 Phase 2  deliberately high-degree constrained polynomial fit per route
 Phase 3  degree minimization inside the same corridor
 Phase 4  independent validation (corridor adherence + edge coverage)
@@ -97,7 +97,7 @@ corridor window. It never trusts fitter internals:
 - **V2 (independent corridor adherence):** dense interior tube check plus
   band-ramp inequality rows per emitted line; violations above CORRIDOR_EPS
   reject (`V2 corridor violation ...`).
-- **V3 (analytic tail re-entry):** for every edge-exit ramp, beyond the final
+- **V3 (analytic permanent tails, mandatory on both sides):** for every edge-exit ramp, beyond the final
   escape row the derivative must have no real roots and keep its outward sign,
   with P already strictly outside the band edge at that checkpoint - so the tail
   cannot re-enter the visible band later. Side-exit tails (endpoints on glyph

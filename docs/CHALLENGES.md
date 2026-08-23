@@ -80,38 +80,28 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures (route-model iteration, measured 2026-08)
+## Known failures (stroke-route iteration, measured)
 
-All ten manual letters now pass end-to-end with defaults:
+Manual matrix (defaults):
 
-| letter | curves | minimum degrees |
-|--------|--------|-----------------|
-| A      | 2      | 2, 4            |
-| B      | 4      | 2, 2, 2, 2      |
-| C      | 2      | 2, 2            |
-| E      | 3      | 0, 0, 0         |
-| F      | 2      | 0, 0            |
-| H      | 1      | 0               |
-| I      | 1      | 0               |
-| L      | 1      | 0               |
-| O      | 2      | 2, 2            |
-| T      | 1      | 0               |
+| letter | curves | notes |
+|--------|--------|-------|
+| A | 2 | roof + bar routes, shared leg trunks |
+| B | 2 | |
+| C | FAIL | single-arc corridor: no degree <= 24 yields a fit whose tails are permanently outward in all four orientations; recorded honestly rather than weakened V3 |
+| E | 2 | junction topology from skeleton |
+| F | 2 | |
+| H | 2 | stem+bar+stem routes; constant line impossible (V3 + traversal corridors) |
+| I | 1 | vertical stroke: corridor forces traversal across its narrow window |
+| L | 1 | |
+| O | 2 | ring cut into two arcs |
+| T | 2 | |
 
-The previous terminal-face V1 failures (`C` 0.9050, `B` 0.9248) are
-obsolete: V1 is route-edge coverage of the fill graph now, and both
-letters cover all meaningful edges exactly.
+Residual documented limitations:
 
-Residual, documented limitations:
-
-- Single-poly letters (`H`, `I`, `L`, `T`, parts of `E`) degenerate to
-  degree-0 horizontal traces when the glyph's fill is one connected
-  slab whose slice centers barely vary. The corridor model is
-  satisfied, but the rendered trace is a mid-slab line rather than a
-  stroke outline. Enriching corridor semantics (e.g. per-stroke
-  splitting by thickness profile) is future work.
-- Side-exit tails are unconstrained past their window (Option A): a
-  tail may cross unrelated geometry outside the drawn region. No
-  failures observed from this policy so far.
-- The degree-0 phenomenon also means "recognizable outline" is only
-  partially met for connected-slab letters; acceptance criterion
-  wording in SPEC.md §9 keeps this as the long-term target.
+- `C` fails as above. Candidate fixes noted, not applied: per-route
+  orientation-aware far-field rows inside the fitting window; or
+  splitting C's arc at its x-extremum into two routes.
+- Tail permanence beyond the final checkpoint is analytic (root
+  analysis of P'); behaviour between window edge and infinity relies on
+  the outward-slope rows plus that check.
