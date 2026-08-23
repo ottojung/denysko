@@ -54,40 +54,47 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
 
 
 def glyph_boundary_cloud(letter: str) -> np.ndarray:
-    """Canonical rasterized normalized boundary point cloud."""
+    """Canonical rasterized normalized boundary point cloud.
+
+    Fill uses even-odd semantics across the glyph's rings (XOR of each
+    ring's interior), so counters/holes contribute real boundary
+    geometry instead of being silently filled by winding quirks.
+    """
     tp = TextPath((0, 0), letter, size=100, prop=FontProperties(fname=_font_path()))
-    polys = tp.to_polygons()
+    polys = [np.asarray(p, dtype=float) for p in tp.to_polygons()]
     pts = np.vstack(polys)
     mn = pts.min(axis=0)
     mx = pts.max(axis=0)
     scale = SIZE / max(mx[0] - mn[0], mx[1] - mn[1])
 
-    verts = []
-    codes = []
+    step = SIZE / GRID
+    axis = (np.arange(GRID) + 0.5) * step
+    gx, gy = np.meshgrid(axis, axis)
+    grid = np.column_stack([gx.ravel(), gy.ravel()])
+    # normalize grid through the same transform direction: grid is in
+    # normalized space already, so rings are normalized first.
+    rings = []
     for poly in polys:
         t = np.empty_like(poly)
         t[:, 0] = (poly[:, 0] - mn[0]) * scale
         t[:, 1] = (poly[:, 1] - mn[1]) * scale
-        verts.append(t)
-        codes.append([Path.MOVETO] + [Path.LINETO] * (len(t) - 1))
-    path = Path(np.vstack(verts), np.concatenate(codes))
+        rings.append(t)
 
-    step = SIZE / GRID
-    axis = (np.arange(GRID) + 0.5) * step
-    gx, gy = np.meshgrid(axis, axis)
-    filled = path.contains_points(
-        np.column_stack([gx.ravel(), gy.ravel()])
-    ).reshape(GRID, GRID)
+    inside = np.zeros(len(grid), dtype=bool)
+    for ring in rings:
+        rp = Path(ring)
+        inside ^= rp.contains_points(grid)
 
-    f = np.pad(filled, 1, constant_values=False)
+    f = inside.reshape(GRID, GRID)
+    fp = np.pad(f, 1, constant_values=False)
     interior_filled = (
-        f[1:-1, 1:-1]
-        & f[:-2, 1:-1]
-        & f[2:, 1:-1]
-        & f[1:-1, :-2]
-        & f[1:-1, 2:]
+        fp[1:-1, 1:-1]
+        & fp[:-2, 1:-1]
+        & fp[2:, 1:-1]
+        & fp[1:-1, :-2]
+        & fp[1:-1, 2:]
     )
-    boundary = filled & ~interior_filled
+    boundary = f & ~interior_filled
     iy, ix = np.nonzero(boundary)
     return np.column_stack([(ix + 0.5) * step, (iy + 0.5) * step])
 
@@ -263,3 +270,154 @@ def dedupe_paths(paths, masks, jaccard: float = 0.85):
     for p, m in zip(keep_p, keep_m):
         p.covered = m
     return keep_p, keep_m
+
+
+# ---------------------------------------------------------------------------
+# Corridors
+# ---------------------------------------------------------------------------
+
+TAU = 2.0
+MIN_COVERAGE = 0.95
+DEFAULT_MAX_CURVES = 12
+
+ESC_OFFSETS = (0.75, 1.5, 2.5, 4.0, 6.0)
+ESC_RATE = 2.5          # vertical clearance per unit x beyond the exit
+MIN_CORRIDOR_WIDTH = 0.4
+
+
+@dataclass
+class Escape:
+    """Outward escape corridor on one end of a path.
+
+    The polynomial must satisfy, for every offset o in ESC_OFFSETS:
+        sigma * P(x_end + side_sign * o) >= sigma * (edge + ESC_RATE * o)
+    where edge is ymax (sigma=+1) or ymin (sigma=-1). Equivalently the
+    corridor requires leaving the glyph's vertical band and keeps
+    demanding growing outward clearance at rate ESC_RATE.
+    """
+
+    side: str      # 'L' or 'R'
+    sigma: int     # +1 upward escape, -1 downward escape
+    x_end: float
+    edge: float    # band edge being exited (ymax for up, ymin for down)
+
+    def bound(self, x: float) -> float:
+        """Required inequality bound at absolute position x."""
+        off = abs(x - self.x_end)
+        return self.edge + self.sigma * ESC_RATE * off
+
+
+@dataclass
+class Corridor:
+    """Allowed region for one path's polynomial.
+
+    Inside the path domain the polynomial must remain within the
+    piecewise-linear [lower, upper] interval; past either end it must
+    satisfy the escape inequalities. The corridor fixes topology: the
+    polynomial belongs to this route and may not jump to another stroke.
+    """
+
+    path: BoundaryPath
+    xa: float               # fitting window start (includes left escape run)
+    xb: float               # fitting window end (includes right escape run)
+    xs: np.ndarray          # interior width nodes (sorted)
+    lower: np.ndarray
+    upper: np.ndarray
+    esc_left: Escape
+    esc_right: Escape
+
+    def lower_at(self, x):
+        return np.interp(x, self.xs, self.lower)
+
+    def upper_at(self, x):
+        return np.interp(x, self.xs, self.upper)
+
+
+def _escape_for(endpoint_y: float, side: str, x_end: float, geom: GlyphGeometry) -> Escape:
+    mid = 0.5 * (geom.ymin + geom.ymax)
+    sigma = 1 if endpoint_y >= mid else -1
+    edge = geom.ymax if sigma == 1 else geom.ymin
+    return Escape(side=side, sigma=sigma, x_end=x_end, edge=edge)
+
+
+def build_corridors(paths, geom: GlyphGeometry) -> list[Corridor]:
+    """Construct the allowed region around every path.
+
+    Interior width is based on surface tolerance but shrinks near
+    competing geometry: the local half-width is half the distance to the
+    nearest boundary sample NOT covered by this path, clamped to a
+    nonzero floor, so a corridor never silently merges two distinct
+    nearby strokes. Each end gains an escape corridor of ESC_OFFSETS
+    length directing the polynomial outside the glyph's vertical band.
+    """
+    out = []
+    for p in paths:
+        own = p.covered if p.covered is not None else np.zeros(len(geom.points), bool)
+        foreign = geom.points[~own]
+        widths = []
+        for pt in p.points:
+            if len(foreign):
+                d = float(np.hypot(foreign[:, 0] - pt[0], foreign[:, 1] - pt[1]).min())
+            else:
+                d = TAU
+            widths.append(min(TAU, max(MIN_CORRIDOR_WIDTH, 0.5 * d)))
+        widths = np.asarray(widths)
+        xs = p.points[:, 0]
+        lower = p.points[:, 1] - widths
+        upper = p.points[:, 1] + widths
+        pad = ESC_OFFSETS[-1]
+        out.append(
+            Corridor(
+                path=p,
+                xa=float(xs[0] - pad),
+                xb=float(xs[-1] + pad),
+                xs=xs,
+                lower=lower,
+                upper=upper,
+                esc_left=_escape_for(p.points[0, 1], "L", xs[0], geom),
+                esc_right=_escape_for(p.points[-1, 1], "R", xs[-1], geom),
+            )
+        )
+    return out
+
+
+def select_paths(
+    corridors: list[Corridor],
+    *,
+    coverage_target: float = MIN_COVERAGE,
+    max_paths: int = DEFAULT_MAX_CURVES,
+):
+    """Deterministic greedy set cover over path coverage masks.
+
+    Repeatedly take the corridor covering the most currently-uncovered
+    boundary samples. Ties break by longer path, then by stable index.
+    Returns (selected_corridors, covered_mask). Selection is decided
+    entirely in Phase 1 - no polynomial coefficients are consulted.
+    """
+    n = len(corridors[0].path.covered)
+    covered = np.zeros(n, dtype=bool)
+    remaining = list(range(len(corridors)))
+    selected = []
+    while len(selected) < max_paths:
+        best = None
+        best_key = None
+        for idx in remaining:
+            mask = corridors[idx].path.covered
+            new = int((mask & ~covered).sum())
+            length = float(
+                corridors[idx].path.points[-1, 0]
+                - corridors[idx].path.points[0, 0]
+            )
+            key = (new, length, -idx)
+            if new == 0:
+                continue
+            if best_key is None or key > best_key:
+                best_key, best = key, idx
+        if best is None:
+            break
+        covered |= corridors[best].path.covered
+        selected.append(corridors[best])
+        remaining.remove(best)
+        if covered.mean() >= coverage_target:
+            break
+    return selected, covered
