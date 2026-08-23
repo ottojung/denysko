@@ -316,14 +316,14 @@ def run(argv) -> int:
 # ---------------------------------------------------------------------------
 
 
-def debug_entry(argv) -> int:
+def debug_entry() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(prog="denysko-debug")
     parser.add_argument("command", choices=["paths", "select", "fit"])
     parser.add_argument("letter")
     parser.add_argument("--index", type=int, default=None)
-    args = parser.parse_args(argv)
+    args = parser.parse_args(sys.argv[1:])
 
     geom, corridors, selected, covered = build_phase1(args.letter)
     if args.command == "paths":
