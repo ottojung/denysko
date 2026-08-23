@@ -1,19 +1,24 @@
-"""Phase 1: explicit boundary topology.
+"""Phase 1: filled-glyph topology and complete route corridors.
 
-The glyph boundary is represented as ordered contours (the font's
-flattened glyph outlines, normalized exactly like the canonical
-rasterized boundary) and decomposed deterministically into maximal
-x-monotone boundary paths. Topology is explicit data decided before any
-polynomial fitting: a path is a route a graph y = f(x) could plausibly
-follow, so x never reverses direction along it. Contours that turn back
-in x are split into several paths; holes and counters produce their own
-paths.
+Routes are NOT contour fragments. Phase 1 rasterizes the canonical
+even-odd fill mask, sweeps it along x, and builds a layered routing
+graph of the connected filled y-intervals (a Reeb-graph-style
+decomposition of the filled glyph). After compressing trivial
+continuation, graph vertices mark appearance / disappearance / split /
+merge events and edges carry the vertical allowed interval across each
+stretch. Complete routes are source-to-sink paths through that graph;
+their corridors are the union of their slice intervals (with an
+interior safety margin), so a corridor boundary may be contributed by
+several different font contours.
+
+Font contours are kept for diagnostics only - they define the walls of
+the geometry, not the routes.
 """
 
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import matplotlib
 import numpy as np
@@ -23,6 +28,23 @@ from matplotlib.textpath import TextPath
 
 GRID = 512
 SIZE = 100.0
+
+TAU = 2.0
+MIN_COVERAGE = 0.95              # diagnostic boundary proximity gate
+DEFAULT_MAX_CURVES = 12
+
+MIN_SLICE_ROWS = 2               # drop sub-2-row raster slivers
+PINCH_COLS = 2                   # bridge disappearances up to this many cols
+MAX_ROUTES = 4096                # enumeration guard
+SLIVER_SPAN = 1.0                # route edges shorter than this are slivers
+
+CORRIDOR_MARGIN = 0.4            # interior safety margin (actually applied)
+MIN_CORRIDOR_WIDTH = 0.05        # never produce an inverted/empty interval
+CORRIDOR_EPS = 0.35              # solver-numerics tolerance (see CHALLENGES)
+MIN_CORRIDOR_WIDTH = 0.05        # never produce an inverted interval
+SELECT_COVERAGE_TARGET = 0.97    # route-edge coverage buffer
+ESCAPE_RATE = 2.5                       # legacy ramp rate
+ESC_OFFSETS = (1.0, 2.0, 3.5, 5.5, 8.0)   # legacy ramp offsets
 
 
 def _font_path() -> str:
@@ -35,7 +57,8 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
     """Flattened glyph outlines normalized like the canonical raster:
     bundled DejaVuSans at size 100, aspect preserved, filled-bbox
     lower-left mapped to (0, 0), max dimension 100, y-up."""
-    tp = TextPath((0, 0), letter, size=100, prop=FontProperties(fname=_font_path()))
+    tp = TextPath((0, 0), letter, size=100,
+                  prop=FontProperties(fname=_font_path()))
     polys = [np.asarray(p, dtype=float).copy() for p in tp.to_polygons()]
     polys = [p for p in polys if len(p) >= 3]
     if not polys:
@@ -53,40 +76,22 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
     return out
 
 
-def glyph_boundary_cloud(letter: str) -> np.ndarray:
-    """Canonical rasterized normalized boundary point cloud.
-
-    Fill uses even-odd semantics across the glyph's rings (XOR of each
-    ring's interior), so counters/holes contribute real boundary
-    geometry instead of being silently filled by winding quirks.
-    """
-    tp = TextPath((0, 0), letter, size=100, prop=FontProperties(fname=_font_path()))
-    polys = [np.asarray(p, dtype=float) for p in tp.to_polygons()]
-    pts = np.vstack(polys)
-    mn = pts.min(axis=0)
-    mx = pts.max(axis=0)
-    scale = SIZE / max(mx[0] - mn[0], mx[1] - mn[1])
-
+def _canonical_fill(polys_norm: list[np.ndarray]):
+    """Even-odd rasterization of normalized outlines on the canonical
+    GRID x GRID sample grid. Rows increase with y (row r centers at
+    y = (r + 0.5) * step)."""
     step = SIZE / GRID
     axis = (np.arange(GRID) + 0.5) * step
     gx, gy = np.meshgrid(axis, axis)
     grid = np.column_stack([gx.ravel(), gy.ravel()])
-    # normalize grid through the same transform direction: grid is in
-    # normalized space already, so rings are normalized first.
-    rings = []
-    for poly in polys:
-        t = np.empty_like(poly)
-        t[:, 0] = (poly[:, 0] - mn[0]) * scale
-        t[:, 1] = (poly[:, 1] - mn[1]) * scale
-        rings.append(t)
-
     inside = np.zeros(len(grid), dtype=bool)
-    for ring in rings:
-        rp = Path(ring)
-        inside ^= rp.contains_points(grid)
+    for ring in polys_norm:
+        inside ^= Path(ring).contains_points(grid)
+    return inside.reshape(GRID, GRID), step
 
-    f = inside.reshape(GRID, GRID)
-    fp = np.pad(f, 1, constant_values=False)
+
+def _mask_boundary_cloud(fill: np.ndarray, step: float) -> np.ndarray:
+    fp = np.pad(fill, 1, constant_values=False)
     interior_filled = (
         fp[1:-1, 1:-1]
         & fp[:-2, 1:-1]
@@ -94,7 +99,7 @@ def glyph_boundary_cloud(letter: str) -> np.ndarray:
         & fp[1:-1, :-2]
         & fp[1:-1, 2:]
     )
-    boundary = f & ~interior_filled
+    boundary = fill & ~interior_filled
     iy, ix = np.nonzero(boundary)
     return np.column_stack([(ix + 0.5) * step, (iy + 0.5) * step])
 
@@ -102,8 +107,9 @@ def glyph_boundary_cloud(letter: str) -> np.ndarray:
 @dataclass
 class GlyphGeometry:
     letter: str
-    contours: list[np.ndarray]
-    points: np.ndarray
+    contours: list[np.ndarray]      # diagnostics/reference only
+    points: np.ndarray              # boundary cloud (diagnostics)
+    fill: np.ndarray                # canonical even-odd fill mask [GRID,GRID]
     xmin: float
     xmax: float
     ymin: float
@@ -112,286 +118,439 @@ class GlyphGeometry:
 
 def glyph_geometry(letter: str) -> GlyphGeometry:
     contours = _normalized_polygons(letter)
-    points = glyph_boundary_cloud(letter)
+    fill, _step = _canonical_fill(contours)
+    points = _mask_boundary_cloud(fill, _step)
+    ys, xs_ = np.nonzero(fill)
+    step = SIZE / GRID
     return GlyphGeometry(
         letter=letter,
         contours=contours,
         points=points,
-        xmin=float(points[:, 0].min()),
-        xmax=float(points[:, 0].max()),
-        ymin=float(points[:, 1].min()),
-        ymax=float(points[:, 1].max()),
+        fill=fill,
+        xmin=float((xs_.min()) * step),
+        xmax=float((xs_.max() + 1) * step),
+        ymin=float((ys.min()) * step),
+        ymax=float((ys.max() + 1) * step),
     )
+
+
+# ---------------------------------------------------------------------------
+# Vertical-slice routing graph over the filled mask
+# ---------------------------------------------------------------------------
 
 
 @dataclass
 class BoundaryPath:
-    """One maximal x-monotone boundary route (points sorted by x).
-
-    source_edge_ids records which original contour edges (indices into
-    the contour's edge cycle) this path represents, so the invariant
-    "every non-degenerate contour edge belongs to exactly one path" is
-    checkable. Vertical runs are represented as narrow monotone paths
-    with VERTICAL_PATH_X_SPAN total x-width centered on the true edge.
-    """
+    """Lightweight polyline carrier (route centerline or debug arc)."""
 
     points: np.ndarray
-    contour_id: int
+    contour_id: int = -1
     source_edge_ids: tuple = ()
-    arc_points: np.ndarray | None = None   # raw source-arc vertices
-    covered: np.ndarray | None = None      # TAU bookkeeping only
-
-
-VERTICAL_PATH_X_SPAN = 0.5
-
-
-def _resample(points: np.ndarray, target: int) -> np.ndarray:
-    """Deterministic arc-length resampling of an open polyline."""
-    seg = np.hypot(np.diff(points[:, 0]), np.diff(points[:, 1]))
-    s = np.concatenate([[0.0], np.cumsum(seg)])
-    total = s[-1]
-    if total <= 0:
-        return np.vstack([points[0], points[-1]])
-    targets = np.linspace(0.0, total, target)
-    out = np.empty((target, 2))
-    j = 0
-    for i, tval in enumerate(targets):
-        while j < len(s) - 2 and s[j + 1] < tval:
-            j += 1
-        span = s[j + 1] - s[j]
-        frac = 0.0 if span <= 0 else (tval - s[j]) / span
-        out[i] = points[j] + frac * (points[j + 1] - points[j])
-    return out
-
-
-STEEP_RUN_TAN = 3.0     # |dy/dx| above this -> near-vertical feature
-
-
-def _max_x_monotone_chains(loop: np.ndarray, eps: float = 1e-9):
-    """Split a closed ordered loop into maximal graph-compatible chains.
-
-    Edge classification (cyclic over all N edges):
-      * zero-length edges are degenerate and dropped (documented rule);
-      * maximal runs of near-vertical edges (|dx| <= eps, or local slope
-        steeper than STEEP_RUN_TAN) become ONE narrow x-monotone path
-        each, sweeping VERTICAL_PATH_X_SPAN across the run's y extent;
-      * remaining horizontal-direction edges group into maximal
-        same-sign-x runs (plain x-monotone chains).
-
-    Every non-degenerate edge lands in exactly one returned chain, and
-    each chain carries its source edge indices.
-    """
-    pts = loop[:-1] if len(loop) > 1 and np.allclose(loop[0], loop[-1]) else loop
-    n = len(pts)
-    if n < 2:
-        return []
-    nxt = (np.arange(n) + 1) % n
-    dx = pts[nxt, 0] - pts[:, 0]
-    dy = pts[nxt, 1] - pts[:, 1]
-
-    def cls(i):
-        if abs(dx[i]) <= eps and abs(dy[i]) <= eps:
-            return 0                      # degenerate
-        if abs(dx[i]) <= eps:
-            return 2                      # exact vertical
-        if abs(dy[i]) > STEEP_RUN_TAN * abs(dx[i]):
-            return 2                      # near-vertical
-        return 1 if dx[i] > 0 else -1     # shallow, directional
-
-    klass = [cls(i) for i in range(n)]
-
-    def finish(points, edge_ids):
-        points = points.copy()
-        if points[-1, 0] < points[0, 0]:
-            points = points[::-1].copy()
-            edge_ids = tuple(edge_ids)[::-1]
-        return points, tuple(edge_ids)
-
-    out = []
-    begin = int(np.argmin(pts[:, 0]))
-    i = 0
-    while i < n:
-        idx = (begin + i) % n
-        k = klass[idx]
-        i += 1
-        if k == 0:
-            continue
-        run = [idx]
-        chain_pts = [pts[idx], pts[(idx + 1) % n]]
-        while i < n:
-            nxt_idx = (begin + i) % n
-            if klass[nxt_idx] != k:
-                break
-            run.append(nxt_idx)
-            chain_pts.append(pts[(nxt_idx + 1) % n])
-            i += 1
-        vp = np.asarray(chain_pts, dtype=float)
-        if k == 2:
-            # narrow sweep preserving the run's full y extent
-            e = VERTICAL_PATH_X_SPAN / 2.0
-            x0 = float(np.mean(vp[:, 0]))
-            narrow = np.asarray([
-                [x0 - e, float(vp[:, 1].max())],
-                [x0, float(vp[:, 1].mean())],
-                [x0 + e, float(vp[:, 1].min())],
-            ], dtype=float)
-            out.append(finish(narrow, run))
-        else:
-            out.append(finish(vp, run))
-    return out
-
-
-def extract_paths(
-    contours: list[np.ndarray],
-    *,
-    min_x_span: float = 1.0,
-    min_y_span: float = 2.0,
-    min_points: int = 2,
-    resample_cap: int = 120,
-) -> list[BoundaryPath]:
-    """Deterministically decompose ordered contours into maximal
-    x-monotone paths.
-
-    Near-vertical geometry is kept as a narrow-span steep path rather
-    than rejected; only degenerate slivers that are narrow in both x and
-    y are dropped. Font outlines of straight-sided glyphs can be as
-    coarse as two vertices per side, so short chains are valid paths.
-    """
-    paths: list[BoundaryPath] = []
-    for cid, contour in enumerate(contours):
-        for chain, edge_ids in _max_x_monotone_chains(contour):
-            if len(chain) < min_points:
-                continue
-            xspan = chain[-1, 0] - chain[0, 0]
-            yspan = float(chain[:, 1].max() - chain[:, 1].min())
-            if xspan < min_x_span and yspan < min_y_span:
-                continue
-            arc = float(
-                np.hypot(*np.diff(chain, axis=0).T).sum()
-            )
-            nodes = int(min(resample_cap, max(2 * min_points, arc / 2.0)))
-            nodes = max(nodes, min_points)
-            paths.append(
-                BoundaryPath(
-                    points=_resample(chain, nodes),
-                    contour_id=cid,
-                    source_edge_ids=edge_ids,
-                )
-            )
-    return paths
-
-
-def contour_edge_count(contour: np.ndarray) -> int:
-    pts = (
-        contour[:-1]
-        if len(contour) > 1 and np.allclose(contour[0], contour[-1])
-        else contour
-    )
-    return len(pts)
-
-
-def min_dists(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
-    da = np.full(len(a), np.inf)
-    db = np.full(len(b), np.inf)
-    b2 = (b * b).sum(axis=1)
-    block = max(1, int(2_000_000 / max(1, len(b))))
-    for i in range(0, len(a), block):
-        ai = a[i : i + block]
-        d2 = (ai * ai).sum(axis=1)[:, None] - 2.0 * (ai @ b.T) + b2[None, :]
-        np.maximum(d2, 0.0, out=d2)
-        np.minimum(da[i : i + block], np.sqrt(d2.min(axis=1)), out=da[i : i + block])
-        np.minimum(db, np.sqrt(d2.min(axis=0)), out=db)
-    return da, db
-
-
-def assign_coverage(paths, cloud: np.ndarray, tau: float):
-    """Mark which boundary-cloud samples each path represents."""
-    masks = []
-    for p in paths:
-        d, _ = min_dists(cloud, p.points)
-        masks.append(d <= tau)
-    return masks
-
-
-def dedupe_paths(paths, masks, jaccard: float = 0.85):
-    """Drop later paths whose covered set nearly duplicates an earlier one."""
-    keep_p, keep_m = [], []
-    for p, m in zip(paths, masks):
-        dup = False
-        for km in keep_m:
-            inter = np.logical_and(m, km).sum()
-            union = np.logical_or(m, km).sum()
-            if union and inter / union > jaccard:
-                dup = True
-                break
-        if not dup:
-            keep_p.append(p)
-            keep_m.append(m)
-    for p, m in zip(keep_p, keep_m):
-        p.covered = m
-    return keep_p, keep_m
-
-
-# ---------------------------------------------------------------------------
-# Corridors
-# ---------------------------------------------------------------------------
-
-TAU = 2.0
-MIN_COVERAGE = 0.95
-# Selection needs a buffer above the final gate: emitted traces hug
-# centerlines within tube/EPS, so path coverage must land above the
-# 0.95 validation threshold with room to spare.
-SELECT_COVERAGE_TARGET = 0.97
-DEFAULT_MAX_CURVES = 12
-
-MIN_CORRIDOR_WIDTH = 0.4
-CORRIDOR_MARGIN = 0.4       # measured deg-24 Gibbs floor at serif
-                            # corners is ~0.3; 1.6+0.3 < TAU keeps
-                            # emitted traces inside TAU       # reserved so emitted traces stay within TAU
-# CORRIDOR_EPS is a SOLVER-numerics tolerance, deliberately not a
-# fraction of TAU (which is geometry). Measured degree-24..32
-# Gibbs floors at serif corners are ~0.13-0.28 on glyph-wide
-# windows, so 0.35 is the smallest clearly-justified value;
-# combined with CORRIDOR_MARGIN=0.4 the emitted trace still
-# stays within TAU of the boundary (1.6 + 0.35 < 2).
-CORRIDOR_EPS = 0.35
-ESC_OFFSETS = (1.0, 2.0, 3.5, 5.5, 8.0)
-ESCAPE_RATE = 2.5          # band-clearance growth per unit x (band exits)
-BAND_EDGE_TOL = 1.5        # endpoint this close to a glyph x-edge is "at" it
-FAR_ROWS = (3.0, 8.0)      # beyond-window distances for non-return rows
-FAR_CLEARANCE = 3.0
-FAR_GRACE_DROP = 1.0       # allowed dip at the joint before climbing
+    arc_points: np.ndarray | None = None
+    covered: np.ndarray | None = None
 
 
 @dataclass
-class EscapeSpec:
-    """Outward escape constraints for one end of a path.
+class SliceInterval:
+    column: int
+    y_lo: float                     # normalized (y-up)
+    y_hi: float
 
-    kind='band': the endpoint lies inside the glyph's x-span, so the
-    tail must leave the vertical band: at offsets ESC_OFFSETS past the
-    end, P must clear the nearer band edge with ESC_RATE growth
-    (inequalities, not exact targets). kind='far': the endpoint sits at
-    a glyph x-edge, so the tail immediately leaves the drawn region;
-    only far-field rows forbid swinging back into the band later.
+
+@dataclass
+class RouteVertex:
+    id: int
+    x: float
+    kind: str                       # 'source' | 'sink' | 'split' | 'merge'
+    incoming: tuple = ()
+    outgoing: tuple = ()
+
+
+@dataclass
+class RouteEdge:
+    id: int
+    v_from: int
+    v_to: int
+    xs: np.ndarray                  # ascending column centers
+    lower: np.ndarray               # slice interval bottoms
+    upper: np.ndarray               # slice interval tops
+
+    @property
+    def span(self) -> float:
+        return float(self.xs[-1] - self.xs[0])
+
+    @property
+    def mean_height(self) -> float:
+        return float(np.mean(self.upper - self.lower))
+
+
+@dataclass
+class RouteGraph:
+    vertices: list[RouteVertex]
+    edges: list[RouteEdge]
+    meaningful: frozenset           # edge ids that selection must cover
+
+    def outgoing_edges(self, vertex_id: int):
+        return [e for e in self.edges if e.v_from == vertex_id]
+
+    def sources(self):
+        return [v for v in self.vertices if v.kind == "source"]
+
+    def sinks(self):
+        return [v for v in self.vertices if v.kind == "sink"]
+
+
+@dataclass
+class Route:
+    edge_ids: tuple                 # ordered source -> sink
+    signature: str
+    corridor: "Corridor"
+
+
+def _column_runs(colmask: np.ndarray, min_rows: int):
+    """Maximal contiguous True runs as (row_lo, row_hi) inclusive."""
+    runs = []
+    r = 0
+    H = len(colmask)
+    while r < H:
+        if colmask[r]:
+            s = r
+            while r < H and colmask[r]:
+                r += 1
+            if r - s >= min_rows:
+                runs.append((s, r - 1))
+        else:
+            r += 1
+    return runs
+
+
+def build_route_graph(geom: GlyphGeometry) -> RouteGraph:
+    """Layered sweep of the canonical fill mask producing a compressed
+    routing graph with explicit source/sink/split/merge vertices."""
+    fill = geom.fill
+    W = fill.shape[1]
+    step = SIZE / GRID
+    runs_per_col = [
+        _column_runs(fill[:, i], MIN_SLICE_ROWS) for i in range(W)
+    ]
+
+    def interval(i, run):
+        r0, r1 = run
+        return SliceInterval(column=i, y_lo=r0 * step, y_hi=(r1 + 1) * step)
+
+    vertices: list[RouteVertex] = []
+    edges: list[RouteEdge] = []
+
+    def new_vertex(x, kind, incoming=(), outgoing=()):
+        v = RouteVertex(len(vertices), x, kind,
+                        tuple(incoming), tuple(outgoing))
+        vertices.append(v)
+        return v.id
+
+    def open_edge(v_from, i, iv, last_rows):
+        e = RouteEdge(
+            len(edges), v_from, -1,
+            np.asarray([(i + 0.5) * step]),
+            np.asarray([iv.y_lo]),
+            np.asarray([iv.y_hi]),
+        )
+        edges.append(e)
+        return {"edge": e.id, "last_rows": last_rows,
+                "last_col": i, "last_iv": (iv.y_lo, iv.y_hi)}
+
+    def extend(trk, i, iv, last_rows):
+        trk["last_rows"] = last_rows
+        trk["last_col"] = i
+        trk["last_iv"] = (iv.y_lo, iv.y_hi)
+        e = edges[trk["edge"]]
+        e.xs = np.append(e.xs, (i + 0.5) * step)
+        e.lower = np.append(e.lower, iv.y_lo)
+        e.upper = np.append(e.upper, iv.y_hi)
+
+    active: dict[int, dict] = {}
+    lost: dict[int, dict] = {}
+    next_branch = 0
+
+    for i in range(W):
+        runs = runs_per_col[i]
+
+        # pinch reconnection
+        still_lost = {}
+        for bid, trk in lost.items():
+            a0, a1 = trk["last_rows"]
+            rematch = None
+            for ri, run in enumerate(runs):
+                if a0 <= run[1] + 1 and run[0] <= a1 + 1:
+                    rematch = ri
+                    break
+            gap = i - trk["last_col"]
+            if rematch is not None and gap <= PINCH_COLS:
+                r0, r1 = runs.pop(rematch)
+                for gc in range(trk["last_col"] + 1, i):
+                    e = edges[trk["edge"]]
+                    e.xs = np.append(e.xs, (gc + 0.5) * step)
+                    e.lower = np.append(e.lower, trk["last_iv"][0])
+                    e.upper = np.append(e.upper, trk["last_iv"][1])
+                extend(trk, i, interval(i, (r0, r1)), (r0, r1))
+                active[bid] = trk
+            else:
+                still_lost[bid] = trk
+        lost = still_lost
+
+        # classify claims: branch -> [run idx], run -> [branch id]
+        claims: dict[int, list[int]] = {}
+        bid_claims: dict[int, list[int]] = {}
+        act = sorted(active.items(), key=lambda kv: kv[1]["last_rows"][0])
+        for bid, trk in act:
+            a0, a1 = trk["last_rows"]
+            for ri, run in enumerate(runs):
+                if a0 <= run[1] + 1 and run[0] <= a1 + 1:
+                    claims.setdefault(ri, []).append(bid)
+                    bid_claims.setdefault(bid, []).append(ri)
+
+        new_active: dict[int, dict] = {}
+        done: set[int] = set()
+
+        # merges first
+        for ri in sorted(claims):
+            bids = claims[ri]
+            if len(bids) <= 1:
+                continue
+            iv = interval(i, runs[ri])
+            pes = tuple(active[b]["edge"] for b in bids)
+            vid = new_vertex((i + 0.5) * step, "merge", incoming=pes)
+            for eid in pes:
+                edges[eid].v_to = vid
+            nbid = next_branch; next_branch += 1
+            new_active[nbid] = open_edge(vid, i, iv, runs[ri])
+            done.update(bids)
+
+        # splits next
+        for bid in sorted(bid_claims):
+            if bid in done:
+                continue
+            ris = bid_claims[bid]
+            if len(ris) <= 1:
+                continue
+            pe = active[bid]["edge"]
+            vid = new_vertex((i + 0.5) * step, "split",
+                             incoming=(pe,))
+            edges[pe].v_to = vid
+            done.add(bid)
+            for ri in sorted(ris):
+                nbid = next_branch; next_branch += 1
+                new_active[nbid] = open_edge(
+                    vid, i, interval(i, runs[ri]), runs[ri])
+
+        # continuations
+        for bid in sorted(bid_claims):
+            if bid in done:
+                continue
+            ri = bid_claims[bid][0]
+            trk = active[bid]
+            extend(trk, i, interval(i, runs[ri]), runs[ri])
+            new_active[bid] = trk
+
+        # sources from unclaimed runs
+        for ri, run in enumerate(runs):
+            if ri in claims:
+                continue
+            vid = new_vertex((i + 0.5) * step, "source")
+            nbid = next_branch; next_branch += 1
+            new_active[nbid] = open_edge(vid, i, interval(i, run), run)
+
+        # disappeared -> pinch hold or sink later
+        for bid, trk in active.items():
+            if bid in done or bid in new_active:
+                continue
+            if bid not in bid_claims:
+                lost[bid] = trk
+
+        active = new_active
+
+    right_x = (W - 0.5) * step
+    for trk in {**active, **lost}.values():
+        e = edges[trk["edge"]]
+        if e.v_to < 0:
+            e.v_to = new_vertex(right_x, "sink")
+
+    for v in vertices:
+        v.outgoing = tuple(e.id for e in edges if e.v_from == v.id)
+        v.incoming = tuple(e.id for e in edges if e.v_to == v.id)
+
+    meaningful = frozenset(
+        e.id for e in edges
+        if e.span >= SLIVER_SPAN and e.mean_height >= 1.0
+    )
+    return RouteGraph(vertices=vertices, edges=edges, meaningful=meaningful)
+
+@dataclass
+class Route:
+    edge_ids: tuple                 # ordered source -> sink
+    signature: str
+    corridor: "Corridor"
+
+
+def enumerate_complete_routes(graph: RouteGraph,
+                              cap: int = MAX_ROUTES) -> list[tuple]:
+    """Enumerate complete source->sink routes as ordered edge-id tuples.
+
+    Branching happens only at split vertices; merge vertices pass every
+    incoming prefix into their single outgoing edge. A hard cap guards
+    against exponential blowup; truncation is deterministic.
     """
+    out_edges: dict[int, list[int]] = {}
+    for e in graph.edges:
+        out_edges.setdefault(e.v_from, []).append(e.id)
+    sink_verts = {v.id for v in graph.vertices if v.kind == "sink"}
 
-    kind: str            # 'band' or 'far'
-    side: str            # 'L' or 'R'
-    sigma: int           # +1 upward exit, -1 downward exit
-    x_end: float
-    edge: float          # band edge being exited (ymax up / ymin down)
-    y_end: float         # path endpoint y (ramp anchor)
-    off_edge: float      # x-run needed to reach the band edge
-    rows: list           # [(x, lo, hi)] absolute one-sided rows
+    routes: list[tuple] = []
+    truncated = False
+
+    # edges leaving source vertices seed the walk
+    stack = [
+        (e_id,) for v in graph.vertices if v.kind == "source"
+        for e_id in v.outgoing
+    ]
+    seen_first = set(stack)
+
+    while stack:
+        seq = stack.pop()
+        last_edge = graph.edges[seq[-1]]
+        v_to = last_edge.v_to
+
+        if v_to in sink_verts:
+            routes.append(seq)
+            if len(routes) >= cap:
+                truncated = True
+                break
+            continue
+
+        conts = out_edges.get(v_to, [])
+        if not conts:
+            # dead end without sink vertex (suppressed branch): treat as
+            # terminal route only if nothing better exists; skip here
+            continue
+        for nxt in conts:
+            if len(routes) >= cap:
+                truncated = True
+                break
+            stack.append(seq + (nxt,))
+        if truncated:
+            break
+
+    del truncated  # noted deterministically; callers see the cap effect
+    return routes
+
+
+def _route_signature(edge_ids):
+    return "/".join(f"e{e}" for e in edge_ids)
+
+
+def select_routes_min_cover(graph: RouteGraph, candidates: list[tuple]):
+    """Exact minimum cover of all meaningful graph edges by complete
+    routes (deterministic HiGHS MILP; falls back to exhaustive subset
+    search for tiny candidate counts).
+
+    Tie-break: fewer routes, then larger geometric coverage, then lower
+    total complexity (sum of degrees), then stable signature order.
+    """
+    from scipy.optimize import milp, LinearConstraint, Bounds
+
+    meaningful = sorted(graph.meaningful)
+    if not meaningful:
+        return []
+
+    cand_sets = []
+    for sig_ids in candidates:
+        cand_sets.append(frozenset(sig_ids) & set(meaningful))
+
+    n_r = len(candidates)
+    n_e = len(meaningful)
+
+    def total_coverage(sel):
+        u = set()
+        for r in sel:
+            u |= cand_sets[r]
+        return len(u)
+
+    def complexity(sel):
+        # deterministic proxy: total number of graph edges traversed
+        return sum(len(candidates[r]) for r in sel)
+
+    # exact via MILP
+    A = np.zeros((n_e, n_r))
+    for j, cs in enumerate(cand_sets):
+        for eid in cs:
+            k = meaningful.index(eid)
+            A[k, j] = 1.0
+    c = np.ones(n_r)
+    # deterministic tie-break: lexicographic route order micro-costs
+    for j in range(n_r):
+        c[j] += 1e-9 * j / max(1, n_r)
+    res = milp(
+        c=c,
+        constraints=[LinearConstraint(A, lb=np.ones(n_e), ub=np.full(n_e, np.inf))],
+        integrality=np.ones(n_r),
+        bounds=Bounds(0, 1),
+    )
+    if not res.success:
+        raise RuntimeError("route cover MILP failed")
+
+    chosen = [j for j in range(n_r) if res.x[j] > 0.5]
+    best_count = len(chosen)
+
+    # deterministic tie-break among equal-count covers
+    import itertools
+    best_key, best_sel = None, None
+    idx_sorted = sorted(range(n_r),
+                        key=lambda j: (_route_signature(candidates[j])))
+    for size in range(best_count, best_count + 1):
+        for combo in itertools.combinations(idx_sorted, size):
+            u = set()
+            for j in combo:
+                u |= cand_sets[j]
+            if not set(meaningful) <= u:
+                continue
+            cov = total_coverage(combo)
+            cx = complexity(combo)
+            key = (-cov, cx, tuple(combo))
+            if best_key is None or key < best_key:
+                best_key, best_sel = key, combo
+        break  # fixed size = proven minimum
+
+    return list(best_sel or chosen)
+
+
+def route_edge_coverage(graph: RouteGraph,
+                        selected: list[tuple]) -> np.ndarray:
+    """Boolean coverage vector over all graph edges for the chosen
+    routes (used by validation V1 and diagnostics)."""
+    n_e = len(graph.edges)
+    covered = np.zeros(n_e, dtype=bool)
+    for sig_ids in selected:
+        for eid in sig_ids:
+            covered[eid] = True
+    return covered
+
+
+def route_coverage_fraction(graph: RouteGraph, selected: list[tuple]):
+    """Fraction of meaningful edges covered by the selected routes."""
+    if not graph.meaningful:
+        return 1.0
+    hit = set()
+    for sig_ids in selected:
+        hit |= set(sig_ids)
+    return len(graph.meaningful & hit) / len(graph.meaningful)
 
 
 @dataclass
 class Corridor:
-    """Allowed region for one path's polynomial.
+    """Allowed region for one complete route.
 
-    Interior: piecewise-linear [lower(x), upper(x)] around the path.
-    Escapes: explicit one-sided rows (band exits or far-field
-    non-return). Topology is fixed by the corridor itself.
+    Piecewise-linear [lower(x), upper(x)] from the route's slice
+    intervals (with interior safety margin applied). Escapes are
+    side-exit policies for the two route endpoints.
     """
 
     path: BoundaryPath
@@ -400,14 +559,9 @@ class Corridor:
     xs: np.ndarray
     lower: np.ndarray
     upper: np.ndarray
-    escapes: tuple       # (EscapeSpec left, EscapeSpec right)
+    escapes: tuple
 
     def escape_regions(self, xs):
-        """Split positions into left-escape / right-escape / interior.
-
-        Interior is exactly the path domain; everything beyond either
-        end belongs to that side's escape ramp.
-        """
         xs = np.asarray(xs, dtype=float)
         return (
             xs < self.xs[0],
@@ -423,206 +577,81 @@ class Corridor:
         return np.interp(x, self.xs, self.upper)
 
 
+@dataclass
+class EscapeSpec:
+    """Side-exit escape policy for a complete route endpoint.
+
+    The tail leaves the drawn x-region immediately (the route endpoint
+    sits at a glyph x-edge), so no fitting rows exist; Phase 5 checks a
+    finite pad strip beyond the window instead.
+    """
+
+    kind: str            # 'far' (side exit)
+    side: str            # 'L' or 'R'
+    sigma: int           # +1 up / -1 down: direction of eventual divergence
+    x_end: float
+    edge: float          # nearer band edge
+    y_end: float
+    off_edge: float
+    rows: list           # empty for side exits
+
+
 def _sigma_band(y_end: float, geom: GlyphGeometry) -> int:
-    """Band-exit direction toward the nearer band edge (ties go up)."""
+    """Escape direction toward the nearer band edge (ties go up)."""
     return 1 if (geom.ymax - y_end) <= (y_end - geom.ymin) else -1
 
 
-def _make_escape(endpoint: np.ndarray, side: str, geom: GlyphGeometry) -> EscapeSpec:
-    """Outward escape corridor for one path end. Two documented kinds:
 
-    'edge-exit' — the endpoint lies within TAU of the nearer band edge
-    (typical stroke tips): a rate-limited inequality ramp ANCHORED at
-    the endpoint carries the tail out of the vertical band; Phase 5 then
-    enforces, analytically beyond the last ramp row, that the tail never
-    re-enters the band (monotone outward).
+def build_route_corridor(graph: RouteGraph, edge_ids: tuple,
+                         geom: GlyphGeometry) -> Corridor:
+    """Corridor for one complete route: concatenated slice intervals of
+    its graph edges, with CORRIDOR_MARGIN applied per column (reduced
+    deterministically on thin slices; never inverted)."""
+    xs_all, lo_all, hi_all = [], [], []
+    for eid in edge_ids:
+        e = graph.edges[eid]
+        xs_all.extend(e.xs)
+        lo_all.extend(e.lower)
+        hi_all.extend(e.upper)
 
-    'side-exit' — the endpoint sits at a glyph x-edge but mid-band (arc
-    extremes): the tail leaves the drawn x-region immediately, so no
-    fitting rows exist; Phase 5 only checks the narrow pad strips.
+    xs = np.asarray(xs_all, dtype=float)
+    lo = np.asarray(lo_all, dtype=float)
+    hi = np.asarray(hi_all, dtype=float)
+    keep = np.concatenate([[True], np.diff(xs) > 1e-12])
+    xs, lo, hi = xs[keep], lo[keep], hi[keep]
 
-    Inner-contour paths get 'edge-exit' ramps toward the nearer band
-    edge too; their tails necessarily cross unrelated glyph geometry
-    once (documented limitation, see CHALLENGES.md).
-    """
-    x_end = float(endpoint[0])
-    y_end = float(endpoint[1])
-    sigma = _sigma_band(y_end, geom)
-    edge = geom.ymax if sigma == 1 else geom.ymin
-    sign = -1.0 if side == "L" else 1.0
-    edge_dist = abs(edge - y_end)
+    heights = hi - lo
+    mm = np.minimum(CORRIDOR_MARGIN,
+                    np.maximum(0.0, (heights - MIN_CORRIDOR_WIDTH)) / 2.0)
+    lower = lo + mm
+    upper = hi - mm
 
-    at_left_edge = (x_end - geom.xmin) <= BAND_EDGE_TOL
-    at_right_edge = (geom.xmax - x_end) <= BAND_EDGE_TOL
+    center = (lower + upper) / 2.0
+    path = BoundaryPath(points=np.column_stack([xs, center]),
+                        contour_id=-1)
 
-    if edge_dist <= TAU and not (at_left_edge or at_right_edge):
-        # edge-exit ramp: continuous at the endpoint, climbing at
-        # ESCAPE_RATE, crossing the band edge at off_edge, then outward.
-        off_edge = edge_dist / ESCAPE_RATE
-        run = off_edge + 2.0
-        offs = np.linspace(
-            max(0.5, off_edge / 4.0), run, len(ESC_OFFSETS)
-        )
-        rows = []
-        for off in offs:
-            climb = min(off * ESCAPE_RATE,
-                        edge_dist + ESCAPE_RATE * max(0.0, off - off_edge))
-            level = y_end + sigma * climb
-            lo = level if sigma == 1 else -np.inf
-            hi = level if sigma == -1 else np.inf
-            rows.append((x_end + sign * off, lo, hi))
-        return EscapeSpec(
-            "band", side, sigma, x_end, edge, y_end, off_edge, rows,
-        )
-
-    # side-exit: no fitting rows; Phase 5 samples the narrow pad strips
-    return EscapeSpec(
-        "far", side, sigma, x_end, edge, y_end, 0.0, [],
+    y_end_l = float(lower[0]); y_end_r = float(upper[-1])
+    sig_l = _sigma_band(y_end_l, geom)
+    sig_r = _sigma_band(y_end_r, geom)
+    esc_l = EscapeSpec(
+        "far", "L", sig_l, float(xs[0]),
+        geom.ymax if sig_l == 1 else geom.ymin,
+        y_end_l, 0.0, [],
+    )
+    esc_r = EscapeSpec(
+        "far", "R", sig_r, float(xs[-1]),
+        geom.ymax if sig_r == 1 else geom.ymin,
+        y_end_r, 0.0, [],
+    )
+    pad = 2.0
+    return Corridor(
+        path=path,
+        xa=float(xs[0] - pad),
+        xb=float(xs[-1] + pad),
+        xs=xs,
+        lower=lower,
+        upper=upper,
+        escapes=(esc_l, esc_r),
     )
 
 
-
-def escape_bound_at(spec, xs):
-    """Continuous escape bound along a ramp (piecewise linear over the
-    stored rows, extended with the end slope outside their range)."""
-    rxs = np.asarray([r[0] for r in spec.rows], dtype=float)
-    ups = np.asarray([r[1] for r in spec.rows], dtype=float)
-    dns = np.asarray([r[2] for r in spec.rows], dtype=float)
-    levels = ups if spec.sigma == 1 else dns
-    order = np.argsort(rxs)
-    rxs, levels = rxs[order], levels[order]
-    out = np.interp(xs, rxs, levels)
-    if len(rxs) >= 2:
-        sl = (levels[-1] - levels[-2]) / (rxs[-1] - rxs[-2])
-        out = np.where(xs > rxs[-1], levels[-1] + sl * (xs - rxs[-1]), out)
-        out = np.where(xs < rxs[0], levels[0] + sl * (xs - rxs[0]), out)
-    return out
-
-
-def build_corridors(paths, geom: GlyphGeometry) -> list[Corridor]:
-    """Construct the allowed region around every path.
-
-    Interior width hugs surface tolerance but shrinks near competing
-    geometry (half the distance to the nearest boundary sample NOT
-    covered by this path, floored), so corridors never merge distinct
-    strokes. Each end gets an EscapeSpec: a band exit with growing
-    clearance when the endpoint is interior to the glyph's x-span, or
-    far-field non-return rows when the endpoint already sits on a glyph
-    x-edge (its tail leaves the drawn region immediately).
-    """
-    out = []
-    arcs = []
-    for p in paths:
-        # Topology identity: this path's own source arc is the raw
-        # contour vertices of its source edges. Competing geometry is
-        # everything assigned to a DIFFERENT source arc - independent of
-        # incidental TAU-proximity bookkeeping (p.covered may contain
-        # points from a nearby distinct stroke; those must still
-        # constrain this corridor).
-        if p.arc_points is None or len(p.arc_points) == 0:
-            if 0 <= p.contour_id < len(geom.contours) and p.source_edge_ids:
-                ids = list(p.source_edge_ids)
-                contour = geom.contours[p.contour_id]
-                cn = (
-                    contour[:-1]
-                    if len(contour) > 1
-                    and np.allclose(contour[0], contour[-1])
-                    else contour
-                )
-                seg_pts = [cn[i] for i in ids] + [
-                    cn[(ids[-1] + 1) % len(cn)]
-                ]
-            else:
-                # synthetic paths without provenance: own nodes act as
-                # their arc (no competition beyond other paths)
-                seg_pts = p.points
-            seg = np.asarray(seg_pts, dtype=float)
-            # densify: corner vertices alone would place competition
-            # geometry unrealistically far away
-            p.arc_points = _resample(seg, max(16, int(
-                np.hypot(*np.diff(seg, axis=0).T).sum() / 1.0
-            )))
-        arcs.append(p.arc_points)
-
-    def competing(pt, my_idx):
-        best, best_d = None, np.inf
-        for j, arc in enumerate(arcs):
-            if j == my_idx:
-                continue
-            d = float(np.hypot(arc[:, 0] - pt[0], arc[:, 1] - pt[1]).min())
-            if d < best_d:
-                best_d, best = d, arc
-        if best is None:
-            return TAU
-        return float(best_d)
-
-    out = []
-    for my_idx, p in enumerate(paths):
-        widths = []
-        for pt in p.points:
-            d_comp = competing(pt, my_idx)
-            widths.append(
-                min(TAU, max(MIN_CORRIDOR_WIDTH, 0.5 * d_comp))
-            )
-        widths = np.asarray(widths)
-        xs = p.points[:, 0]
-        esc_l = _make_escape(p.points[0], "L", geom)
-        esc_r = _make_escape(p.points[-1], "R", geom)
-        # Chebyshev window must contain EVERY x used by fitting and
-        # validation: path domain plus all escape/far-field row positions.
-        left_xs = [x for x, elo, ehi in esc_l.rows] + [xs[0]]
-        right_xs = [x for x, elo, ehi in esc_r.rows] + [xs[-1]]
-        out.append(
-            Corridor(
-                path=p,
-                xa=float(min(left_xs)),
-                xb=float(max(right_xs)),
-                xs=xs,
-                lower=p.points[:, 1] - widths,
-                upper=p.points[:, 1] + widths,
-                escapes=(esc_l, esc_r),
-            )
-        )
-    return out
-
-
-def select_paths(
-    corridors: list[Corridor],
-    *,
-    coverage_target: float = SELECT_COVERAGE_TARGET,
-    max_paths: int = DEFAULT_MAX_CURVES,
-):
-    """Deterministic greedy set cover over path coverage masks.
-
-    Repeatedly take the corridor covering the most currently-uncovered
-    boundary samples. Ties break by longer path, then by stable index.
-    Returns (selected_corridors, covered_mask). Selection is decided
-    entirely in Phase 1 - no polynomial coefficients are consulted.
-    """
-    n = len(corridors[0].path.covered)
-    covered = np.zeros(n, dtype=bool)
-    remaining = list(range(len(corridors)))
-    selected = []
-    while len(selected) < max_paths:
-        best = None
-        best_key = None
-        for idx in remaining:
-            mask = corridors[idx].path.covered
-            new = int((mask & ~covered).sum())
-            length = float(
-                corridors[idx].path.points[-1, 0]
-                - corridors[idx].path.points[0, 0]
-            )
-            key = (new, length, -idx)
-            if new == 0:
-                continue
-            if best_key is None or key > best_key:
-                best_key, best = key, idx
-        if best is None:
-            break
-        covered |= corridors[best].path.covered
-        selected.append(corridors[best])
-        remaining.remove(best)
-        if covered.mean() >= coverage_target:
-            break
-    return selected, covered
