@@ -212,7 +212,7 @@ def fit_degree(corridor: Corridor, degree: int) -> PathFit | None:
         return None
 
     A_d, lo_d, hi_d = _constraint_set(corridor, degree,
-                                      n_int=FIT_GRID, n_esc=120)
+                                      n_int=DENSE_GRID // 3, n_esc=200)
     coef, dviol = _project_feasible(A_d, lo_d, hi_d, coef)
 
     dv = _dense_violation(corridor, coef)
