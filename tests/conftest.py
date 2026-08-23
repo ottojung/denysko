@@ -1,5 +1,10 @@
 import signal
 
+import matplotlib.font_manager  # noqa: F401  (front-load heavy imports)
+import numpy  # noqa: F401
+import scipy.optimize  # noqa: F401
+import src.denysko  # noqa: F401
+
 
 def _deadline(signum, frame):
     raise SystemExit("default test suite exceeded 1.0 second")

@@ -25,10 +25,13 @@ from scipy.optimize import linprog
 from numpy.polynomial import chebyshev as cheb
 
 from src.topology import (
-    Corridor, TAU, ESC_OFFSETS, ESCAPE_RATE, CORRIDOR_MARGIN, CORRIDOR_EPS,
-    escape_bound_at,
+    Corridor,
+    TAU,
+    ESC_OFFSETS,
+    ESCAPE_RATE,
+    CORRIDOR_MARGIN,
+    CORRIDOR_EPS,
 )
-
 INITIAL_FIT_DEGREE = 24   # measured: deg-20 rings ~0.34 inside tight
                           # tubes on wide windows; 24 halves it
 FIT_GRID = 128           # constraint samples across the whole window
@@ -214,7 +217,7 @@ def fit_degree(corridor: Corridor, degree: int) -> PathFit | None:
         return None
 
     A_d, lo_d, hi_d = _constraint_set(corridor, degree,
-                                      n_int=DENSE_GRID // 3, n_esc=200)
+                                      n_int=DENSE_GRID, n_esc=200)
     coef, dviol = _project_feasible(A_d, lo_d, hi_d, coef)
 
     dv = _dense_violation(corridor, coef)
@@ -243,27 +246,20 @@ def fit_degree(corridor: Corridor, degree: int) -> PathFit | None:
 def min_degree(corridor: Corridor, hi: int = INITIAL_FIT_DEGREE) -> PathFit | None:
     """Lowest VERIFIED feasible degree inside the unchanged corridor.
 
-    fit_degree is a numerical oracle and its success can be non-monotone
-    in degree, so: verify hi; binary-search an approximate bound; then
-    deterministically sweep downward from the best known degree until
-    the first failure, returning the lowest verified feasible fit.
+    fit_degree is a numerical oracle whose success can be non-monotone
+    in degree. Degrees are probed exhaustively from 0 upward using the
+    cheap LP-feasibility stage only; the full verified pipeline runs at
+    the first promising degree (the scan continues upward if dense
+    verification rejects it). The result is the lowest VERIFIED
+    feasible degree.
     """
-    top = fit_degree(corridor, hi)
-    if top is None:
-        return None
-    lo, hi_, best = 0, hi, top
-    while lo < hi_:
-        mid = (lo + hi_) // 2
-        trial = fit_degree(corridor, mid)
-        if trial is None:
-            lo = mid + 1
-        else:
-            hi_, best = mid, trial
-    d = best.degree
-    while d > 0:
-        lower = fit_degree(corridor, d - 1)
-        if lower is None:
-            break
-        best, d = lower, d - 1
-    assert best.degree == d
-    return best
+    for d in range(0, hi + 1):
+        c0 = _weighted_init(corridor, d)
+        A, lo, hi_b = _constraint_set(corridor, d)
+        _, viol = _project_feasible(A, lo, hi_b, c0)
+        if not np.isfinite(viol) or viol > 1e5:
+            continue
+        fit = fit_degree(corridor, d)
+        if fit is not None:
+            return fit
+    return None
