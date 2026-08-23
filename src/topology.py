@@ -126,11 +126,22 @@ def glyph_geometry(letter: str) -> GlyphGeometry:
 
 @dataclass
 class BoundaryPath:
-    """One maximal x-monotone boundary route (points sorted by x)."""
+    """One maximal x-monotone boundary route (points sorted by x).
+
+    source_edge_ids records which original contour edges (indices into
+    the contour's edge cycle) this path represents, so the invariant
+    "every non-degenerate contour edge belongs to exactly one path" is
+    checkable. Vertical runs are represented as narrow monotone paths
+    with VERTICAL_PATH_X_SPAN total x-width centered on the true edge.
+    """
 
     points: np.ndarray
     contour_id: int
+    source_edge_ids: tuple
     covered: np.ndarray | None = None
+
+
+VERTICAL_PATH_X_SPAN = 0.5
 
 
 def _resample(points: np.ndarray, target: int) -> np.ndarray:
@@ -153,12 +164,16 @@ def _resample(points: np.ndarray, target: int) -> np.ndarray:
 
 
 def _max_x_monotone_chains(loop: np.ndarray, eps: float = 1e-9):
-    """Split a closed ordered loop into maximal x-monotone open chains.
+    """Split a closed ordered loop into maximal x-monotone chains.
 
-    Edges are grouped by travel direction cyclically, so every outline
-    edge — including the one crossing the rotation seam — belongs to
-    exactly one chain. Chains moving in decreasing x are reversed so
-    all paths come out sorted by increasing x.
+    Returns a list of (points, source_edge_ids). Edge classification is
+    cyclic over all N edges; horizontal runs group same-direction edges,
+    and maximal runs of exactly-vertical edges become narrow monotone
+    paths instead of being discarded. Only zero-length edges (dx == dy
+    == 0) are degenerate and dropped, and that rule is documented here.
+
+    Chains moving in decreasing x are reversed so every chain is sorted
+    by increasing x.
     """
     pts = loop[:-1] if len(loop) > 1 and np.allclose(loop[0], loop[-1]) else loop
     n = len(pts)
@@ -166,32 +181,60 @@ def _max_x_monotone_chains(loop: np.ndarray, eps: float = 1e-9):
         return []
     nxt = (np.arange(n) + 1) % n
     dx = pts[nxt, 0] - pts[:, 0]
+    dy = pts[nxt, 1] - pts[:, 1]
     direction = np.where(dx > eps, 1, np.where(dx < -eps, -1, 0))
 
-    chains: list[np.ndarray] = []
-    # deterministic cycle start: first edge after the global x-min vertex
+    def finish(points, edge_ids):
+        points = points.copy()
+        if points[-1, 0] < points[0, 0]:
+            points = points[::-1].copy()
+            edge_ids = edge_ids[::-1]
+        return (points, tuple(edge_ids))
+
+    out = []
     begin = int(np.argmin(pts[:, 0]))
     i = 0
     while i < n:
         idx = (begin + i) % n
         d = direction[idx]
         i += 1
+        if dx[idx] == 0.0 and abs(dy[idx]) <= eps:
+            continue  # degenerate zero-length edge (documented rule)
         if d == 0:
+            # maximal vertical run: consume consecutive vertical edges
+            run = [idx]
+            vpts = [pts[idx], pts[(idx + 1) % n]]
+            while i < n:
+                nxt_idx = (begin + i) % n
+                if direction[nxt_idx] != 0 or not (
+                    abs(dx[nxt_idx]) <= eps
+                ):
+                    break
+                run.append(nxt_idx)
+                vpts.append(pts[(nxt_idx + 1) % n])
+                i += 1
+            vp = np.asarray(vpts, dtype=float)
+            # graph-compatible narrow sweep across the full vertical run
+            e = VERTICAL_PATH_X_SPAN / 2.0
+            x0 = float(np.mean(vp[:, 0]))
+            narrow = np.asarray([
+                [x0 - e, float(vp[:, 1].max())],
+                [x0, float(vp[:, 1].mean())],
+                [x0 + e, float(vp[:, 1].min())],
+            ], dtype=float)
+            out.append(finish(narrow, run))
             continue
         run = [idx]
+        chain_pts = [pts[idx], pts[(idx + 1) % n]]
         while i < n:
             nxt_idx = (begin + i) % n
             if direction[nxt_idx] != d:
                 break
             run.append(nxt_idx)
+            chain_pts.append(pts[(nxt_idx + 1) % n])
             i += 1
-        last = (run[-1] + 1) % n
-        chain = pts[run + [last]].copy()
-        if chain[-1, 0] < chain[0, 0]:
-            chain = chain[::-1].copy()
-        if len(chain) >= 2:
-            chains.append(chain)
-    return chains
+        out.append(finish(np.asarray(chain_pts, dtype=float), run))
+    return out
 
 
 def extract_paths(
@@ -212,7 +255,7 @@ def extract_paths(
     """
     paths: list[BoundaryPath] = []
     for cid, contour in enumerate(contours):
-        for chain in _max_x_monotone_chains(contour):
+        for chain, edge_ids in _max_x_monotone_chains(contour):
             if len(chain) < min_points:
                 continue
             xspan = chain[-1, 0] - chain[0, 0]
@@ -225,9 +268,22 @@ def extract_paths(
             nodes = int(min(resample_cap, max(2 * min_points, arc / 2.0)))
             nodes = max(nodes, min_points)
             paths.append(
-                BoundaryPath(points=_resample(chain, nodes), contour_id=cid)
+                BoundaryPath(
+                    points=_resample(chain, nodes),
+                    contour_id=cid,
+                    source_edge_ids=edge_ids,
+                )
             )
     return paths
+
+
+def contour_edge_count(contour: np.ndarray) -> int:
+    pts = (
+        contour[:-1]
+        if len(contour) > 1 and np.allclose(contour[0], contour[-1])
+        else contour
+    )
+    return len(pts)
 
 
 def min_dists(a: np.ndarray, b: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
