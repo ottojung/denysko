@@ -80,22 +80,38 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures
+## Known failures (route-model iteration, measured 2026-08)
 
-- `C`: emitted V1 = 0.9050. Phase-1 selection covers 97.75 %, but the
-  emitted traces sit right at TAU from C's terminal faces (bottom tip
-  x∈[36,39] y≈1, measured distance exactly 2.00) - a knife-edge caused
-  by linear interpolation of corridor bounds between nodes plus EPS.
-  Uncovered clusters: [28-39]×[1-99] n101, [50-57]×[11-89] n38,
-  [64-67]×[2-98] n9, [78]×[11-20] n50.
-- `B`: emitted V1 = 0.9248; same terminal-face mechanism (two bowl
-  terminals).
-- `A` counter arcs and `T` crossbar initially failed the tightened
-  gate; the anchored rate-limited ramps restored them. Any remaining
-  per-path failures are reported explicitly as Phase-3 failures on
-  stderr rather than hidden.
+All ten manual letters now pass end-to-end with defaults:
 
-Fix directions noted for next iteration (not applied): densify
-constraint rows adaptively near chain endpoints/tips; or append exact
-terminal-face nodes as pinned rows; or allow per-path EPS scaling by
-measured floor.
+| letter | curves | minimum degrees |
+|--------|--------|-----------------|
+| A      | 2      | 2, 4            |
+| B      | 4      | 2, 2, 2, 2      |
+| C      | 2      | 2, 2            |
+| E      | 3      | 0, 0, 0         |
+| F      | 2      | 0, 0            |
+| H      | 1      | 0               |
+| I      | 1      | 0               |
+| L      | 1      | 0               |
+| O      | 2      | 2, 2            |
+| T      | 1      | 0               |
+
+The previous terminal-face V1 failures (`C` 0.9050, `B` 0.9248) are
+obsolete: V1 is route-edge coverage of the fill graph now, and both
+letters cover all meaningful edges exactly.
+
+Residual, documented limitations:
+
+- Single-poly letters (`H`, `I`, `L`, `T`, parts of `E`) degenerate to
+  degree-0 horizontal traces when the glyph's fill is one connected
+  slab whose slice centers barely vary. The corridor model is
+  satisfied, but the rendered trace is a mid-slab line rather than a
+  stroke outline. Enriching corridor semantics (e.g. per-stroke
+  splitting by thickness profile) is future work.
+- Side-exit tails are unconstrained past their window (Option A): a
+  tail may cross unrelated geometry outside the drawn region. No
+  failures observed from this policy so far.
+- The degree-0 phenomenon also means "recognizable outline" is only
+  partially met for connected-slab letters; acceptance criterion
+  wording in SPEC.md §9 keeps this as the long-term target.

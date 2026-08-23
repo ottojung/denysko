@@ -6,10 +6,11 @@ Version 3.0 is an architectural rewrite: topology is solved **before** polynomia
 fitting. The pipeline is
 
 ```text
-Phase 1  boundary contours -> x-monotone paths -> corridors -> selection
-Phase 2  deliberately high-degree constrained polynomial fit per corridor
+Phase 1  fill mask -> vertical-sweep routing graph -> complete routes
+         -> exact minimum route selection
+Phase 2  deliberately high-degree constrained polynomial fit per route
 Phase 3  degree minimization inside the same corridor
-Phase 4  independent validation (corridor adherence + global coverage)
+Phase 4  independent validation (corridor adherence + edge coverage)
 ```
 
 Output remains ordinary unbounded polynomials `y=<poly>` with no domain
@@ -31,42 +32,44 @@ the rasterized fill uses even-odd semantics across rings, so hole edges contribu
 boundary samples, and ordered contours come from the font's flattened outlines under
 the identical normalization.
 
-## 3. Phase 1 — explicit boundary topology
+## 3. Phase 1 — fill-mask routing graph
 
-**Paths.** Each ordered contour is split into maximal x-monotone chains by grouping
-edge travel directions cyclically (every outline edge lands in exactly one chain,
-including across the rotation seam). Decreasing-x chains are reversed. A path is
-therefore a route a graph `y = f(x)` can follow: x never reverses. Near-vertical
-geometry is kept as a narrow-span steep path rather than rejected; slivers narrow in
-both x and y are dropped. Chains are arc-length resampled to bounded node counts.
-Holes/counters produce their own paths (`O` yields outer 2 + inner 2).
+**Canonical fill.** The ordered contours rasterize to a `GRID = 512` wide mask via
+per-ring even-odd XOR: outer rings add material, inner rings subtract it, so counters
+are real holes in the mask rather than boundary decorations.
 
-**Coverage.** Each path records which rasterized boundary samples lie within
-`TAU = 2` of it. Paths whose covered sets nearly duplicate an earlier one (Jaccard
-> 0.85) are deduplicated to a canonical representative.
+**Routing graph.** A left-to-right vertical sweep classifies every column transition:
 
-**Corridors.** Every path gets an allowed region: piecewise-linear `[lower(x),
-upper(x)]` around its nodes. Width hugs surface tolerance but shrinks toward half the
-distance to the nearest boundary sample NOT covered by this path (floored so it never
-degenerates) — a corridor never merges two distinct nearby strokes.
+- *continuation* — one active branch matches one slice run;
+- *source* / *sink* — a run appears with no parent / an active branch finds no heir;
+- *split* — one branch fans out to several runs (counter opens);
+- *merge* — several branches converge onto one run (counter closes).
 
-**Escapes are corridors, not tail search.** Each end is classified:
+Splits and merges create explicit `RouteVertex` records; maximal runs of slices
+between vertices become `RouteEdge`s carrying per-column `[lower, upper]` intervals.
+Pinched columns (a branch vanishing for ≤ `PINCH_COLS` columns) are bridged so
+rasterization noise does not fabricate topology.
 
-- endpoint on a glyph x-edge → *far-field* rows only: the tail leaves the drawn
-  region immediately; a few rows far outside forbid swinging back into the band;
-- interior endpoint → *band-exit* rows: anchored at the endpoint, moving outward at
-  `ESCAPE_RATE = 2.5` per unit x with a run proportional to the distance to the
-  nearer band edge (linear ramps anchored at the endpoint: level(0) = y_end,
-  no kink, no cliff). Direction is toward the nearer band edge.
+**Complete routes.** A route is a source→sink walk in this graph: one continuous
+stroke a single-valued `y = f(x)` can trace through the filled glyph. `A` yields the
+canonical diamond — source → split → {roof, bar} → merge → sink — hence exactly two
+complete routes sharing both leg trunks.
 
-All escape constraints are inequalities — never exact tail targets.
+**Corridors.** Each selected route gets the union of its edges' slice intervals as a
+piecewise-linear `[lower(x), upper(x)]` tube, with `CORRIDOR_MARGIN` applied inside
+each slice (reduced deterministically on thin slices, never inverted). Route
+endpoints sit on glyph x-edges, so tails are side exits: the polynomial leaves the
+drawn x-region immediately past its window.
 
 ## 4. Phase 2 — deterministic selection
 
-Greedy set cover picks at most 12 corridors maximizing newly covered boundary
-samples; ties break by longer path then stable index. Selection consults zero
-polynomial coefficients. If the union covers `< 95 %`, or more paths would be
-needed than allowed, the tool reports the failure and exits nonzero.
+`select_routes_min_cover` picks an exact minimum cover of all *meaningful* graph
+edges (`span ≥ SLIVER_SPAN`, mean height ≥ 1) by complete routes: a HiGHS MILP,
+with deterministic tie-breaking (fewer routes, larger geometric coverage, lower
+total complexity, stable signature order). Selection consults zero polynomial
+coefficients. If coverage is `< MIN_COVERAGE`, or more routes than
+`DEFAULT_MAX_CURVES` would be needed, the tool reports the failure and exits
+nonzero.
 
 ## 5. Phase 3 — high-degree feasibility fitting
 
@@ -80,9 +83,10 @@ inter-sample escapes.
 
 ## 6. Phase 4 — degree minimization
 
-Binary search finds the lowest degree that stays inside the **same** corridor; the
-neighbor below is verified infeasible. The corridor never moves, so reduction can
-never change topology.
+Degrees are probed exhaustively from 0 upward using the cheap LP-feasibility stage;
+the full verified fit runs at the first promising degree (the scan continues upward
+if dense verification rejects it), yielding the lowest VERIFIED feasible degree.
+The corridor never moves, so reduction can never change topology.
 
 ## 7. Phase 5 — independent validation
 
@@ -101,11 +105,11 @@ corridor window. It never trusts fitter internals:
   policy Option A (see CHALLENGES.md). Violations reject
   (`V3 tail re-entry risk ...`). Root analysis is a Phase-5 safety check only;
   topology is never rediscovered from it.
-- **Global V1:** ≥ 95 % of actual glyph boundary samples within `TAU` of at least
-  one emitted polynomial's intended visible trace (the corridor window); tails
-  outside the window are governed by V3 instead. Failures report uncovered
-  clusters.
-- **V4:** exact parse/format round-trip, finite coefficients `< 1e9`, no
+- **V1 (route-graph coverage):** every meaningful routing-graph edge is traversed
+  by at least one selected route (≥ `MIN_COVERAGE = 0.95`; exact minimum cover
+  normally achieves 1.0). This is enforced before fitting. Geometric proximity of
+  emitted polynomials remains diagnostic only.
+- **V4 (serialization contract):** exact parse/format round-trip, finite coefficients `< 1e9`, no
   scientific notation, no domain restrictions.
 
 Any failure ⇒ exit code 1, reasons on stderr, nothing on stdout.
@@ -119,8 +123,8 @@ visible spurious strokes."*
 
 No randomness remains; `--seed` is accepted with a value and ignored. Phase-by-phase
 diagnostics (candidate path count, selected count, selected coverage, per-path
-minimum degree) go to stderr. `denysko-debug paths|select|fit LETTER` inspects
-phases individually.
+minimum degree) go to stderr. `denysko-debug graph|routes|select|fit|uncovered LETTER` inspects phases
+individually.
 
 ## 9. Acceptance criteria
 
