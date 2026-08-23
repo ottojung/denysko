@@ -454,7 +454,8 @@ def test_stale_pinch_branch_terminates():
     gap_lo = 8 * step
     gap_hi = (8 + gap) * step
     sinks_mid = [v for v in graph.vertices
-                 if v.kind == "sink" and gap_lo <= v.x <= gap_hi]
+                 if v.kind == "sink" and v.x < gap_hi]
     assert sinks_mid                    # explicit disappearance sink
+    assert all(v.x < gap_hi for v in sinks_mid)
     for e in graph.edges:               # no edge crosses the empty gap
         assert not (e.xs[0] < gap_lo and e.xs[-1] > gap_hi)
