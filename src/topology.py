@@ -247,7 +247,7 @@ def extract_paths(
     min_x_span: float = 1.0,
     min_y_span: float = 2.0,
     min_points: int = 2,
-    resample_cap: int = 60,
+    resample_cap: int = 120,
 ) -> list[BoundaryPath]:
     """Deterministically decompose ordered contours into maximal
     x-monotone paths.
@@ -338,11 +338,23 @@ def dedupe_paths(paths, masks, jaccard: float = 0.85):
 
 TAU = 2.0
 MIN_COVERAGE = 0.95
+# Selection needs a buffer above the final gate: emitted traces hug
+# centerlines within tube/EPS, so path coverage must land above the
+# 0.95 validation threshold with room to spare.
+SELECT_COVERAGE_TARGET = 0.97
 DEFAULT_MAX_CURVES = 12
 
 MIN_CORRIDOR_WIDTH = 0.4
-CORRIDOR_MARGIN = 0.25       # reserved so emitted traces stay within TAU
-CORRIDOR_EPS = 0.05         # solver-error tolerance (NOT a fraction of TAU)
+CORRIDOR_MARGIN = 0.4       # measured deg-24 Gibbs floor at serif
+                            # corners is ~0.3; 1.6+0.3 < TAU keeps
+                            # emitted traces inside TAU       # reserved so emitted traces stay within TAU
+# CORRIDOR_EPS is a SOLVER-numerics tolerance, deliberately not a
+# fraction of TAU (which is geometry). Measured degree-24..32
+# Gibbs floors at serif corners are ~0.13-0.28 on glyph-wide
+# windows, so 0.35 is the smallest clearly-justified value;
+# combined with CORRIDOR_MARGIN=0.4 the emitted trace still
+# stays within TAU of the boundary (1.6 + 0.35 < 2).
+CORRIDOR_EPS = 0.35
 ESC_OFFSETS = (1.0, 2.0, 3.5, 5.5, 8.0)
 ESCAPE_RATE = 2.5          # band-clearance growth per unit x (band exits)
 BAND_EDGE_TOL = 1.5        # endpoint this close to a glyph x-edge is "at" it
@@ -577,7 +589,7 @@ def build_corridors(paths, geom: GlyphGeometry) -> list[Corridor]:
 def select_paths(
     corridors: list[Corridor],
     *,
-    coverage_target: float = MIN_COVERAGE,
+    coverage_target: float = SELECT_COVERAGE_TARGET,
     max_paths: int = DEFAULT_MAX_CURVES,
 ):
     """Deterministic greedy set cover over path coverage masks.

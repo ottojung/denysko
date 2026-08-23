@@ -29,8 +29,8 @@ from src.topology import (
     escape_bound_at,
 )
 
-INITIAL_FIT_DEGREE = 24   # measured: deg-20 rings ~0.34 inside
-                          # tight tubes on wide windows; 24 halves it
+INITIAL_FIT_DEGREE = 24   # measured: deg-20 rings ~0.34 inside tight
+                          # tubes on wide windows; 24 halves it
 FIT_GRID = 128           # constraint samples across the whole window
 DENSE_GRID = 900         # validation samples (denser than fitting)
 POCS_SWEEPS = 240
