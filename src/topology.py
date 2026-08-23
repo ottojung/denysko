@@ -137,7 +137,7 @@ class BoundaryPath:
 
     points: np.ndarray
     contour_id: int
-    source_edge_ids: tuple
+    source_edge_ids: tuple = ()
     arc_points: np.ndarray | None = None   # raw source-arc vertices
     covered: np.ndarray | None = None      # TAU bookkeeping only
 
@@ -164,17 +164,22 @@ def _resample(points: np.ndarray, target: int) -> np.ndarray:
     return out
 
 
+STEEP_RUN_TAN = 3.0     # |dy/dx| above this -> near-vertical feature
+
+
 def _max_x_monotone_chains(loop: np.ndarray, eps: float = 1e-9):
-    """Split a closed ordered loop into maximal x-monotone chains.
+    """Split a closed ordered loop into maximal graph-compatible chains.
 
-    Returns a list of (points, source_edge_ids). Edge classification is
-    cyclic over all N edges; horizontal runs group same-direction edges,
-    and maximal runs of exactly-vertical edges become narrow monotone
-    paths instead of being discarded. Only zero-length edges (dx == dy
-    == 0) are degenerate and dropped, and that rule is documented here.
+    Edge classification (cyclic over all N edges):
+      * zero-length edges are degenerate and dropped (documented rule);
+      * maximal runs of near-vertical edges (|dx| <= eps, or local slope
+        steeper than STEEP_RUN_TAN) become ONE narrow x-monotone path
+        each, sweeping VERTICAL_PATH_X_SPAN across the run's y extent;
+      * remaining horizontal-direction edges group into maximal
+        same-sign-x runs (plain x-monotone chains).
 
-    Chains moving in decreasing x are reversed so every chain is sorted
-    by increasing x.
+    Every non-degenerate edge lands in exactly one returned chain, and
+    each chain carries its source edge indices.
     """
     pts = loop[:-1] if len(loop) > 1 and np.allclose(loop[0], loop[-1]) else loop
     n = len(pts)
@@ -183,39 +188,46 @@ def _max_x_monotone_chains(loop: np.ndarray, eps: float = 1e-9):
     nxt = (np.arange(n) + 1) % n
     dx = pts[nxt, 0] - pts[:, 0]
     dy = pts[nxt, 1] - pts[:, 1]
-    direction = np.where(dx > eps, 1, np.where(dx < -eps, -1, 0))
+
+    def cls(i):
+        if abs(dx[i]) <= eps and abs(dy[i]) <= eps:
+            return 0                      # degenerate
+        if abs(dx[i]) <= eps:
+            return 2                      # exact vertical
+        if abs(dy[i]) > STEEP_RUN_TAN * abs(dx[i]):
+            return 2                      # near-vertical
+        return 1 if dx[i] > 0 else -1     # shallow, directional
+
+    klass = [cls(i) for i in range(n)]
 
     def finish(points, edge_ids):
         points = points.copy()
         if points[-1, 0] < points[0, 0]:
             points = points[::-1].copy()
-            edge_ids = edge_ids[::-1]
-        return (points, tuple(edge_ids))
+            edge_ids = tuple(edge_ids)[::-1]
+        return points, tuple(edge_ids)
 
     out = []
     begin = int(np.argmin(pts[:, 0]))
     i = 0
     while i < n:
         idx = (begin + i) % n
-        d = direction[idx]
+        k = klass[idx]
         i += 1
-        if dx[idx] == 0.0 and abs(dy[idx]) <= eps:
-            continue  # degenerate zero-length edge (documented rule)
-        if d == 0:
-            # maximal vertical run: consume consecutive vertical edges
-            run = [idx]
-            vpts = [pts[idx], pts[(idx + 1) % n]]
-            while i < n:
-                nxt_idx = (begin + i) % n
-                if direction[nxt_idx] != 0 or not (
-                    abs(dx[nxt_idx]) <= eps
-                ):
-                    break
-                run.append(nxt_idx)
-                vpts.append(pts[(nxt_idx + 1) % n])
-                i += 1
-            vp = np.asarray(vpts, dtype=float)
-            # graph-compatible narrow sweep across the full vertical run
+        if k == 0:
+            continue
+        run = [idx]
+        chain_pts = [pts[idx], pts[(idx + 1) % n]]
+        while i < n:
+            nxt_idx = (begin + i) % n
+            if klass[nxt_idx] != k:
+                break
+            run.append(nxt_idx)
+            chain_pts.append(pts[(nxt_idx + 1) % n])
+            i += 1
+        vp = np.asarray(chain_pts, dtype=float)
+        if k == 2:
+            # narrow sweep preserving the run's full y extent
             e = VERTICAL_PATH_X_SPAN / 2.0
             x0 = float(np.mean(vp[:, 0]))
             narrow = np.asarray([
@@ -224,17 +236,8 @@ def _max_x_monotone_chains(loop: np.ndarray, eps: float = 1e-9):
                 [x0 + e, float(vp[:, 1].min())],
             ], dtype=float)
             out.append(finish(narrow, run))
-            continue
-        run = [idx]
-        chain_pts = [pts[idx], pts[(idx + 1) % n]]
-        while i < n:
-            nxt_idx = (begin + i) % n
-            if direction[nxt_idx] != d:
-                break
-            run.append(nxt_idx)
-            chain_pts.append(pts[(nxt_idx + 1) % n])
-            i += 1
-        out.append(finish(np.asarray(chain_pts, dtype=float), run))
+        else:
+            out.append(finish(vp, run))
     return out
 
 
@@ -338,11 +341,14 @@ MIN_COVERAGE = 0.95
 DEFAULT_MAX_CURVES = 12
 
 MIN_CORRIDOR_WIDTH = 0.4
+CORRIDOR_MARGIN = 0.25       # reserved so emitted traces stay within TAU
+CORRIDOR_EPS = 0.05         # solver-error tolerance (NOT a fraction of TAU)
 ESC_OFFSETS = (1.0, 2.0, 3.5, 5.5, 8.0)
 ESCAPE_RATE = 2.5          # band-clearance growth per unit x (band exits)
 BAND_EDGE_TOL = 1.5        # endpoint this close to a glyph x-edge is "at" it
 FAR_ROWS = (3.0, 8.0)      # beyond-window distances for non-return rows
 FAR_CLEARANCE = 3.0
+FAR_GRACE_DROP = 1.0       # allowed dip at the joint before climbing
 
 
 @dataclass
@@ -363,6 +369,7 @@ class EscapeSpec:
     x_end: float
     edge: float          # band edge being exited (ymax up / ymin down)
     y_end: float         # path endpoint y (ramp anchor)
+    off_edge: float      # x-run needed to reach the band edge
     rows: list           # [(x, lo, hi)] absolute one-sided rows
 
 
@@ -383,6 +390,20 @@ class Corridor:
     upper: np.ndarray
     escapes: tuple       # (EscapeSpec left, EscapeSpec right)
 
+    def escape_regions(self, xs):
+        """Split positions into left-escape / right-escape / interior.
+
+        Interior is exactly the path domain; everything beyond either
+        end belongs to that side's escape ramp.
+        """
+        xs = np.asarray(xs, dtype=float)
+        return (
+            xs < self.xs[0],
+            xs > self.xs[-1],
+            None,
+            None,
+        )
+
     def lower_at(self, x):
         return np.interp(x, self.xs, self.lower)
 
@@ -396,49 +417,74 @@ def _sigma_band(y_end: float, geom: GlyphGeometry) -> int:
 
 
 def _make_escape(endpoint: np.ndarray, side: str, geom: GlyphGeometry) -> EscapeSpec:
+    """Outward escape corridor for one path end. Two documented kinds:
+
+    'edge-exit' — the endpoint lies within TAU of the nearer band edge
+    (typical stroke tips): a rate-limited inequality ramp ANCHORED at
+    the endpoint carries the tail out of the vertical band; Phase 5 then
+    enforces, analytically beyond the last ramp row, that the tail never
+    re-enters the band (monotone outward).
+
+    'side-exit' — the endpoint sits at a glyph x-edge but mid-band (arc
+    extremes): the tail leaves the drawn x-region immediately, so no
+    fitting rows exist; Phase 5 only checks the narrow pad strips.
+
+    Inner-contour paths get 'edge-exit' ramps toward the nearer band
+    edge too; their tails necessarily cross unrelated glyph geometry
+    once (documented limitation, see CHALLENGES.md).
+    """
     x_end = float(endpoint[0])
     y_end = float(endpoint[1])
-    # Band escapes always exit toward the NEARER band edge and anchor the
-    # ramp at the endpoint itself, so the required slope stays at
-    # ESCAPE_RATE regardless of how deep inside the band the route sits.
-    # (A mass-based direction here can pair an upward climb with the
-    # downward edge distance, producing a 50-unit instant cliff.)
-    at_left_edge = (x_end - geom.xmin) <= BAND_EDGE_TOL
-    at_right_edge = (geom.xmax - x_end) <= BAND_EDGE_TOL
-    if (side == "L" and at_left_edge) or (side == "R" and at_right_edge):
-        # tail immediately leaves the drawn x-region; forbid returning
-        sigma = _sigma_band(y_end, geom)
-        edge = geom.ymax if sigma == 1 else geom.ymin
-        sign = -1.0 if side == "L" else 1.0
-        base = x_end + sign * 2.0
-        rows = []
-        for d in FAR_ROWS:
-            x = base + sign * d
-            lo = geom.ymax + FAR_CLEARANCE if sigma == 1 else -np.inf
-            hi = geom.ymin - FAR_CLEARANCE if sigma == -1 else np.inf
-            rows.append((x, lo, hi))
-        return EscapeSpec("far", side, sigma, x_end, edge, y_end, rows)
-
     sigma = _sigma_band(y_end, geom)
     edge = geom.ymax if sigma == 1 else geom.ymin
     sign = -1.0 if side == "L" else 1.0
-    # Ramp anchored at the path endpoint (continuous with the fitted
-    # route), moving outward at ESCATE_RATE; endpoints deep inside the
-    # band get a proportionally longer run so the slope stays gentle.
     edge_dist = abs(edge - y_end)
-    run = max(ESC_OFFSETS[-1], edge_dist / ESCAPE_RATE + 1.0)
-    # linear ramp from the endpoint down/up to the final clearance:
-    # constant slope, no kink at the joint, no instant cliff.
-    slope = (edge_dist + ESCAPE_RATE * run) / run
-    offs = np.linspace(0.0, run, len(ESC_OFFSETS) + 1)
-    rows = []
-    for off in offs:
-        x = x_end + sign * off
-        level = y_end + sigma * slope * off
-        lo = level if sigma == 1 else -np.inf
-        hi = level if sigma == -1 else np.inf
-        rows.append((x, lo, hi))
-    return EscapeSpec("band", side, sigma, x_end, edge, y_end, rows)
+
+    at_left_edge = (x_end - geom.xmin) <= BAND_EDGE_TOL
+    at_right_edge = (geom.xmax - x_end) <= BAND_EDGE_TOL
+
+    if edge_dist <= TAU and not (at_left_edge or at_right_edge):
+        # edge-exit ramp: continuous at the endpoint, climbing at
+        # ESCAPE_RATE, crossing the band edge at off_edge, then outward.
+        off_edge = edge_dist / ESCAPE_RATE
+        run = off_edge + 2.0
+        offs = np.linspace(
+            max(0.5, off_edge / 4.0), run, len(ESC_OFFSETS)
+        )
+        rows = []
+        for off in offs:
+            climb = min(off * ESCAPE_RATE,
+                        edge_dist + ESCAPE_RATE * max(0.0, off - off_edge))
+            level = y_end + sigma * climb
+            lo = level if sigma == 1 else -np.inf
+            hi = level if sigma == -1 else np.inf
+            rows.append((x_end + sign * off, lo, hi))
+        return EscapeSpec(
+            "band", side, sigma, x_end, edge, y_end, off_edge, rows,
+        )
+
+    # side-exit: no fitting rows; Phase 5 samples the narrow pad strips
+    return EscapeSpec(
+        "far", side, sigma, x_end, edge, y_end, 0.0, [],
+    )
+
+
+
+def escape_bound_at(spec, xs):
+    """Continuous escape bound along a ramp (piecewise linear over the
+    stored rows, extended with the end slope outside their range)."""
+    rxs = np.asarray([r[0] for r in spec.rows], dtype=float)
+    ups = np.asarray([r[1] for r in spec.rows], dtype=float)
+    dns = np.asarray([r[2] for r in spec.rows], dtype=float)
+    levels = ups if spec.sigma == 1 else dns
+    order = np.argsort(rxs)
+    rxs, levels = rxs[order], levels[order]
+    out = np.interp(xs, rxs, levels)
+    if len(rxs) >= 2:
+        sl = (levels[-1] - levels[-2]) / (rxs[-1] - rxs[-2])
+        out = np.where(xs > rxs[-1], levels[-1] + sl * (xs - rxs[-1]), out)
+        out = np.where(xs < rxs[0], levels[0] + sl * (xs - rxs[0]), out)
+    return out
 
 
 def build_corridors(paths, geom: GlyphGeometry) -> list[Corridor]:
@@ -462,16 +508,22 @@ def build_corridors(paths, geom: GlyphGeometry) -> list[Corridor]:
         # points from a nearby distinct stroke; those must still
         # constrain this corridor).
         if p.arc_points is None or len(p.arc_points) == 0:
-            ids = list(p.source_edge_ids)
-            contour = geom.contours[p.contour_id]
-            cn = (
-                contour[:-1]
-                if len(contour) > 1 and np.allclose(contour[0], contour[-1])
-                else contour
-            )
-            seg_pts = [cn[i] for i in ids] + [
-                cn[(ids[-1] + 1) % len(cn)]
-            ]
+            if 0 <= p.contour_id < len(geom.contours) and p.source_edge_ids:
+                ids = list(p.source_edge_ids)
+                contour = geom.contours[p.contour_id]
+                cn = (
+                    contour[:-1]
+                    if len(contour) > 1
+                    and np.allclose(contour[0], contour[-1])
+                    else contour
+                )
+                seg_pts = [cn[i] for i in ids] + [
+                    cn[(ids[-1] + 1) % len(cn)]
+                ]
+            else:
+                # synthetic paths without provenance: own nodes act as
+                # their arc (no competition beyond other paths)
+                seg_pts = p.points
             seg = np.asarray(seg_pts, dtype=float)
             # densify: corner vertices alone would place competition
             # geometry unrealistically far away
@@ -504,13 +556,15 @@ def build_corridors(paths, geom: GlyphGeometry) -> list[Corridor]:
         xs = p.points[:, 0]
         esc_l = _make_escape(p.points[0], "L", geom)
         esc_r = _make_escape(p.points[-1], "R", geom)
-        pad_l = ESC_OFFSETS[-1] if esc_l.kind == "band" else 2.0
-        pad_r = ESC_OFFSETS[-1] if esc_r.kind == "band" else 2.0
+        # Chebyshev window must contain EVERY x used by fitting and
+        # validation: path domain plus all escape/far-field row positions.
+        left_xs = [x for x, elo, ehi in esc_l.rows] + [xs[0]]
+        right_xs = [x for x, elo, ehi in esc_r.rows] + [xs[-1]]
         out.append(
             Corridor(
                 path=p,
-                xa=float(xs[0] - pad_l),
-                xb=float(xs[-1] + pad_r),
+                xa=float(min(left_xs)),
+                xb=float(max(right_xs)),
                 xs=xs,
                 lower=p.points[:, 1] - widths,
                 upper=p.points[:, 1] + widths,

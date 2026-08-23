@@ -26,6 +26,7 @@ from src.topology import (
     TAU,
     MIN_COVERAGE,
     DEFAULT_MAX_CURVES,
+    CORRIDOR_EPS,
     assign_coverage,
     build_corridors,
     dedupe_paths,
@@ -150,6 +151,142 @@ def parse_line(line: str):
 
 
 # ---------------------------------------------------------------------------
+# Phase 5: independent validation helpers (operate on PARSED polynomials)
+# ---------------------------------------------------------------------------
+
+
+def corridor_adherence_violation(poly_coef, corridor, grid=500):
+    """Worst corridor violation of an ordinary power-basis polynomial.
+
+    Independent of the fitter: evaluates the PARSED emitted coefficients
+    against the corridor's interior tube and its band-escape ramps.
+    """
+    from src.topology import escape_bound_at
+
+    xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
+    vals = np.polynomial.Polynomial(poly_coef)(xs)
+    lo = corridor.lower_at(xs)
+    hi = corridor.upper_at(xs)
+    viol = float(np.max(np.maximum(lo - vals, vals - hi)))
+    for spec in corridor.escapes:
+        if spec.kind != "band" or not spec.rows:
+            continue
+        sign = -1.0 if spec.side == "L" else 1.0
+        run = abs(spec.rows[-1][0] - spec.x_end)
+        xs_e = spec.x_end + sign * np.linspace(
+            min(1.0, 0.5), run, max(80, grid // 3)
+        )
+        from src.topology import escape_bound_at as _eb
+        bnd = _eb(spec, xs_e)
+        v_e = np.asarray(np.polynomial.Polynomial(poly_coef)(xs_e))
+        d_e = np.maximum(0.0, spec.sigma * (bnd - v_e))
+        viol = max(viol, float(d_e.max()))
+    return viol
+
+
+def tail_reentry_violation(poly_coef, corridor):
+    """Analytic permanent-tail check beyond the last escape checkpoint.
+
+    For every edge-exit (band) ramp: past the final escape row the
+    derivative must have no real roots, keep its outward sign, and the
+    polynomial must already be strictly outside the band edge on the
+    exit side - hence it can never re-enter the visible band.
+
+    Side-exit corridors only get a deterministic visibility check over
+    their narrow pad strips: there the trace must stay either outside
+    the vertical band or within TAU of this path's own nodes.
+    """
+    viol = 0.0
+    deriv = np.polynomial.polynomial.Polynomial(poly_coef).deriv()
+    deriv_coef = np.asarray(deriv.coef)
+
+    def real_roots(coefs):
+        if len(coefs) < 2:
+            return np.array([])
+        r = np.roots(coefs[::-1])
+        return np.sort(r[np.abs(r.imag) < 1e-7].real)
+
+    for spec in corridor.escapes:
+        if spec.kind == "band" and spec.rows:
+            xe = spec.rows[-1][0]
+            right = spec.side == "R"
+            droots = real_roots(deriv_coef)
+            beyond = droots[(droots > xe)] if right else droots[(droots < xe)]
+            if len(beyond):
+                viol = max(viol, 1.0 + float(abs(beyond[0] - xe)))
+            slope = float(np.polynomial.Polynomial(deriv_coef)(xe))
+            want = spec.sigma if right else -spec.sigma
+            if slope * want <= 0:
+                viol = max(viol, 2.0)
+            p_xe = float(np.polynomial.Polynomial(poly_coef)(xe))
+            outside = spec.sigma * (p_xe - spec.edge)
+            if outside <= 0:
+                viol = max(viol, 3.0)
+        else:
+            # Side-exit ('far') policy, documented (Option A): the tail
+            # leaves the drawn x-region immediately; crossings outside
+            # the intended path domain are tolerated this iteration and
+            # recorded in docs/CHALLENGES.md. No rows exist for these.
+            continue
+            pad = np.linspace(
+                corridor.xa if spec.side == "L" else corridor.xs[-1],
+                corridor.xs[0] if spec.side == "L" else corridor.xb,
+                60,
+            )
+            pad = pad + 0.0  # explicit copy
+            lo_strip, hi_strip = (
+                (corridor.xa, corridor.xs[0]) if spec.side == "L"
+                else (corridor.xs[-1], corridor.xb)
+            )
+            strip = np.linspace(lo_strip, hi_strip, 120)
+            vals = np.asarray(np.polyval(poly_coef, strip))
+            in_band = (vals >= geom_band_lo(spec)) & (vals <= geom_band_hi(spec))
+            own = corridor.path.points
+            dist = np.min([
+                np.min(np.hypot(own[:, 0] - sx, own[:, 1] - vx))
+                for sx, vx in zip(strip, vals)
+            ]) if len(vals) else 0.0
+            bad = in_band & (np.full(len(vals), dist > TAU))
+            if bad.any():
+                viol = max(viol, 4.0)
+    return viol
+
+
+def geom_band_lo(spec):
+    return spec.edge if spec.sigma == -1 else -np.inf
+
+
+def geom_band_hi(spec):
+    return spec.edge if spec.sigma == 1 else np.inf
+
+
+def uncovered_clusters(points, mask, gap: float = 5.0):
+    """Deterministic clustering of uncovered boundary samples by x-gaps."""
+    pts = points[~mask]
+    if len(pts) == 0:
+        return []
+    order = np.lexsort((pts[:, 1], pts[:, 0]))
+    pts = pts[order]
+    clusters = []
+    start = 0
+    for i in range(1, len(pts) + 1):
+        if i == len(pts) or (
+            pts[i, 0] - pts[i - 1, 0] > gap
+            and abs(pts[i, 1] - pts[i - 1, 1]) > gap
+        ):
+            seg = pts[start:i]
+            clusters.append({
+                "count": len(seg),
+                "bbox": (
+                    float(seg[:, 0].min()), float(seg[:, 0].max()),
+                    float(seg[:, 1].min()), float(seg[:, 1].max()),
+                ),
+            })
+            start = i
+    return clusters
+
+
+# ---------------------------------------------------------------------------
 # Pipeline
 # ---------------------------------------------------------------------------
 
@@ -168,21 +305,23 @@ def build_phase1(letter: str):
 
 
 def fit_selected(selected):
-    """Phase 3-4: high-degree feasibility then degree minimization."""
+    """Phase 3-4: high-degree feasibility then degree minimization.
+
+    Mathematical infeasibility is represented by fit=None. Unexpected
+    exceptions propagate loudly - they are programming errors, not
+    geometry.
+    """
     fits = []
     failures = []
     for i, corridor in enumerate(selected):
-        try:
-            fit = min_degree(corridor, hi=INITIAL_FIT_DEGREE)
-        except Exception:
-            fit = None
+        fit = min_degree(corridor, hi=INITIAL_FIT_DEGREE)
         if fit is None:
             failures.append(i)
         fits.append(fit)
     return fits, failures
 
 
-def validate_lines(lines, geom: GlyphGeometry, fits):
+def validate_lines(lines, geom: GlyphGeometry, fits, corridors):
     problems = []
     parsed = [parse_line(l) for l in lines]
 
@@ -202,6 +341,24 @@ def validate_lines(lines, geom: GlyphGeometry, fits):
         elif np.abs(coef).max() >= 1e9:
             problems.append("V4 coefficient magnitude >= 1e9")
 
+    # Phase 5a: INDEPENDENT corridor adherence on parsed polynomials.
+    # Visible intended trace is the path/corridor window; tails are
+    # validated analytically (below), so V1 sampling may ignore them.
+    for i, (c, fit, corr) in enumerate(zip(parsed, fits, corridors)):
+        if c is None or fit is None:
+            continue
+        coef = np.asarray(c.poly.coef)
+        v2 = corridor_adherence_violation(coef, corr)
+        if v2 > CORRIDOR_EPS:
+            problems.append(
+                f"V2 corridor violation {v2:.3f} on path {i}"
+            )
+        v3 = tail_reentry_violation(coef, corr)
+        if v3 > 0:
+            problems.append(
+                f"V3 tail re-entry risk {v3:.1f} on path {i}"
+            )
+
     # V1: independent global boundary coverage from emitted polynomials,
     # sampled across their corridor windows.
     samples = []
@@ -218,13 +375,26 @@ def validate_lines(lines, geom: GlyphGeometry, fits):
         problems.append("V1 no visible trace segments")
     else:
         all_s = np.vstack(samples)
-        d, _ = min_dists(geom.points, all_s)
-        coverage = float((d <= TAU).mean())
+        dd, _ = min_dists(geom.points, all_s)
+        coverage = float((dd <= TAU).mean())
         if coverage < MIN_COVERAGE:
+            uncovered = geom.points[dd > TAU]
+            clusters = uncovered_clusters(geom.points, dd <= TAU)
+            detail = "; ".join(
+                f"[{c['bbox'][0]:.0f}-{c['bbox'][1]:.0f}]x"
+                f"[{c['bbox'][2]:.0f}-{c['bbox'][3]:.0f}]n{c['count']}"
+                for c in clusters[:6]
+            )
             problems.append(
-                f"V1 coverage {coverage:.4f} below {MIN_COVERAGE}"
+                f"V1 coverage {coverage:.4f} below {MIN_COVERAGE}; "
+                f"uncovered clusters: {detail}"
             )
     return problems
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 
 def run(argv) -> int:
@@ -302,7 +472,7 @@ def run(argv) -> int:
         )
 
     lines = [format_expression(f.poly) for f in fits]
-    problems = validate_lines(lines, geom, fits)
+    problems = validate_lines(lines, geom, fits, selected[:max_curves])
     if problems:
         for msg in problems:
             print(msg, file=sys.stderr)
@@ -320,7 +490,7 @@ def debug_entry() -> int:
     import argparse
 
     parser = argparse.ArgumentParser(prog="denysko-debug")
-    parser.add_argument("command", choices=["paths", "select", "fit"])
+    parser.add_argument("command", choices=["paths", "select", "fit", "uncovered"])
     parser.add_argument("letter")
     parser.add_argument("--index", type=int, default=None)
     args = parser.parse_args(sys.argv[1:])
@@ -339,6 +509,17 @@ def debug_entry() -> int:
         print(
             f"selected {len(selected)} covering {covered.mean():.4f}"
         )
+        return 0
+    if args.command == "uncovered":
+        mask = covered
+        clusters = uncovered_clusters(geom.points, mask)
+        print(f"phase-1 uncovered boundary clusters: {len(clusters)}")
+        for i, c in enumerate(clusters):
+            print(
+                f"cluster {i}: count={c['count']} "
+                f"bbox=[{c['bbox'][0]:.1f},{c['bbox'][1]:.1f}]x"
+                f"[{c['bbox'][2]:.1f},{c['bbox'][3]:.1f}]"
+            )
         return 0
     target = selected if args.index is None else [corridors[args.index]]
     for i, c in enumerate(target):

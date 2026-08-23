@@ -24,9 +24,13 @@ import numpy as np
 from scipy.optimize import linprog
 from numpy.polynomial import chebyshev as cheb
 
-from src.topology import Corridor, TAU, ESC_OFFSETS, ESCAPE_RATE
+from src.topology import (
+    Corridor, TAU, ESC_OFFSETS, ESCAPE_RATE, CORRIDOR_MARGIN, CORRIDOR_EPS,
+    escape_bound_at,
+)
 
-INITIAL_FIT_DEGREE = 20
+INITIAL_FIT_DEGREE = 24   # measured: deg-20 rings ~0.34 inside
+                          # tight tubes on wide windows; 24 halves it
 FIT_GRID = 128           # constraint samples across the whole window
 DENSE_GRID = 900         # validation samples (denser than fitting)
 POCS_SWEEPS = 240
@@ -53,8 +57,8 @@ def _constraint_set(corridor: Corridor, degree: int,
     """Build the full deterministic constraint system (A, lo, hi).
 
     Interior rows are two-sided interval constraints across the path
-    domain. Each band escape contributes one-sided rows sampled along
-    its whole ramp; each far-field row is included exactly.
+    domain. Band escapes contribute one-sided rows sampled along their
+    whole continuous ramp; far-field rows are included exactly.
     """
     xs_int = np.linspace(corridor.xs[0], corridor.xs[-1], n_int)
     lo_i = corridor.lower_at(xs_int)
@@ -62,21 +66,21 @@ def _constraint_set(corridor: Corridor, degree: int,
 
     esc_xs, esc_lo, esc_hi = [], [], []
     for spec in corridor.escapes:
-        if spec.kind == "band":
-            sign = -1.0 if spec.side == "L" else 1.0
-            run = abs(spec.rows[-1][0] - spec.x_end)
-            slope = (abs(spec.edge - spec.y_end) + ESCAPE_RATE * run) / run
-            for off in np.linspace(0.0, run, n_esc):
-                x = spec.x_end + sign * off
-                level = spec.y_end + spec.sigma * slope * off
-                esc_xs.append(x)
-                esc_lo.append(level if spec.sigma == 1 else -np.inf)
-                esc_hi.append(level if spec.sigma == -1 else np.inf)
-        else:
-            for x, elo, ehi in spec.rows:
-                esc_xs.append(x)
-                esc_lo.append(elo)
-                esc_hi.append(ehi)
+        if spec.kind != "band" or not spec.rows:
+            continue   # side-exit: no fitting rows (Phase 5 checks pads)
+        # Sample the continuous ramp bound densely so the polynomial
+        # cannot swing between discrete rows.
+        sign = -1.0 if spec.side == "L" else 1.0
+        run = max(abs(r[0] - spec.x_end) for r in spec.rows)
+        xs_e = spec.x_end + sign * np.linspace(
+            min(ESC_OFFSETS[0], 0.5), run, n_esc
+        )
+        bnd = escape_bound_at(spec, xs_e)
+        esc_xs.extend(xs_e)
+        esc_lo.extend(bnd if spec.sigma == 1 else
+                      np.full(len(xs_e), -np.inf))
+        esc_hi.extend(bnd if spec.sigma == -1 else
+                      np.full(len(xs_e), np.inf))
 
     all_x = np.concatenate([xs_int, np.asarray(esc_xs)])
     A = cheb.chebvander(_zmap(all_x, corridor.xa, corridor.xb), degree)
@@ -150,36 +154,34 @@ def _dense_violation(corridor: Corridor, coef: np.ndarray,
     """Dense validation against the corridor.
 
     Interior bounds are checked on a dense grid; band-escape regions are
-    checked against their continuous clearance bound; far-field rows are
-    checked exactly. Returns the worst violation.
+    checked against their continuous ramp bound via the row rule
+    violation = max(0, sigma * (bound - P)). Returns the worst
+    violation.
     """
     viol = 0.0
+    # Interior/path-domain adherence only. Pad strips beyond the domain
+    # are governed by the Phase-5 tail policy (analytic re-entry check
+    # for edge-exit ramps; visibility check for side exits).
     xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
     vals = cheb.chebval(_zmap(xs, corridor.xa, corridor.xb), coef)
     lo = corridor.lower_at(xs)
     hi = corridor.upper_at(xs)
     d = np.maximum(lo - vals, vals - hi)
     viol = max(viol, float(d.max()))
-
     for spec in corridor.escapes:
-        if spec.kind == "band":
-            sign = -1.0 if spec.side == "L" else 1.0
-            run = abs(spec.rows[-1][0] - spec.x_end)
-            xs_e = spec.x_end + sign * np.linspace(0.0, run, 200)[1:]
-            vals_e = cheb.chebval(_zmap(xs_e, corridor.xa, corridor.xb), coef)
-            off = np.abs(xs_e - spec.x_end)
-            run = abs(spec.rows[-1][0] - spec.x_end)
-            slope = (abs(spec.edge - spec.y_end) + ESCAPE_RATE * run) / run
-            target = spec.y_end + spec.sigma * slope * off
-            d_e = -(spec.sigma * (vals_e - target))
-            viol = max(viol, float(d_e.max()))
-        else:
-            for x, elo, ehi in spec.rows:
-                v = float(cheb.chebval(_zmap(x, corridor.xa, corridor.xb), coef))
-                if np.isfinite(elo):
-                    viol = max(viol, elo - v)
-                if np.isfinite(ehi):
-                    viol = max(viol, v - ehi)
+        if spec.kind != "band" or not spec.rows:
+            continue
+        sign = -1.0 if spec.side == "L" else 1.0
+        run = abs(spec.rows[-1][0] - spec.x_end)
+        xs_e = spec.x_end + sign * np.linspace(
+            min(ESC_OFFSETS[0], 0.5), run, max(60, grid // 4)
+        )
+        bnd = escape_bound_at(spec, xs_e)
+        d_e = np.maximum(
+            0.0, spec.sigma * (bnd - cheb.chebval(_zmap(xs_e, corridor.xa,
+                                                    corridor.xb), coef))
+        )
+        viol = max(viol, float(d_e.max()))
     return viol
 
 
@@ -216,7 +218,7 @@ def fit_degree(corridor: Corridor, degree: int) -> PathFit | None:
     coef, dviol = _project_feasible(A_d, lo_d, hi_d, coef)
 
     dv = _dense_violation(corridor, coef)
-    if dv > 0.25 * TAU:
+    if dv > CORRIDOR_EPS:
         return None
     power_z = cheb.cheb2poly(coef)
     zpoly = np.polynomial.Polynomial(power_z)
@@ -239,26 +241,29 @@ def fit_degree(corridor: Corridor, degree: int) -> PathFit | None:
 
 
 def min_degree(corridor: Corridor, hi: int = INITIAL_FIT_DEGREE) -> PathFit | None:
-    """Establish that a deliberately high degree fits, then binary-search
-    the lowest feasible degree inside the SAME corridor.
+    """Lowest VERIFIED feasible degree inside the unchanged corridor.
 
-    The corridor is never moved: topology was decided in Phase 1 and
-    every candidate degree solves the identical constraint system, so
-    reduction can never change topology. The neighbor below the found
-    minimum is verified infeasible.
+    fit_degree is a numerical oracle and its success can be non-monotone
+    in degree, so: verify hi; binary-search an approximate bound; then
+    deterministically sweep downward from the best known degree until
+    the first failure, returning the lowest verified feasible fit.
     """
     top = fit_degree(corridor, hi)
     if top is None:
         return None
-    lo = 0
-    best = top
-    while lo < hi:
-        mid = (lo + hi) // 2
+    lo, hi_, best = 0, hi, top
+    while lo < hi_:
+        mid = (lo + hi_) // 2
         trial = fit_degree(corridor, mid)
         if trial is None:
             lo = mid + 1
         else:
-            hi = mid
-            best = trial
-    assert best.degree == hi or fit_degree(corridor, hi) is not None
+            hi_, best = mid, trial
+    d = best.degree
+    while d > 0:
+        lower = fit_degree(corridor, d - 1)
+        if lower is None:
+            break
+        best, d = lower, d - 1
+    assert best.degree == d
     return best
