@@ -56,8 +56,8 @@ degenerates) — a corridor never merges two distinct nearby strokes.
   region immediately; a few rows far outside forbid swinging back into the band;
 - interior endpoint → *band-exit* rows: anchored at the endpoint, moving outward at
   `ESCAPE_RATE = 2.5` per unit x with a run proportional to the distance to the
-  nearer band edge (linear ramps, no kink, no cliff). Direction is toward the nearer
-  band edge.
+  nearer band edge (linear ramps anchored at the endpoint: level(0) = y_end,
+  no kink, no cliff). Direction is toward the nearer band edge.
 
 All escape constraints are inequalities — never exact tail targets.
 
@@ -84,15 +84,29 @@ Binary search finds the lowest degree that stays inside the **same** corridor; t
 neighbor below is verified infeasible. The corridor never moves, so reduction can
 never change topology.
 
-## 7. Phase 5 — validation
+## 7. Phase 5 — independent validation
 
-- Per curve: dense re-check of corridor bounds (surface adherence is largely
-  automatic by construction).
-- Global V1: ≥ 95 % of actual glyph boundary samples within `TAU` of at least one
-  emitted polynomial's visible trace — computed from emitted polynomials, not path
-  bookkeeping.
-- V4: exact parse/format round-trip, finite coefficients `< 1e9`, no scientific
-  notation, no domain restrictions.
+Phase 5 re-validates the PARSED emitted polynomials against their assigned
+corridors and analytically verifies permanent tail escape beyond the finite
+corridor window. It never trusts fitter internals:
+
+- **V2 (independent corridor adherence):** dense interior tube check plus
+  band-ramp inequality rows per emitted line; violations above CORRIDOR_EPS
+  reject (`V2 corridor violation ...`).
+- **V3 (analytic tail re-entry):** for every edge-exit ramp, beyond the final
+  escape row the derivative must have no real roots and keep its outward sign,
+  with P already strictly outside the band edge at that checkpoint - so the tail
+  cannot re-enter the visible band later. Side-exit tails (endpoints on glyph
+  x-edges) leave the drawn region immediately and are exempt under documented
+  policy Option A (see CHALLENGES.md). Violations reject
+  (`V3 tail re-entry risk ...`). Root analysis is a Phase-5 safety check only;
+  topology is never rediscovered from it.
+- **Global V1:** ≥ 95 % of actual glyph boundary samples within `TAU` of at least
+  one emitted polynomial's intended visible trace (the corridor window); tails
+  outside the window are governed by V3 instead. Failures report uncovered
+  clusters.
+- **V4:** exact parse/format round-trip, finite coefficients `< 1e9`, no
+  scientific notation, no domain restrictions.
 
 Any failure ⇒ exit code 1, reasons on stderr, nothing on stdout.
 
