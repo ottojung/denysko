@@ -168,6 +168,72 @@ def test_o_topology_is_ring():
 
 
 # ---------------------------------------------------------------------------
+# Stroke-junction skeleton topology (synthetic masks only - no font)
+# ---------------------------------------------------------------------------
+
+
+def _rect(mask, r0, r1, c0, c1):
+    mask[r0 : r1 + 1, c0 : c1 + 1] = True
+
+
+def _h_mask():
+    m = np.zeros((200, 200), dtype=bool)
+    _rect(m, 20, 180, 10, 25)
+    _rect(m, 20, 180, 175, 190)
+    _rect(m, 95, 110, 25, 176)
+    return m
+
+
+def _t_mask():
+    m = np.zeros((200, 200), dtype=bool)
+    _rect(m, 15, 30, 10, 190)
+    _rect(m, 30, 180, 93, 108)
+    return m
+
+
+def _e_mask():
+    m = np.zeros((200, 200), dtype=bool)
+    _rect(m, 20, 180, 10, 30)      # spine
+    _rect(m, 20, 40, 30, 170)      # top arm
+    _rect(m, 92, 108, 30, 150)     # middle arm
+    _rect(m, 160, 180, 30, 170)    # bottom arm
+    return m
+
+
+def test_skeleton_h_has_stem_junction_stem_topology():
+    from src.skeleton import stroke_graph
+
+    g = stroke_graph(_h_mask())
+    kinds = [n.kind for n in g.nodes]
+    assert kinds.count("end") == 4        # stem tops and bottoms
+    assert kinds.count("junction") == 2   # crossbar meets each stem
+    assert len(g.edges) == 5              # 4 stem halves + crossbar
+    junc_y = sorted(n.xy[1] for n in g.nodes if n.kind == "junction")
+    assert abs(junc_y[0] - junc_y[1]) < 6  # both at crossbar height
+
+
+def test_skeleton_t_has_one_three_way_junction():
+    from src.skeleton import stroke_graph
+
+    g = stroke_graph(_t_mask())
+    kinds = [n.kind for n in g.nodes]
+    assert kinds.count("end") == 3
+    assert kinds.count("junction") == 1
+    assert len(g.edges) == 3
+
+
+def test_skeleton_e_has_multiple_arms():
+    from src.skeleton import stroke_graph
+
+    g = stroke_graph(_e_mask())
+    ends = [n for n in g.nodes if n.kind == "end"]
+    juncs = [n for n in g.nodes if n.kind == "junction"]
+    assert len(ends) >= 3                 # arm tips (+ spine end)
+    assert len(juncs) >= 1                # middle arm joins spine
+    assert len(g.edges) >= 4              # spine segments + arms
+
+
+# ---------------------------------------------------------------------------
 # Fitting
 # ---------------------------------------------------------------------------
 
