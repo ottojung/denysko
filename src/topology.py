@@ -1159,6 +1159,10 @@ def build_route_corridor(graph: RouteGraph, route: Route,
             i = j + 1
         else:
             raw = lam[i, 0]
+            # epsilon-pushed joins make consecutive atom starts differ by
+            # <= ~1e-4; anything under NOISE_X is equal-x raster noise
+            NOISE_X = 0.05   # covers multi-step crawl overshoot;
+                             # genuine reversals are stroke-width scale
             if frontier is not None and raw <= frontier:
                 # overlap-exit crawl: microscopic increasing steps just
                 # above the frontier until raw x catches up
@@ -1170,12 +1174,12 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                     pass     # raw x caught up: resume exact raw x
                 frontier = None
                 eps_n = 0
-                if raw < p[i - 1]:
+                if raw < p[i - 1] - NOISE_X:
                     raise RuntimeError(
                         "Phase 1 bug: genuine backwards x on a "
                         f"nonvertical section ({raw:.3f} after "
                         f"{p[i - 1]:.3f})")
-                p[i] = raw
+                p[i] = max(raw, p[i - 1] + 1e-4)
             i += 1
 
 

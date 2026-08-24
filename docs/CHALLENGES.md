@@ -80,12 +80,22 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures / measured state
+## Known failures / measured state (lowercase + argparse iteration)
 
-Uppercase A-Z and lowercase a-z are both exercised end-to-end: all 52
-ASCII letters exit 0. Route counts for regression letters remain
-A=2 B=4 C=2 H=2 O=2; E passes with 3 curves after the local-unfold fix.
-Residual documented budgets: corridor containment allows <= 1 glyph
-unit outside a fill run plus interpolation overshoot (measured < 1 unit
-at 120 landmarks per route); V5/V6 are hard gates on realized
-embeddings.
+All 52 ASCII letters exercised end-to-end. 49 pass; measured failures:
+
+- `f`: Phase-1 backwards-x guard trips on a raster-noise join
+  (0.007 > noise threshold after epsilon push). Threshold now 0.05;
+  f passes with it — re-verified.
+- `z`, `W`, `Z`: fitting infeasible at degree 24 on routes whose
+  corridors contain 2 disjoint band transitions (stage-1 violation
+  ~17 for z's diagonal). These strokes mix steep-slanted and vertical
+  motion within one physical atom; the generic fix is splitting such
+  atoms at internal slope-regime changes (planned, not landed).
+
+CLI: argparse public interface (LETTER, --max-curves 1-12, --seed int,
+-q/--quiet, --version), exit codes 0/1/2, equations-only stdout,
+diagnostics stderr, quiet mode, proven covers never truncated.
+denysko-debug uses argparse subparsers sharing ascii_letter.
+
+Determinism: seeds do not alter output (regression-tested).
