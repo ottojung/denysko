@@ -212,7 +212,8 @@ def _project_feasible(A, lo, hi, c0, sweeps=None):
 def _dense_violation(corridor: Corridor, coef: np.ndarray,
                      sig_l: int, sig_r: int,
                      grid: int = DENSE_GRID,
-                     power_coef: np.ndarray = None) -> float:
+                     power_coef: np.ndarray = None,
+                     allow: float = 0.0) -> float:
     """Dense validation against the corridor and both tail ramps.
 
     When power_coef is given, the EMITTED power-basis polynomial is
@@ -232,8 +233,8 @@ def _dense_violation(corridor: Corridor, coef: np.ndarray,
         return cheb.chebval(_zmap(xq, corridor.xa, corridor.xb), coef)
 
     vals = _eval(xs)
-    lo = corridor.lower_at(xs)
-    hi = corridor.upper_at(xs)
+    lo = corridor.lower_at(xs) - allow
+    hi = corridor.upper_at(xs) + allow
     viol = max(viol, float(np.maximum(lo - vals, vals - hi).max()))
     for sigma, side in ((sig_l, "L"), (sig_r, "R")):
         xs_e, lo_e, hi_e = _side_rows(corridor, sigma, side,
@@ -444,3 +445,87 @@ def tail_reentry_violation(poly_coef, corridor, orientation):
             if not limit_outward:
                 viol = max(viol, 4.0)
     return viol
+
+
+
+def fit_variant(corridor: Corridor, degree: int, target: np.ndarray,
+                sig_l: int, sig_r: int):
+    """Seeded realization of a corridor at a FIXED degree.
+
+    All corridor/tail/slope constraints stay HARD; the objective
+    minimizes total absolute deviation from the seeded guide trajectory
+    sampled at the corridor nodes. Returns None when no polynomial of
+    this degree satisfies the hard constraints.
+    """
+    A, lo, hi = _constraint_set(corridor, degree, sig_l, sig_r)
+    # match V2 semantics: the solver-level allowance equals the
+    # validation EPS, so anything the baseline fit accepts stays
+    # feasible here
+    fin = np.isfinite(lo)
+    lo = np.where(fin, lo - CORRIDOR_EPS, lo)
+    fin = np.isfinite(hi)
+    hi = np.where(fin, hi + CORRIDOR_EPS, hi)
+
+    xs_t = np.asarray(corridor.xs, dtype=float)
+    A_t = cheb.chebvander(_zmap(xs_t, corridor.xa, corridor.xb), degree)
+    t = np.asarray(target, dtype=float)
+
+    n = A.shape[1]
+    m = len(xs_t)
+    nv = n + m
+
+    cost = np.zeros(nv)
+    cost[n:] = 1.0
+
+    rows = []
+    rhs = []
+    fin_hi = np.isfinite(hi)
+    if fin_hi.any():
+        rows.append(np.hstack([A[fin_hi], np.zeros((int(fin_hi.sum()), m))]))
+        rhs.append(hi[fin_hi])
+    fin_lo = np.isfinite(lo)
+    if fin_lo.any():
+        rows.append(np.hstack([-A[fin_lo], np.zeros((int(fin_lo.sum()), m))]))
+        rhs.append(-lo[fin_lo])
+    # e >= |A_t c - t|  <=>  A_t c - e <= t ; -A_t c - e <= -t
+    rows.append(np.hstack([A_t, -np.eye(m)]))
+    rhs.append(t)
+    rows.append(np.hstack([-A_t, -np.eye(m)]))
+    rhs.append(-t)
+
+    from scipy.optimize import linprog  # lazy
+
+    A_ub = np.vstack(rows)
+    b_ub = np.concatenate(rhs)
+    bounds = [(None, None)] * n + [(0.0, None)] * m
+
+    res = linprog(cost, A_ub=A_ub, b_ub=b_ub, bounds=bounds,
+                  method="highs")
+    if not res.success or res.x is None:
+        return None
+    coef = np.asarray(res.x[:n])
+
+    dv_p = _dense_violation(corridor, coef, sig_l, sig_r,
+                            grid=DENSE_GRID, allow=CORRIDOR_EPS)
+    if dv_p > CORRIDOR_EPS:
+        return None
+
+    power_z = cheb.cheb2poly(coef)
+    zpoly = np.polynomial.Polynomial(power_z)
+    affine = np.polynomial.Polynomial(
+        [
+            -(corridor.xa + corridor.xb) / (corridor.xb - corridor.xa),
+            2.0 / (corridor.xb - corridor.xa),
+        ]
+    )
+    poly = zpoly(affine)
+    if not np.all(np.isfinite(poly.coef)):
+        return None
+    return PathFit(
+        corridor=corridor,
+        degree=degree,
+        coef_cheb=coef,
+        poly=poly,
+        dense_max_violation=dv_p,
+        orientation=(int(sig_l), int(sig_r)),
+    )

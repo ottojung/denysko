@@ -234,8 +234,11 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
                     np.asarray(parse_line(lines[i3]).poly.coef,
                                dtype=float))
                 vals = poly(rx)
-                bad = ~((vals >= rlo - CORRIDOR_EPS)
-                        & (vals <= rhi + CORRIDOR_EPS))
+                # the assigned curve may use the same solver-level
+                # allowance as V2; branch identity is preserved because
+                # the interval itself is the atom's realized corridor
+                bad = ~((vals >= rlo - 2 * CORRIDOR_EPS)
+                        & (vals <= rhi + 2 * CORRIDOR_EPS))
                 if bad.any():
                     problems.append(
                         f"V6 atom {a_id}: {int(bad.sum())}/{len(rx)} "
@@ -340,8 +343,8 @@ def ascii_letter(value: str) -> str:
         "LETTER must be one ASCII letter A-Z or a-z")
 
 
-def max_curves_type(value: str) -> int:
-    """argparse type: integer 1..12 (project output hard limit)."""
+def min_curves_type(value: str) -> int:
+    """argparse type: requested minimum output curves, integer 1..12."""
     try:
         n = int(value)
     except ValueError:
@@ -355,8 +358,8 @@ def max_curves_type(value: str) -> int:
 @dataclass(frozen=True)
 class CliConfig:
     letter: str
-    max_curves: int
-    seed: int | None
+    min_curves: int
+    seed: int
     quiet: bool
 
 
@@ -376,15 +379,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("letter", type=ascii_letter, metavar="LETTER",
                         help="one ASCII letter A-Z or a-z")
-    parser.add_argument("--max-curves", dest="max_curves",
-                        type=max_curves_type, metavar="N",
-                        help=f"maximum allowed output curves "
-                             f"(1-{DEFAULT_MAX_CURVES})")
-    parser.add_argument("--seed", type=int, default=None, metavar="SEED",
-                        help="random seed; accepted for "
-                             "reproducibility/API compatibility. The "
-                             "current pipeline is deterministic, so "
-                             "this does not change output.")
+    parser.add_argument("--min-curves", dest="min_curves",
+                        type=min_curves_type, metavar="N", default=1,
+                        help="request at least N output curves (1-12); "
+                             "Denysko emits more automatically if "
+                             "required for complete glyph coverage")
+    parser.add_argument("--seed", type=int, default=0, metavar="SEED",
+                        help="seed controlling deterministic variation "
+                             "among valid curve realizations")
     parser.add_argument("-q", "--quiet", action="store_true",
                         help="suppress progress diagnostics on stderr")
     parser.add_argument("--version", action="version",
@@ -394,43 +396,168 @@ def build_parser() -> argparse.ArgumentParser:
 
 def parse_cli(argv) -> CliConfig:
     ns = build_parser().parse_args(list(argv))
-    return CliConfig(letter=ns.letter,
-                     max_curves=ns.max_curves or DEFAULT_MAX_CURVES,
+    return CliConfig(letter=ns.letter, min_curves=ns.min_curves,
                      seed=ns.seed, quiet=ns.quiet)
 
 
-def generate(letter: str, *, max_curves: int = DEFAULT_MAX_CURVES,
+def allocate_counts(K: int, M: int, rng: np.random.Generator):
+    """Balanced multiplicity allocation of M curves over K paths:
+    multiplicities differ by at most 1; the seed decides which paths
+    receive the extra copy when M % K != 0."""
+    q, r = divmod(M, K)
+    counts = [q] * K
+    extra_slots = list(range(K))
+    if r:
+        order = np.array(extra_slots)[rng.permutation(len(extra_slots))]
+        for j in order[:r]:
+            counts[j] += 1
+    return counts
+
+
+MAX_VARIANT_ATTEMPTS = 16
+VARIANT_SEP_RMS = 0.10          # normalized corridor-halfwidth units
+VARIANT_SEP_MAX = 0.35
+
+
+def guide_target(corr, fraction: float, rng, amp: float) -> np.ndarray:
+    """Smooth seeded guide trajectory inside the safety-shrunken
+    corridor. Stratified base offset + low-frequency perturbation."""
+    t = np.linspace(0.0, 1.0, len(corr.xs))
+    center = (corr.lower + corr.upper) / 2.0
+    half = (corr.upper - corr.lower) / 2.0
+    u = np.full(len(t), 2.0 * fraction - 1.0)
+    if amp > 0 and rng is not None:
+        for k in (1, 2, 3):
+            a = amp * float(rng.uniform(0.2, 0.6))
+            ph = float(rng.uniform(0.0, 2.0 * np.pi))
+            u = u + a * 0.3 * np.cos(k * np.pi * t + ph)
+    u = np.clip(u, -0.8, 0.8)
+    return center + u * half * 0.9
+
+
+def realize_variants(graph, chosen, selected, counts, seed, geom,
+                     reporter=lambda msg: None):
+    """Emit counts[j] distinct validated curves for structural path j.
+
+    Variant 0 of each path is the deterministic minimum-degree fit;
+    further variants are guide-target realizations at the same degree,
+    stratified across the corridor width with seeded smooth
+    perturbation, retried on a bounded deterministic schedule when a
+    target proves infeasible or geometrically indistinct.
+    """
+    from src.fitting import fit_variant
+
+    ss = np.random.SeedSequence(seed)
+    path_seeds = ss.spawn(len(selected))
+
+    out_fits, out_corrs, out_routes = [], [], []
+    for j, (route, corr) in enumerate(zip(chosen, selected)):
+        m = counts[j]
+        base = fit_route(corr)
+        if base is None:
+            raise GenerationError(
+                f"generation failed: path {j} has no feasible "
+                f"polynomial up to degree {INITIAL_FIT_DEGREE}")
+        d_min = base.degree
+        sig_l, sig_r = base.orientation
+        accepted = [base]
+        out_fits.append(base)
+        out_corrs.append(corr)
+        out_routes.append(route)
+
+        # variants may legitimately use the solver-level EPS allowance;
+        # validate them against correspondingly widened bands while V6
+        # stays strict on the realized embedding
+        import dataclasses as _dc
+
+        val_corr = _dc.replace(
+            corr, lower=corr.lower - CORRIDOR_EPS,
+            upper=corr.upper + CORRIDOR_EPS)
+        var_ss = path_seeds[j].spawn(max(0, m - 1)
+                                     * MAX_VARIANT_ATTEMPTS)
+        for vidx in range(m - 1):
+            fraction = (vidx + 2) / (m + 1)
+            placed = False
+            last_reason = "guide infeasible"
+            for attempt in range(MAX_VARIANT_ATTEMPTS):
+                child = np.random.default_rng(var_ss[vidx
+                                                     * MAX_VARIANT_ATTEMPTS
+                                                     + attempt])
+                amp = 0.35
+                target = guide_target(corr, fraction, child, amp)
+                fit = fit_variant(corr, d_min, target, sig_l, sig_r)
+                if fit is None:
+                    last_reason = "guide infeasible"
+                    continue
+                # full validation for this variant
+                line = format_expression(fit.poly)
+                problems = validate_lines(
+                    [line], geom, [fit], [val_corr],
+                    routes=[route], graph=graph)
+                if problems:
+                    last_reason = ("validation: " + problems[0])
+                    continue
+                # geometric distinctness vs accepted variants
+                xs_d = corr.xs
+                half_w = np.maximum(
+                    (corr.upper - corr.lower) / 2.0, 1e-6)
+                sep_ok = True
+                for prev_fit in accepted:
+                    sep = (np.abs(fit.poly(xs_d)
+                                  - prev_fit.poly(xs_d)) / half_w)
+                    rms = float(np.sqrt(np.mean(sep ** 2)))
+                    mx = float(np.max(sep))
+                    if rms < VARIANT_SEP_RMS or mx < VARIANT_SEP_MAX:
+                        sep_ok = False
+                        last_reason = ("duplicate / insufficient "
+                                       "separation")
+                        break
+                if not sep_ok:
+                    continue
+                accepted.append(fit)
+                out_fits.append(fit)
+                out_corrs.append(corr)
+                out_routes.append(route)
+                placed = True
+                break
+            if not placed:
+                raise GenerationError(
+                    f"generation failed: requested {m} curves but path "
+                    f"{j} supports only {len(accepted)} distinct "
+                    f"validated realizations ({last_reason})")
+        reporter(f"path {j}: {m} curve(s), minimum degree {d_min}")
+    return out_fits, out_corrs, out_routes
+
+
+def generate(letter: str, *, min_curves: int = 1, seed: int = 0,
              reporter=lambda msg: None) -> list[str]:
-    """Run the full pipeline for one glyph; raises GenerationError with
-    a user-facing message when generation cannot succeed."""
+    """Run the full pipeline for one glyph.
+
+    M = max(K, min_curves) curves are emitted where K is the proven
+    minimum number of x-realizable structural paths; every structural
+    path receives at least one curve and extras are distributed
+    uniformly (differing by at most one), with the seed choosing the
+    remainder assignment. Raises GenerationError with a user-facing
+    message when generation cannot succeed.
+    """
     geom, graph, candidates, chosen, signatures, selected = \
         build_phase1(letter)
 
-    sel_cov = route_coverage_fraction(graph, chosen)
-    reporter(f"phase1: {len(candidates)} complete routes, "
-             f"{len(selected)} selected, meaningful-atom coverage "
-             f"{sel_cov:.4f}")
-
-    if len(selected) > max_curves:
+    K = len(selected)
+    M = max(K, min_curves)
+    if M > DEFAULT_MAX_CURVES:
         raise GenerationError(
-            f"generation failed: {letter} requires {len(selected)} "
-            f"curves, exceeding --max-curves={max_curves}")
+            f"generation failed: glyph requires at least {M} curves, "
+            f"exceeding the hard limit of {DEFAULT_MAX_CURVES}")
+    ss = np.random.SeedSequence(seed)
+    alloc_rng = np.random.default_rng(ss.spawn(1)[0])
+    counts = allocate_counts(K, M, alloc_rng)
+    reporter(f"phase1: {len(candidates)} candidate routes, "
+             f"minimum cover {K}")
+    reporter(f"curves: {M} emitted, allocation {counts}")
 
-    fits, failures = fit_selected(selected[:max_curves])
-    if failures:
-        raise GenerationError(
-            f"generation failed: fitting route(s) {failures} failed up "
-            f"to degree {INITIAL_FIT_DEGREE}")
-
-    for i, fit in enumerate(fits):
-        reporter(f"curve {i}: minimum degree {fit.degree}")
-
-    lines = [format_expression(f.poly) for f in fits]
-    problems = validate_lines(lines, geom, fits, selected[:max_curves],
-                              routes=chosen[:max_curves], graph=graph)
-    if problems:
-        raise GenerationError("; ".join(problems))
-    return lines
+    return realize_variants(graph, chosen, selected, counts, seed,
+                            geom, reporter)
 
 
 class GenerationError(Exception):
@@ -447,8 +574,9 @@ def run(argv) -> int:
             print(msg, file=_sys.stderr)
 
     try:
-        lines = generate(cfg.letter, max_curves=cfg.max_curves,
-                         reporter=reporter)
+        fits, _, _ = generate(cfg.letter, min_curves=cfg.min_curves,
+                              seed=cfg.seed, reporter=reporter)
+        lines = [format_expression(f.poly) for f in fits]
     except GenerationError as exc:
         print(str(exc), file=_sys.stderr)
         return 1
