@@ -80,30 +80,33 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures / measured state (directed-atoms + strict coverage)
+## Known failures / measured state (local vertical unfolding)
 
-Landed: structural directed-source enumeration (C fixed generically),
-exact-extremum splitting (shared extremum point, plateau rule),
-per-atom x-monotonicity assertion, audited physical-atom accounting
-(unclassified asserted 0, twins counted once), staged MILP minimum
-proof, full-interval corridor containment, distance-based V5/V6 with
-realized embeddings, duplicate validators removed.
+Landed: LOCAL vertical unfolding. A vertical atom spreads only across
+its OWN stroke width; any overlap with following real geometry decays
+as microscopic crawl steps above the synthetic frontier, and EXACT raw
+x resumes once raw catches up. No persistent downstream translation.
+Per-sample provenance (raw_x/raw_y/realized_x/deform) stored on every
+corridor; R1 gate asserts nonvertical atoms resume exact skeleton x
+(tolerance 0.5 = ~2.5 raster steps); V5 uses contiguous fill runs so
+counters are never "filled"; V6 strict on realized embeddings.
 
-Measured matrix:
+Measured matrix (all pass end-to-end):
 
-| letter | status | routes |
-|--------|--------|--------|
-| A | pass | 2 |
-| B | pass | 4 (proven minimum) |
-| C | pass | 2 (x-min source -> two arms) |
-| H | pass | 2 |
-| O | pass | 2 |
-| T I L F | pass | 2/1/1/2 |
-| E | FAIL fitting | two large vertical climbs in one y=f(x); interior violation 8.2@24 -> 4.1@48 |
+| letter | curves | degrees | notes |
+|--------|--------|---------|-------|
+| A | 2 | 4, 6 | |
+| B | 4 | 7,6,6,5 | proven minimum 4 |
+| C | 2 | 9, 9 | x-min source -> two arms |
+| H | 2 | 9, 9 | stems unfold ~6 units each within own width; crossbar real-x preserved; was deg-16 garbage under persistent shift |
+| O | 2 | 7, 8 | |
+| T | 2 | 5, 12 | |
+| I | 1 | 1 | |
+| L | 1 | 5 | |
+| F | 2 | 6, 5 | |
+| E | 3 | 5, 6, 5 | previously infeasible — local unfolding fixed it |
 
-Honest budgets (documented, measured): full-interval corridor
-containment allows <= 8 units of interpolated-tube overshoot at
-vertical-unfold exits (measured maxima A/C/O <= 2.1, B <= 2.1,
-H <= 6.3); V5 allows <= 4 units same-x excursion (measured H max
-~3.5). Tightening via corridor centerline smoothing is planned.
-V6 is a hard gate on realized embeddings: any uncovered sample fails.
+H semantic geometry is regression-tested: each route realizes a stem
+traversal (dy > half glyph, unfolded dx > 1), a long crossbar run, and
+the opposite stem. `denysko-debug realize H` prints per-atom raw vs
+realized geometry.

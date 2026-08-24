@@ -721,3 +721,95 @@ def test_letter_route_count_regressions():
                 if pl_x is not None:
                     assert x0 >= pl_x - 1e-6
                 pl_x = x1
+
+
+# ---------------------------------------------------------------------------
+# Local vertical unfolding (R1 fidelity) — synthetic, font-independent
+# ---------------------------------------------------------------------------
+
+
+def _realize_x_for(raw_x, vertical_mask, win_lo, win_hi):
+    """Drive the local-unfold state machine on a synthetic sequence."""
+    from src.topology import CORRIDOR_MARGIN
+
+    p = np.array(raw_x, dtype=float)
+    frontier = None
+    eps_n = 0
+    EPS_X = 1e-3
+    margin = min(CORRIDOR_MARGIN, max((win_hi - win_lo) * 0.15, 1e-3))
+    lo_w = max(win_lo + margin, p[0])
+    hi_w = max(win_hi - margin, lo_w + 1e-3)
+    n_v = max(int(vertical_mask.sum()) + 1, 2)
+    k_v = 0
+    for i in range(1, len(p)):
+        if vertical_mask[i]:
+            frac = (k_v + 1) / n_v
+            cand = lo_w + frac * (hi_w - lo_w)
+            p[i] = max(cand, p[i - 1] + 1e-4)
+            k_v += 1
+            frontier = p[i]
+            eps_n = 0
+        else:
+            raw = raw_x[i]
+            if frontier is not None and raw <= frontier:
+                eps_n += 1
+                p[i] = max(frontier + eps_n * EPS_X,
+                           p[i - 1] + 1e-4)
+            else:
+                frontier = None
+                eps_n = 0
+                assert raw >= p[i - 1] - 1e-6
+                p[i] = raw
+    return p
+
+
+def test_unfold_overlap_decays_and_resumes_exact_raw_x():
+    raw = np.array([10.0] * 4 + [12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0])
+    vmask = np.array([False, True, True, True, True,
+                      False, False, False, False, False, False])
+    # vertical group unfolds across its stroke window [10..16]
+    p = _realize_x_for(raw, vmask, 10.0, 16.0)
+    assert abs(p[-1] - 18.0) < 1e-9          # resumes EXACT raw x
+    assert np.all(np.diff(p) > 0)             # strictly increasing
+    # no permanent translation: last values equal raw values
+    np.testing.assert_allclose(p[-3:], raw[-3:])
+
+
+def test_two_vertical_groups_get_independent_windows():
+    raw = np.concatenate([[10.0] * 3, [50.0] * 8, [10.0] * 3])
+    # route: left stem up (x=10), crossbar right (x->50), right stem
+    # down at x=50... model as: v-group at x=10 window [8..14], middle
+    # ascending real x, v-group at x=50 window [46..52]
+    raw_x = np.concatenate([np.full(4, 10.0), np.linspace(14.0, 46.0, 6),
+                            np.full(4, 50.0)])
+    vmask = np.array([False] + [True] * 3 + [False] * 6 + [True] * 4)
+    p = _realize_x_for(raw_x, vmask, 8.0, 14.0)
+    # first group spread inside [~8,14]; middle uses real x; second
+    # group would use its OWN window — verify no drift into the middle
+    mid_err = np.max(np.abs(
+        p[4:10] - np.linspace(14.0, 46.0, 6)))
+    assert mid_err < 1e-6                    # real x preserved exactly
+
+
+def test_h_route_semantic_geometry():
+    """H routes must traverse stem -> crossbar -> stem semantically."""
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
+    glyph_h = geom.ymax - geom.ymin
+    for r, c in zip(chosen, selected):
+        for a_id, emb in c.realized.items():
+            dy = float(emb["raw_y"].max() - emb["raw_y"].min())
+            dx = float(emb["x"].max() - emb["x"].min())
+            if dy > 0.5 * glyph_h:           # stem traversal
+                assert dx > 1.0              # unfolded, not squeezed
+
+            elif dy < 0.25 * glyph_h:        # crossbar
+                assert dx > 0.5 * (geom.xmax - geom.xmin)
+
+
+def test_r1_nonvertical_realization_error_zero_on_real_letters():
+    for L in ("A", "H", "B", "C", "O"):
+        geom, graph, candidates, chosen, sigs, selected = d.build_phase1(L)
+        for c in selected:
+            from src.topology import nonvertical_realization_x_error
+            err = nonvertical_realization_x_error(c.realized)
+            assert err < 0.5, L

@@ -35,6 +35,7 @@ from src.topology import (
     corridor_glyph_violation,
     poly_glyph_violation,
     route_continuity_violation,
+    nonvertical_realization_x_error,
     atom_coverage_misses,
     route_edge_coverage,
     route_coverage_fraction,
@@ -224,7 +225,8 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
                  for r, line in zip(routes, lines)
                  for s_ in r.steps]
         for i3, (r, corr) in enumerate(zip(routes, corridors)):
-            for a_id, (rx, ry, rlo, rhi) in corr.realized.items():
+            for a_id, emb in corr.realized.items():
+                rx, rlo, rhi = emb["x"], emb["lower"], emb["upper"]
                 poly = np.polynomial.Polynomial(
                     np.asarray(parse_line(lines[i3]).poly.coef,
                                dtype=float))
@@ -277,6 +279,15 @@ def build_phase1(letter: str):
         raise RuntimeError(
             f"Phase 1: atoms not realized by any selected corridor: "
             f"{missing}")
+    # R1: realization fidelity — vertical deformation must be local;
+    # nonvertical atoms resume exact skeleton x after unfold overlap.
+    # Tolerance = ~2.5 raster steps (interpolation between landmarks).
+    for j, corr in enumerate(selected):
+        err = nonvertical_realization_x_error(corr.realized)
+        if err > 0.5:
+            raise RuntimeError(
+                f"Phase 1 R1: corridor {j} realization x error "
+                f"{err:.3f} exceeds raster-derived tolerance")
     signatures = [_route_signature(ids) for ids in chosen]
     return geom, graph, candidates, chosen, signatures, selected
 
@@ -400,7 +411,8 @@ def debug_entry() -> int:
     parser = argparse.ArgumentParser(prog="denysko-debug")
     parser.add_argument(
         "command",
-        choices=["routes", "graph", "select", "fit", "uncovered"],
+        choices=["routes", "graph", "select", "fit", "uncovered",
+                 "realize"],
     )
     parser.add_argument("letter")
     parser.add_argument("--index", type=int, default=None)
@@ -409,6 +421,17 @@ def debug_entry() -> int:
     geom, graph, candidates, chosen, signatures, selected = \
         build_phase1(args.letter)
 
+    if args.command == "realize":
+        for i3, (r, corr) in enumerate(zip(chosen, selected)):
+            for a_id, emb in sorted(corr.realized.items()):
+                e = graph.edges[a_id] if a_id < len(graph.edges) else None
+                print(f"route {i3} atom {a_id}: "
+                      f"raw x[{emb['raw_x'].min():.1f}..{emb['raw_x'].max():.1f}] "
+                      f"y[{emb['raw_y'].min():.1f}..{emb['raw_y'].max():.1f}] "
+                      f"realized x[{emb['x'].min():.1f}..{emb['x'].max():.1f}] "
+                      f"maxdx={float(np.max(np.abs(emb['x'] - emb['raw_x']))):.2f} "
+                      f"deform={sorted(set(emb['deform']))}")
+        return 0
     if args.command == "routes":
         for i, ids in enumerate(candidates):
             print(f"route {i}: edges {ids}")

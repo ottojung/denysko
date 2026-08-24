@@ -505,17 +505,22 @@ def poly_glyph_violation(coef, corridor: Corridor, geom: GlyphGeometry,
     worst = 0.0
     for xi, yi in zip(xs, vals):
         col = int(min(max(round(xi / step), 0), geom.fill.shape[1] - 1))
+        # contiguous runs only: counters/holes are NOT filled
+        runs, r0 = [], None
         colm = geom.fill[:, col]
-        rr = np.nonzero(colm)[0]
-        if len(rr) == 0:
+        for rr in range(len(colm)):
+            if colm[rr] and r0 is None:
+                r0 = rr
+            elif not colm[rr] and r0 is not None:
+                runs.append((r0 * step, rr * step))
+                r0 = None
+        if r0 is not None:
+            runs.append((r0 * step, len(colm) * step))
+        if not runs:
             continue
-        inside = (yi >= rr.min() * step - raster_tol
-                  and yi <= (rr.max() + 1) * step + raster_tol)
-        if not inside:
-            d = min(abs(yi - rr.min() * step),
-                    abs((rr.max() + 1) * step - yi))
-            worst = max(worst, d - raster_tol)
-    return float(max(0.0, worst))
+        d_best = min(max(blo - yi, yi - bhi, 0.0) for blo, bhi in runs)
+        worst = max(worst, max(0.0, d_best - raster_tol))
+    return float(worst)
 
 
 def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
@@ -1085,11 +1090,18 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                 return lo_g, hi_g
         return None
 
-    # ---- constraint positions --------------------------------------
+    # ---- constraint positions: LOCAL vertical unfolding --------------
+    # A vertical atom unfolds across ITS OWN stroke width only. Any
+    # resulting overlap with following real geometry decays: landmarks
+    # crawl just above the synthetic frontier until raw x catches up,
+    # then EXACT raw x resumes. No persistent downstream translation.
     VERT = 0.25          # |dx| < VERT*dy => locally vertical
+    EPS_X = 1e-3
     p = np.array(lam[:, 0], dtype=float)
-    shift = 0.0
-    in_unfold_exit = False
+    deform = np.array(["none"] * len(p), dtype=object)
+    frontier = None      # synthetic frontier after an unfold
+    eps_n = 0            # crawl step counter inside overlap
+    unfold_windows = []  # audit: (win_lo, win_hi) per vertical group
     i = 1
     while i < len(p):
         dx = lam[i, 0] - lam[i - 1, 0]
@@ -1117,28 +1129,32 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                 cand = win_lo + frac * (win_hi - win_lo)
                 cand = min(max(cand, lo_r + 1e-3), hi_r - 1e-3)
                 p[k] = max(cand, p[k - 1] + 1e-4)
-            in_unfold_exit = True   # next real section may start inside
-            i = j + 1               # the consumed window
+                deform[k] = "vertical-unfold"
+            unfold_windows.append((round(win_lo, 3), round(win_hi, 3)))
+            frontier = p[j]
+            eps_n = 0
+            i = j + 1
         else:
-            # Nonvertical: real skeleton x. A small backwards step right
-            # after a vertical unfold is the unfold OVERLAP (the next
-            # atom starts inside the consumed window) - resolved by a
-            # tracked forward continuation that preserves downstream
-            # real spacing. A LATER genuine decrease (after real x has
-            # caught up) is a Phase-1 bug and raises.
-            raw = lam[i, 0] + shift
-            if raw < p[i - 1]:
-                if p[i - 1] - raw > 1e-6 and not in_unfold_exit:
-                    raise RuntimeError(
-                        "Phase 1 bug: genuine backwards x "
-                        f"({raw:.3f} after {p[i - 1]:.3f})")
-                p[i] = p[i - 1] + 1e-4
+            raw = lam[i, 0]
+            if frontier is not None and raw <= frontier:
+                # overlap-exit crawl: microscopic increasing steps just
+                # above the frontier until raw x catches up
+                eps_n += 1
+                p[i] = max(frontier + eps_n * EPS_X, p[i - 1] + 1e-4)
+                deform[i] = "unfold-exit-overlap"
             else:
+                if frontier is not None:
+                    pass     # raw x caught up: resume exact raw x
+                frontier = None
+                eps_n = 0
+                if raw < p[i - 1]:
+                    raise RuntimeError(
+                        "Phase 1 bug: genuine backwards x on a "
+                        f"nonvertical section ({raw:.3f} after "
+                        f"{p[i - 1]:.3f})")
                 p[i] = raw
-            shift = max(shift, p[i] - lam[i, 0])
-            if lam[i, 0] >= p[i - 1] - 1e-9:
-                in_unfold_exit = False
             i += 1
+
 
     # ---- node bands: continuity-tracked fill intervals ---------------
     # Each node's band lives inside a filled run of ITS OWN constraint
@@ -1231,18 +1247,25 @@ def build_route_corridor(graph: RouteGraph, route: Route,
     path = BoundaryPath(points=np.column_stack([p, center]),
                         contour_id=-1)
 
-    # realized embedding per physical atom (for strict V6), restricted
-    # to the kept node range
+    # realized embedding per physical atom (strict V6 / R1 fidelity),
+    # restricted to the kept node range. Provenance per sample:
+    # raw_x, raw_y, realized_x, center_y, lower, upper, deformation.
     realized = {}
     for i3 in range(lo_keep, hi_keep + 1):
         a_id = atom_of_landmark[i3]
-        realized.setdefault(a_id, [[], [], [], []])
-        realized[a_id][0].append(p[i3 - lo_keep])
-        realized[a_id][1].append(center[i3 - lo_keep])
-        realized[a_id][2].append(lower[i3 - lo_keep])
-        realized[a_id][3].append(upper[i3 - lo_keep])
-    realized = {k: tuple(np.asarray(v) for v in v4)
+        r = realized.setdefault(a_id, {
+            "raw_x": [], "raw_y": [], "x": [], "y": [],
+            "lower": [], "upper": [], "deform": []})
+        r["raw_x"].append(lam[i3, 0])
+        r["raw_y"].append(lam[i3, 1])
+        r["x"].append(p[i3 - lo_keep])
+        r["y"].append(center[i3 - lo_keep])
+        r["lower"].append(lower[i3 - lo_keep])
+        r["upper"].append(upper[i3 - lo_keep])
+        r["deform"].append(deform[i3])
+    realized = {k: {kk: np.asarray(vv) for kk, vv in v4.items()}
                 for k, v4 in realized.items()}
+
 
     pad = ESC_OFFSETS[-1] + 1.0
     return Corridor(
@@ -1257,6 +1280,25 @@ def build_route_corridor(graph: RouteGraph, route: Route,
         realized=realized,
     )
 
+
+
+def nonvertical_realization_x_error(realized: dict,
+                                    raster_step: float = SIZE / GRID,
+                                    tol: float = 1.0):
+    """R1: max |realized_x - raw_x| over NONVERTICAL-atom samples that
+    are not inside a declared unfold-exit overlap. Must be within tiny
+    tolerance: vertical deformation may not propagate into other atoms."""
+    worst = 0.0
+    for a_id, r in realized.items():
+        # only UNDEFORMED nonvertical samples count: 'unfold-exit-
+        # overlap' and 'vertical-unfold' samples are declared synthetic
+        mask = np.asarray(r["deform"]) == "none"
+        if not mask.any():
+            continue
+        d = np.abs(np.asarray(r["x"])[mask]
+                   - np.asarray(r["raw_x"])[mask])
+        worst = max(worst, float(d.max()))
+    return worst
 
 
 def build_slice_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
@@ -1314,7 +1356,7 @@ STROKE_COVER_TOL = 10.0         # >= max corridor half-width (TAU +
                                # poly inside its corridor can miss the
                                # skeleton by at most this much
 VERTICAL_X_TOL = 1.0          # |dx_total| <= this => vertical atom
-STROKE_LANDMARKS = 80        # corridor landmark samples per route
+STROKE_LANDMARKS = 120        # corridor landmark samples per route
 STROKE_RADIUS_GAIN = 1.6     # corridor half-width = gain * stroke radius
 STROKE_MIN_HALF = 0.8        # never narrower than this
 
