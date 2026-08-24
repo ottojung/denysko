@@ -777,14 +777,18 @@ def build_route_corridor(graph: RouteGraph, route: Route,
             return col_fill_runs(col)
 
         best = None
-        best_overlap = -1.0
+        best_key = None
         for blo, bhi in _runs():
             ov_lo, ov_hi = max(cand_lo, blo), min(cand_hi, bhi)
             ov = ov_hi - ov_lo
-            if ov > best_overlap:
-                best_overlap = ov
-                best = (ov_lo, ov_hi) if ov > 0 else (
-                    blo, bhi)
+            # prefer largest overlap; if none overlaps, take the run
+            # NEAREST the skeleton point (never invent an empty-space
+            # sliver that would contradict neighbouring nodes)
+            key = (ov if ov > 0 else -min(abs(blo - y_g),
+                                         abs(bhi - y_g)))
+            if best_key is None or key > best_key:
+                best_key = key
+                best = (ov_lo, ov_hi) if ov > 0 else (blo, bhi)
         if best is None:
             mid_y = 0.5 * (cand_lo + cand_hi)
             best = (mid_y - STROKE_MIN_HALF, mid_y + STROKE_MIN_HALF)
