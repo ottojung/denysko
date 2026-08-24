@@ -192,7 +192,20 @@ class RouteEdge:
 class RouteGraph:
     vertices: list[RouteVertex]
     edges: list[RouteEdge]
-    meaningful: frozenset           # edge ids that selection must cover
+    meaningful: frozenset           # PHYSICAL atom ids to cover
+    atom_report: dict = None        # skeleton length accounting (audit)
+    twin_of: dict = None            # directed twin edge -> physical atom
+
+    def __post_init__(self):
+        if self.atom_report is None:
+            self.atom_report = {}
+        if self.twin_of is None:
+            self.twin_of = {}
+
+    def physical_atom(self, edge_id: int) -> int:
+        """Physical (direction-independent) atom id for an edge."""
+        t = self.twin_of.get(edge_id)
+        return t if t is not None and t < edge_id else edge_id
 
     def outgoing_edges(self, vertex_id: int):
         return [e for e in self.edges if e.v_from == vertex_id]
@@ -415,6 +428,24 @@ class Route:
     steps: tuple
 
 
+@dataclass(frozen=True)
+class StrokeAtom:
+    """One x-monotone (or genuinely vertical) required stroke piece.
+
+    Every atom corresponds to exactly one directed graph edge (vertical
+    atoms have two twin directed edges). Provenance records the raw
+    skeleton chains it came from, so raw material is fully accounted:
+    atomized + discarded == raw.
+    """
+    id: int
+    from_vertex: int
+    to_vertex: int
+    points: np.ndarray
+    length: float
+    kind: str                        # 'mono' | 'vertical'
+    source_skeleton_edge_ids: tuple
+
+
 def _route_signature(route):
     if isinstance(route, tuple):
         return "/".join(f"e{e}" for e in route)
@@ -425,20 +456,25 @@ def _route_signature(route):
 
 def enumerate_complete_routes(graph: RouteGraph,
                               cap: int = MAX_ROUTES) -> list[Route]:
-    """Enumerate complete routes as oriented walks.
+    """Enumerate every DIRECTED x-realizable route.
 
-    Routes are undirected edge-simple paths between terminal vertices;
-    each traversal direction is recorded explicitly. A terminal always
-    terminates a route. Mirror duplicates (same walk, opposite
-    direction) are canonicalized away deterministically. Exceeding
-    MAX_ROUTES RAISES rather than silently truncating.
+    All non-vertical atoms are oriented ascending-x, so any directed
+    walk is globally x-nondecreasing: backwards-x routes simply do not
+    exist in this graph (the central y=f(x) realizability invariant,
+    enforced structurally rather than by repair). Vertical atoms carry
+    twin directed edges; a walk may use either direction of a physical
+    stroke but never both twins back-to-back (no fake retracing).
+
+    A route starts at a terminal vertex and ends at a terminal OR at a
+    sink (a vertex with no outgoing edges, e.g. a bowl x-extremum tip).
+    Exceeding MAX_ROUTES RAISES: an exact minimum cover is never claimed
+    from an incomplete candidate set.
     """
-    incident: dict[int, list[tuple[int, int]]] = {}
+    outgoing: dict[int, list[tuple[int, int]]] = {}
     for e in graph.edges:
-        incident.setdefault(e.v_from, []).append((e.id, e.v_to))
-        incident.setdefault(e.v_to, []).append((e.id, e.v_from))
-    for v in incident:
-        incident[v].sort()
+        outgoing.setdefault(e.v_from, []).append((e.id, e.v_to))
+    for v in outgoing:
+        outgoing[v].sort()
 
     terminals = {v.id for v in graph.vertices
                  if v.kind in ("source", "sink", "terminal")}
@@ -447,11 +483,19 @@ def enumerate_complete_routes(graph: RouteGraph,
     budget = [cap]
 
     def dfs(v, seen, path):
-        for eid, w in incident.get(v, []):
+        steps = outgoing.get(v, [])
+        if not steps:
+            return
+        for eid, w in sorted(steps):
             if eid in seen:
                 continue
+            if path and path[-1].to_vertex == v \
+                    and graph.twin_of.get(eid) == path[-1].edge_id:
+                continue   # no immediate retrace along the twin
             npath = path + (OrientedRouteEdge(eid, v, w),)
-            if w in terminals:
+            if w in terminals or not outgoing.get(w):
+                # sink vertices (bowl tips) terminate routes too: one
+                # y=f(x) cannot pass an x-extremum and come back
                 raw.append(Route(npath))
                 budget[0] -= 1
                 if budget[0] < 0:
@@ -462,40 +506,22 @@ def enumerate_complete_routes(graph: RouteGraph,
 
     for t in sorted(terminals):
         dfs(t, frozenset(), ())
-
-    def canon_key(r):
-        rev = Route(tuple(OrientedRouteEdge(s.edge_id, s.to_vertex,
-                                            s.from_vertex)
-                           for s in reversed(r.steps)))
-        return min(_route_signature(r), _route_signature(rev))
-
-    best: dict[str, Route] = {}
-    for r in raw:
-        k = canon_key(r)
-        cur = best.get(k)
-        if cur is None or _route_signature(r) < _route_signature(cur):
-            best[k] = r
-
-    # orient every route LEFT-TO-RIGHT: y=f(x) corridors ascend in x, so
-    # a right-to-left walk must be replaced by its reverse (otherwise
-    # the monotone cleanup collapses the corridor to constant x)
-    out = []
-    for k in sorted(best):
-        r = best[k]
-        x0 = graph.vertices[r.steps[0].from_vertex].x
-        x1 = graph.vertices[r.steps[-1].to_vertex].x
-        if x0 > x1 + 1e-9:
-            r = Route(tuple(OrientedRouteEdge(s.edge_id, s.to_vertex,
-                                              s.from_vertex)
-                             for s in reversed(r.steps)))
-        out.append(r)
-    return out
+    return sorted(set(raw), key=_route_signature)
 
 
 def route_edge_ids(route):
     if isinstance(route, tuple):
         return route
     return tuple(s.edge_id for s in route.steps)
+
+
+def route_atom_ids(graph: RouteGraph, route) -> frozenset:
+    """Physical atom ids a route realizes (twins collapse)."""
+    if isinstance(route, Route):
+        ids = (s.edge_id for s in route.steps)
+    else:
+        ids = route
+    return frozenset(graph.physical_atom(e) for e in ids)
 
 
 def route_edge_coverage(graph: RouteGraph, selected: list) -> np.ndarray:
@@ -513,7 +539,7 @@ def route_coverage_fraction(graph: RouteGraph, selected: list):
         return 1.0
     hit = set()
     for r in selected:
-        hit |= set(route_edge_ids(r))
+        hit |= route_atom_ids(graph, r)
     return len(graph.meaningful & hit) / len(graph.meaningful)
 
 
@@ -531,7 +557,7 @@ def select_routes_min_cover(graph: RouteGraph, candidates: list):
     if not meaningful or not candidates:
         return []
 
-    cand_sets = [frozenset(route_edge_ids(r)) & set(meaningful)
+    cand_sets = [route_atom_ids(graph, r) & set(meaningful)
                  for r in candidates]
     n_r = len(candidates)
     n_e = len(meaningful)
@@ -731,12 +757,6 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                     j += 1
                 else:
                     break
-            # vertical group i..j: spread across this stroke's OWN width.
-            # Reference window = NARROWEST member run (a member touching
-            # a crossbar row sees a full-width run that would poison the
-            # estimate). The window STARTS where the walk currently is:
-            # win_lo = max(run_lo+margin, p[i-1]) — never behind it, so
-            # bands cannot stack conflicting y demands at equal x.
             wins = [local_run(lam[k, 0], lam[k, 1])
                     or (lam[k, 0] - STROKE_MIN_HALF,
                         lam[k, 0] + STROKE_MIN_HALF)
@@ -756,59 +776,66 @@ def build_route_corridor(graph: RouteGraph, route: Route,
             p[i] = max(lam[i, 0], p[i - 1] + 1e-4)
             i += 1
 
-    # ---- node bands: skeleton band clamped into its own column ------
-    # One robust pass: each constraint node's vertical band starts as
-    # skeleton point +/- local stroke radius, then is clamped into the
-    # filled interval of ITS OWN constraint column (the run containing
-    # the skeleton point, or the nearest run otherwise). The band always
-    # stays inside the fill and keeps the skeleton point whenever the
-    # fill does.
+    # ---- node bands: continuity-tracked fill intervals ---------------
+    # Each node's band lives inside a filled run of ITS OWN constraint
+    # column. Run identity is tracked continuously: a node picks the run
+    # overlapping its predecessor's band (same physical stroke), only
+    # falling back to the skeleton-point run at route start/junctions.
+    # This prevents silent snaps between nearby branches (e.g. B bowls).
     lo_list, hi_list = [], []
+    prev_band = None
     for i2 in range(len(p)):
-        x_g, y_g = p[i2], lam[i2, 1]
-        col = int(min(max(round(x_g / step), 0), geom.fill.shape[1] - 1))
-        row = int(min(max(round(lam[i2, 1] / step), 0),
-                      geom.fill.shape[0] - 1))
-        half = max(STROKE_RADIUS_GAIN * float(radius[row, col]) * step,
+        y_g = lam[i2, 1]
+        row = int(min(max(round(y_g / step), 0), geom.fill.shape[0] - 1))
+        scol = int(min(max(round(lam[i2, 0] / step), 0),
+                       geom.fill.shape[1] - 1))
+        ccol = int(min(max(round(p[i2] / step), 0),
+                       geom.fill.shape[1] - 1))
+        half = max(STROKE_RADIUS_GAIN * float(radius[row, scol]) * step,
                    STROKE_MIN_HALF)
         cand_lo, cand_hi = y_g - half, y_g + half
 
-        def _runs():
-            return col_fill_runs(col)
-
-        best = None
-        best_key = None
-        for blo, bhi in _runs():
-            ov_lo, ov_hi = max(cand_lo, blo), min(cand_hi, bhi)
-            ov = ov_hi - ov_lo
-            # prefer largest overlap; if none overlaps, take the run
-            # NEAREST the skeleton point (never invent an empty-space
-            # sliver that would contradict neighbouring nodes)
-            key = (ov if ov > 0 else -min(abs(blo - y_g),
-                                         abs(bhi - y_g)))
-            if best_key is None or key > best_key:
-                best_key = key
-                best = (ov_lo, ov_hi) if ov > 0 else (blo, bhi)
-        if best is None:
-            mid_y = 0.5 * (cand_lo + cand_hi)
-            best = (mid_y - STROKE_MIN_HALF, mid_y + STROKE_MIN_HALF)
-        lo_y, hi_y = best
-        if not (lo_y <= y_g <= hi_y):
-            # keep the skeleton point honoured: widen toward it
-            lo_y = min(lo_y, y_g)
-            hi_y = max(hi_y, y_g)
-            # re-clamp into the containing run if possible
-            for blo, bhi in _runs():
-                if blo - step <= y_g <= bhi + step:
-                    lo_y = max(lo_y, blo)
-                    hi_y = min(hi_y, bhi)
+        runs_c = col_fill_runs(ccol)
+        chosen = None
+        if prev_band is not None:
+            pb_lo, pb_hi = prev_band
+            best_ov = 0.0
+            for blo, bhi in runs_c:
+                ov = min(pb_hi, bhi) - max(pb_lo, blo)
+                if ov > best_ov:
+                    best_ov = ov
+                    chosen = (blo, bhi)
+        if chosen is None:
+            # skeleton-provenance: run at the skeleton column containing
+            # (or nearest) the skeleton point
+            best_d = None
+            for blo, bhi in col_fill_runs(scol):
+                d = max(blo - step - y_g, y_g - (bhi + step), 0.0)
+                if d == 0.0:
+                    chosen = (blo, bhi)
                     break
+                if best_d is None or d < best_d:
+                    best_d = d
+                    chosen = (blo, bhi)
+        if chosen is None:
+            chosen = (y_g - STROKE_MIN_HALF, y_g + STROKE_MIN_HALF)
+
+        blo, bhi = chosen
+        lo_y = max(cand_lo, blo)
+        hi_y = min(cand_hi, bhi)
+        # honour the skeleton point whenever the stroke does
+        if not (lo_y <= y_g <= hi_y) and blo - step <= y_g <= bhi + step:
+            lo_y = min(lo_y, max(y_g, blo))
+            hi_y = max(hi_y, min(y_g, bhi))
+            lo_y = max(lo_y, blo)
+            hi_y = min(hi_y, bhi)
         if hi_y - lo_y < MIN_CORRIDOR_WIDTH:
             mid_y = 0.5 * (lo_y + hi_y)
             lo_y, hi_y = mid_y - MIN_CORRIDOR_WIDTH / 2, \
                 mid_y + MIN_CORRIDOR_WIDTH / 2
         lo_list.append(lo_y)
         hi_list.append(hi_y)
+        prev_band = (lo_y, hi_y)
     lo_arr = np.asarray(lo_list)
     hi_arr = np.asarray(hi_list)
 
@@ -885,25 +912,36 @@ def build_slice_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
 # Combined stroke/hole route graph (skeleton-derived)
 # ---------------------------------------------------------------------------
 
+VERTICAL_X_TOL = 1.0          # |dx_total| <= this => vertical atom
 STROKE_LANDMARKS = 64        # corridor landmark samples per route
 STROKE_RADIUS_GAIN = 1.6     # corridor half-width = gain * stroke radius
 STROKE_MIN_HALF = 0.8        # never narrower than this
 
 
 def _monotone_pieces(pts: np.ndarray):
-    """Split a polyline into x-monotone pieces at local x extrema.
+    """Split a polyline into x-monotone pieces at GENUINE local x
+    extrema. Zero dx (locally vertical motion) continues the current
+    direction: an extremum is where the SIGN OF NONZERO dx flips.
     Returns a list of (i0, i1) index ranges into pts."""
     n = len(pts)
     if n < 2:
         return []
+    dx = np.diff(pts[:, 0])
     cuts = [0]
-    for i in range(1, n - 1):
-        dx0 = pts[i, 0] - pts[i - 1, 0]
-        dx1 = pts[i + 1, 0] - pts[i, 0]
-        if dx0 * dx1 < 0:
-            cuts.append(i)
-    cuts.append(n - 1)
-    return [(cuts[k], cuts[k + 1]) for k in range(len(cuts) - 1)]
+    last_sign = 0
+    for i in range(len(dx)):
+        sgn = 1 if dx[i] > 0 else (-1 if dx[i] < 0 else 0)
+        if sgn == 0:
+            continue
+        if last_sign == 0:
+            last_sign = sgn
+        elif sgn != last_sign:
+            cuts.append(i + 1)      # extremum between points i, i+1
+            last_sign = sgn
+    if cuts[-1] != n - 1:
+        cuts.append(n - 1)
+    return [(cuts[k], cuts[k + 1]) for k in range(len(cuts) - 1)
+            if cuts[k] < cuts[k + 1]]
 
 
 def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
@@ -946,19 +984,43 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
         if ra != rb:
             parent[ra] = rb
 
-    def add_piece(seg, a_vid, b_vid):
+    atoms: list[StrokeAtom] = []
+    discarded = []
+    raw_length = 0.0
+    twin_of: dict[int, int] = {}
+
+    def add_piece(seg, a_vid, b_vid, src_ids):
+        nonlocal raw_length
         if len(seg) < 2:
             return
-        if seg[-1, 0] < seg[0, 0]:   # right-to-left piece: orient leftward
+        seg_len = float(np.hypot(*np.diff(seg, axis=0).T).sum())
+        raw_length += seg_len
+        if seg[-1, 0] < seg[0, 0]:   # right-to-left piece: orient +x
             seg = seg[::-1]
             a_vid, b_vid = b_vid, a_vid
-        edges.append(RouteEdge(
-            len(edges), a_vid, b_vid,
-            xs=seg[:, 0].copy(),
-            lower=np.zeros(len(seg)),
-            upper=np.zeros(len(seg)),
-            points=seg.copy(),
-        ))
+        dx_total = abs(float(seg[-1, 0] - seg[0, 0]))
+        vertical = dx_total <= VERTICAL_X_TOL
+        eids = []
+        dirs = ((a_vid, b_vid),) if not vertical else \
+            ((a_vid, b_vid), (b_vid, a_vid))
+        for fa, fb in dirs:
+            e = RouteEdge(
+                len(edges), fa, fb,
+                xs=seg[:, 0].copy(),
+                lower=np.zeros(len(seg)),
+                upper=np.zeros(len(seg)),
+                points=seg.copy(),
+            )
+            edges.append(e)
+            eids.append(e.id)
+            atoms.append(StrokeAtom(
+                id=e.id, from_vertex=fa, to_vertex=fb,
+                points=seg.copy(), length=seg_len,
+                kind="vertical" if vertical else "mono",
+                source_skeleton_edge_ids=tuple(src_ids)))
+        if len(eids) > 1:
+            twin_of[eids[0]] = eids[1]
+            twin_of[eids[1]] = eids[0]
 
     for se in sg.edges:
         pts = se.points * np.array([step, step])   # pixel -> glyph coords
@@ -970,7 +1032,6 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
             pts = np.roll(pts, -i0, axis=0)
             mid = len(pts) // 2
             vid = new_vertex(float(pts[0, 0]), "terminal")
-            comp_of_vertex_extra = None
             for half in (pts[:mid + 1], pts[mid:]):
                 for j0, j1 in _monotone_pieces(half):
                     seg = half[j0:j1 + 1]
@@ -978,15 +1039,22 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
                              else new_vertex(float(seg[0, 0]), "bend"))
                     b_vid = (vid if j1 == len(half) - 1
                              else new_vertex(float(seg[-1, 0]), "bend"))
-                    add_piece(seg, a_vid, b_vid)
+                    add_piece(seg, a_vid, b_vid, (se.id,))
             continue
-        for i0, i1 in _monotone_pieces(pts):
+        pieces = _monotone_pieces(pts)
+        if not pieces:
+            sl = float(np.hypot(*np.diff(pts, axis=0).T).sum())
+            raw_length += sl
+            discarded.append({"edge": se.id, "length": round(sl, 3),
+                              "reason": "degenerate"})
+            continue
+        for i0, i1 in pieces:
             seg = pts[i0:i1 + 1]
             a_vid = (node_vert[se.a] if i0 == 0
                      else new_vertex(float(seg[0, 0]), "bend"))
             b_vid = (node_vert[se.b] if i1 == len(pts) - 1
                      else new_vertex(float(seg[-1, 0]), "bend"))
-            add_piece(seg, a_vid, b_vid)
+            add_piece(seg, a_vid, b_vid, (se.id,))
             union(se.a, se.b)
 
     # rings: components without any terminal node get their leftmost
@@ -1010,8 +1078,30 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
         v.outgoing = tuple(e.id for e in edges if e.v_from == v.id)
         v.incoming = tuple(e.id for e in edges if e.v_to == v.id)
 
-    meaningful = frozenset(e.id for e in edges if e.span >= SLIVER_SPAN)
-    return RouteGraph(vertices=vertices, edges=edges, meaningful=meaningful)
+    physical = {}
+    for a in atoms:
+        t = twin_of.get(a.id)
+        physical[a.id] = min(a.id, t) if t is not None else a.id
+    meaning_set = set()
+    for a in atoms:
+        if a.length >= SLIVER_SPAN:
+            meaning_set.add(physical[a.id])
+    meaningful = frozenset(meaning_set)
+    atom_length = sum(a.length for a in atoms if a.id in meaningful)
+    discarded_length = sum(d["length"] for d in discarded)
+    report = {
+        "raw_skeleton_length": round(raw_length, 3),
+        "atom_length": round(atom_length, 3),
+        "discarded": discarded,
+        "discarded_length": round(discarded_length, 3),
+        "unclassified_length": round(max(
+            0.0, raw_length - atom_length - discarded_length), 3),
+        "atoms": len(atoms),
+        "vertical_atoms": sum(1 for a in atoms if a.kind == "vertical"),
+    }
+    return RouteGraph(vertices=vertices, edges=edges,
+                      meaningful=meaningful, atom_report=report,
+                      twin_of=twin_of)
 
 
 def _route_corridor_from_stroke(graph: RouteGraph, edge_ids,
