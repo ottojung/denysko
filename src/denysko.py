@@ -344,14 +344,17 @@ def ascii_letter(value: str) -> str:
 
 
 def min_curves_type(value: str) -> int:
-    """argparse type: requested minimum output curves, integer 1..12."""
+    """argparse type: requested minimum output curves.
+
+    Any positive integer is accepted; there is no output-curve cap.
+    (MAX_ROUTE_CANDIDATES in src/topology.py is an unrelated internal
+    route-enumeration guard.)"""
     try:
         n = int(value)
     except ValueError:
-        raise argparse.ArgumentTypeError("must be an integer") from None
-    if not 1 <= n <= DEFAULT_MAX_CURVES:
-        raise argparse.ArgumentTypeError(
-            f"must be an integer in 1-{DEFAULT_MAX_CURVES}")
+        raise argparse.ArgumentTypeError("must be a positive integer") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError("must be a positive integer")
     return n
 
 
@@ -381,9 +384,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="one ASCII letter A-Z or a-z")
     parser.add_argument("--min-curves", dest="min_curves",
                         type=min_curves_type, metavar="N", default=1,
-                        help="request at least N output curves (1-12); "
+                        help="request at least N output curves; "
                              "Denysko emits more automatically if "
-                             "required for complete glyph coverage")
+                             "required for complete glyph coverage. "
+                             "No upper limit.")
     parser.add_argument("--seed", type=int, default=0, metavar="SEED",
                         help="seed controlling deterministic variation "
                              "among valid curve realizations")
@@ -545,10 +549,6 @@ def generate(letter: str, *, min_curves: int = 1, seed: int = 0,
 
     K = len(selected)
     M = max(K, min_curves)
-    if M > DEFAULT_MAX_CURVES:
-        raise GenerationError(
-            f"generation failed: glyph requires at least {M} curves, "
-            f"exceeding the hard limit of {DEFAULT_MAX_CURVES}")
     ss = np.random.SeedSequence(seed)
     alloc_rng = np.random.default_rng(ss.spawn(1)[0])
     counts = allocate_counts(K, M, alloc_rng)

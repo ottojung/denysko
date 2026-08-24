@@ -35,7 +35,8 @@ DEFAULT_MAX_CURVES = 12
 
 MIN_SLICE_ROWS = 2               # drop sub-2-row raster slivers
 PINCH_COLS = 2                   # bridge disappearances up to this many cols
-MAX_ROUTES = 4096                # enumeration guard
+MAX_ROUTE_CANDIDATES = 4096      # enumeration guard
+MAX_ROUTES = MAX_ROUTE_CANDIDATES  # legacy alias
 SLIVER_SPAN = 1.0                # route edges shorter than this are slivers
 
 CORRIDOR_MARGIN = 0.4            # interior safety margin (actually applied)
