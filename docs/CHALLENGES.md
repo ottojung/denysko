@@ -80,28 +80,20 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures / measured state (convex families iteration)
+## Known failures / measured state
 
-Landed: unlimited --min-curves (positive int, no output cap);
-certified convex polynomial families per structural path (anchors =
-min/max of a seeded smooth linear functional over the route domain
-subject to ALL hard constraints including the new CONVEX PERMANENT-TAIL
-CERTIFICATE: all coefficients of sigma*sgn_x*P'(x_end+sgn_x*t) -
-ESC_SLOPE_MIN nonnegative proves infinite-horizon outward escape and
-replaces the finite slope guidance rows); uniform t sampling
-(t_j=(j+1)/(m+1), seed may reverse direction); O(1) optimization solves
-per path; streaming-friendly prepare/emit split in realize_variants.
+Strict-count families landed: M = max(K, --min-curves) is emitted
+exactly or generation fails; canonical baselines preserved (A deg 4/6,
+H deg 9/9); tail certificate rewritten coefficientwise with cutting-
+plane separation (opt-in via use_cert; default anchors use standard
+hard rows + analytic V3 per anchor).
 
-Measured: A --min-curves 12 succeeds ([6,6]); D --min-curves 10 emits 8
-curves (D resolves K=8 structural paths under the certificate; the
-requested 10 could not all be realized at feasible degrees - honest
-shortfall recorded); seeds change output, same seed byte-reproducible.
+Measured: A/H/B/C/O --min-curves 10 pass except H path 1 (topL->bar->
+botR): solve_family_anchors cannot certify a family for its stair-step
+corridor (separation loop does not converge), so `denysko H
+--min-curves 10` fails honestly. A/B/C/O variants work.
 
-Remaining failures: z W Z still fail fitting (slope-regime atom
-splitting designed but NOT landed). Suite: 44 passed.
-
-Legacy thresholds: Phase-1 containment gate now 2.5 (measured max
-2.1 across letters except H at ~6 due to unfold-exit transitions);
-V5 gate 4.0 (H max ~3.5). Both still above raster scale - tightening
-requires the corridor centerline smoothing that is planned alongside
-slope-regime splitting.
+Remaining work:
+- diagnose non-convergent separation on multi-vertical corridors;
+- slope-regime atom splitting (z/W/Z);
+- validator tolerance tightening to raster scale.

@@ -447,7 +447,7 @@ def guide_weights(corr, child_rng):
 
 
 def solve_family_anchors(graph, route, corr, seed, path_index,
-                         d_min, degree_cap=None):
+                         d_min, degree_cap=None, use_cert=False):
     """Find two geometrically distinct feasible anchors defining a
     certified convex family at some degree D in [d_min, cap].
 
@@ -468,8 +468,10 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
             rng = np.random.default_rng(ss)
             w_lo = guide_weights(corr, rng)
             w_hi = guide_weights(corr, rng)
-            plo = solve_anchor(corr, D, ori[0], ori[1], w_lo, False)
-            phi = solve_anchor(corr, D, ori[0], ori[1], w_hi, True)
+            plo = solve_anchor(corr, D, ori[0], ori[1], w_lo, False,
+                               tail_cert=use_cert)
+            phi = solve_anchor(corr, D, ori[0], ori[1], w_hi, True,
+                               tail_cert=use_cert)
             if plo is None or phi is None:
                 continue
             # geometric difference over visible domain
@@ -504,7 +506,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
 
 
 def realize_variants(graph, chosen, selected, counts, seed, geom,
-                     reporter=lambda msg: None):
+                     reporter=lambda msg: None, canonical=False):
     from numpy.polynomial import Polynomial as Poly
     """Emit counts[j] curves for structural path j by uniformly sampling
     the path's certified convex polynomial family. O(1) optimization
@@ -519,10 +521,12 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
                 f"polynomial up to degree {INITIAL_FIT_DEGREE}")
         fam = solve_family_anchors(graph, route, corr, seed, j,
                                    max(1, base.degree))
-        if fam is None:
-            # single-point feasible set at every tried degree: emit the
-            # baseline alone (still fully validated below)
-            fam = None
+        if fam is None and m > 1:
+            raise GenerationError(
+                f"generation failed: path {j} supports only its "
+                f"canonical curve; requested {m} distinct curves are "
+                f"not available at degrees up to "
+                f"{INITIAL_FIT_DEGREE}")
         d_min = base.degree
         if fam is not None:
             plo, phi, D, ori = fam
@@ -531,7 +535,7 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
             Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(affine)
             Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(affine)
             ts = [(k + 1) / (m + 1) for k in range(m)]
-            if seed % 2 == 1:
+            if seed is not None and seed % 2 == 1:
                 ts = [1.0 - t for t in ts]   # reverse family direction
             fits = []
             for t_j in ts:
@@ -560,7 +564,7 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
     return out_fits, out_corrs, out_routes
 
 
-def generate(letter: str, *, min_curves: int = 1, seed: int = 0,
+def generate(letter: str, *, min_curves: int = 1, seed: int | None = None,
              reporter=lambda msg: None) -> list[str]:
     """Run the full pipeline for one glyph.
 
@@ -576,6 +580,7 @@ def generate(letter: str, *, min_curves: int = 1, seed: int = 0,
 
     K = len(selected)
     M = max(K, min_curves)
+    canonical = seed is None and min_curves <= K
     ss = np.random.SeedSequence(seed)
     alloc_rng = np.random.default_rng(ss.spawn(1)[0])
     counts = allocate_counts(K, M, alloc_rng)
@@ -583,7 +588,19 @@ def generate(letter: str, *, min_curves: int = 1, seed: int = 0,
              f"minimum cover {K}")
     reporter(f"curves: {M} emitted, allocation {counts}")
 
-    return realize_variants(graph, chosen, selected, counts, seed,
+    if canonical:
+        fits, _ = fit_selected(selected)
+        # canonical baseline: minimum-degree representatives only
+        for i, f in enumerate(fits):
+            reporter(f"path {i}: minimum degree {f.degree}")
+        lines = [format_expression(f.poly) for f in fits]
+        problems = validate_lines(lines, geom, fits, selected)
+        if problems:
+            raise GenerationError("; ".join(problems))
+        return fits, selected, chosen
+
+    return realize_variants(graph, chosen, selected, counts,
+                            0 if seed is None else seed,
                             geom, reporter)
 
 
