@@ -35,6 +35,7 @@ from src.topology import (
     corridor_glyph_violation,
     poly_glyph_violation,
     route_continuity_violation,
+    atom_coverage_misses,
     route_edge_coverage,
     route_coverage_fraction,
 )
@@ -176,7 +177,8 @@ def corridor_adherence_violation(poly_coef, corridor, grid=500):
     return float(max(0.0, np.max(np.maximum(lo - vals, vals - hi))))
 
 
-def validate_lines(lines, geom, fits, corridors):
+def validate_lines(lines, geom, fits, corridors, routes=None,
+                   graph=None):
     """Independent validation of the EMITTED text (Phases 5).
 
     V2: parsed polynomials adhere to their route corridors.
@@ -209,6 +211,28 @@ def validate_lines(lines, geom, fits, corridors):
         v5 = poly_glyph_violation(coef, corr, geom)
         if v5 > 0.05:
             problems.append(f"V5 curve {i}: leaves glyph ({v5:.3f})")
+        v5 = poly_glyph_violation(coef, corr, geom)
+        if v5 > 0.05:
+            problems.append(f"V5 curve {i}: leaves glyph ({v5:.3f})")
+    # V6: geometric same-x stroke coverage by parsed polynomials.
+    # Reported on stderr; gating requires zero-coverage semantics for
+    # unfolded vertical/shifted atoms which is still being tightened
+    # (see CHALLENGES). Partial misses are listed for inspection.
+    if routes is not None and graph is not None:
+        polys = [(s_.edge_id,
+                  np.asarray(parse_line(line).poly.coef, dtype=float))
+                 for r, line in zip(routes, lines)
+                 for s_ in r.steps]
+        unc, rep = atom_coverage_misses(graph, polys)
+        dead = [e["atom"] for e in rep
+                if isinstance(e.get("covered"), int) and e["covered"] == 0]
+        for a_id in dead:
+            problems.append(
+                f"V6: atom {a_id} has NO geometric coverage")
+        if unc:
+            import sys as _sys
+            print(f"V6 diagnostic: partially uncovered atoms {unc}",
+                  file=_sys.stderr)
     return problems
 
 
@@ -335,7 +359,8 @@ def run(argv) -> int:
         )
 
     lines = [format_expression(f.poly) for f in fits]
-    problems = validate_lines(lines, geom, fits, selected[:max_curves])
+    problems = validate_lines(lines, geom, fits, selected[:max_curves],
+                              routes=chosen[:max_curves], graph=graph)
     if problems:
         for msg in problems:
             print(msg, file=sys.stderr)

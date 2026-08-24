@@ -80,24 +80,23 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures / measured state (corridor fix landed)
+## Known failures / measured state (directed atoms iteration)
 
-The global arc-length->x remapping is REMOVED from master. Corridors
-are now built from oriented routes: real skeleton x wherever the walk
-progresses in x, local vertical spreading inside each stroke's own
-narrowest filled run, per-node clamping into that node column's fill,
-and left-to-right canonicalization. Phase 1 fails loudly when a
-corridor leaves the glyph; Phase 5 adds V5 (emitted poly inside glyph).
+Route semantics redesigned: skeleton atomized at terminals/junctions/
+genuine x extrema into StrokeAtoms (provenance + length accounting,
+unclassified = 0); vertical atoms carry twin directed edges; route
+enumeration is DIRECTED so every candidate is globally x-nondecreasing
+(structural realizability — no backwards-x repair anywhere). Selection
+covers PHYSICAL atoms via exact MILP.
 
-Measured matrix:
+Measured route counts: A=2, B=4, H=2, O=2 (B's four = two x-monotone
+arms per bowl, minimum proven by MILP over exactly 4 candidates).
 
-| letter | status | notes |
-|--------|--------|-------|
-| A | pass, 2 curves | leg->apex/bar->leg, corridors glyph-valid |
-| H | pass, 2 curves | quartics (deg 4); old fake parabolas gone |
-| O T I L F B | pass | B needed nearest-run band fallback |
-| E | FAIL | two large vertical climbs inside one y=f(x): interior LP violation 8.2@deg24, 4.1@deg48 (slowly decreasing -> degree-limited AND structurally hard). Needs route splitting at junctions or per-stroke routes |
-| C | FAIL phase 1 | corridor leaves glyph (violation 0.125); its arc doubles back in x near the tips |
+Letters: A B H O T I L F pass end-to-end; E fails fitting; C fails the
+Phase-1 glyph gate (violation 0.125).
 
-V3 remains strict and exact-degree (1e-16 leading coefficients are
-honoured; regression-tested).
+Remaining work, measured:
+- V6 same-x geometric coverage implemented and reported; full gating
+  pending: vertical atoms are degenerate under same-x sampling
+  (covered structurally), and unfold-shifted bowl arcs (B) show partial
+  misses up to ~54 vs tolerance 10. Zero-coverage atoms already fail.

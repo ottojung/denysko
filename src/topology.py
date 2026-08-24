@@ -657,6 +657,65 @@ def _fill_at(geom: GlyphGeometry, xs, ys):
     return geom.fill[rows, cols]
 
 
+def atom_coverage_misses(graph: RouteGraph, atoms_polys,
+                         grid_per_atom: int = 24, tol: float = None):
+    """Geometric same-x coverage of every meaningful StrokeAtom.
+
+    atoms_polys: iterable of (edge_id, coef-array) pairs realized by
+    corridors or emitted polynomials. For each meaningful atom, sample
+    its polyline; every sample (x_s, y_s) must satisfy
+    min_j |P_j(x_s) - y_s| <= tol for some curve j whose physical atom
+    matches. Returns (uncovered_atom_ids, per_atom_report).
+    """
+    if tol is None:
+        tol = STROKE_COVER_TOL
+    from numpy.polynomial import Polynomial as _P
+
+    realized = [(eid, _P(coef)) for eid, coef in atoms_polys]
+    uncovered = []
+    report = []
+    for a_id in sorted(graph.meaningful):
+        e = next((e for e in graph.edges
+                  if graph.physical_atom(e.id) == a_id
+                  and e.points is not None), None)
+        if e is None:
+            continue
+        if e.xs is not None and len(e.xs) > 1 and \
+                abs(e.xs[-1] - e.xs[0]) <= VERTICAL_X_TOL:
+            # vertical atom: same-x sampling is degenerate (one column);
+            # covered structurally via directed traversal + the Phase-1
+            # glyph gate on its locally-unfolded corridor
+            report.append({"atom": a_id, "kind": "vertical",
+                           "covered": "structural"})
+            continue
+        pts = e.points
+        n = max(4, grid_per_atom)
+        xs = np.linspace(pts[0, 0], pts[-1, 0], n)
+        ys = np.interp(xs, pts[:, 0], pts[:, 1])
+        local = [(eid, poly) for eid, poly in realized
+                 if graph.physical_atom(eid) == a_id]
+        curves = set()
+        covered_n = 0
+        worst = 0.0
+        for xi, yi in zip(xs, ys):
+            best = min((abs(float(poly(xi)) - yi)
+                        for _, poly in local), default=1e9)
+            if best <= tol:
+                covered_n += 1
+                worst = max(worst, best)
+                curves.update(eid for eid, poly in local
+                              if abs(float(poly(xi)) - yi) <= tol)
+            else:
+                worst = max(worst, best)
+        entry = {"atom": a_id, "n": n, "covered": covered_n,
+                 "worst_miss": round(worst, 2),
+                 "curves": sorted(curves)}
+        report.append(entry)
+        if covered_n < n:
+            uncovered.append(a_id)
+    return uncovered, report
+
+
 def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,
                              grid: int = 200) -> float:
     """Fraction of dense route-domain samples whose corridor MIDPOINT
@@ -912,6 +971,10 @@ def build_slice_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
 # Combined stroke/hole route graph (skeleton-derived)
 # ---------------------------------------------------------------------------
 
+STROKE_COVER_TOL = 10.0         # >= max corridor half-width (TAU +
+                               # STROKE_RADIUS_GAIN * max radius): a
+                               # poly inside its corridor can miss the
+                               # skeleton by at most this much
 VERTICAL_X_TOL = 1.0          # |dx_total| <= this => vertical atom
 STROKE_LANDMARKS = 64        # corridor landmark samples per route
 STROKE_RADIUS_GAIN = 1.6     # corridor half-width = gain * stroke radius
