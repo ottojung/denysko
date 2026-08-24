@@ -80,28 +80,35 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures (stroke-route iteration, measured)
+## Known failures (corridor-geometry iteration)
 
-Manual matrix (defaults):
+Current master passes the numeric pipeline for all ten letters, BUT
+H/A output is still visually wrong because `_route_corridor_from_stroke`
+still contains the global arc-length→x remapping:
 
-| letter | curves | notes |
-|--------|--------|-------|
-| A | 2 | roof + bar routes, shared leg trunks |
-| B | 2 | |
-| C | FAIL | single-arc corridor: no degree <= 24 yields a fit whose tails are permanently outward in all four orientations; recorded honestly rather than weakened V3 |
-| E | 2 | junction topology from skeleton |
-| F | 2 | |
-| H | 2 | stem+bar+stem routes; constant line impossible (V3 + traversal corridors) |
-| I | 1 | vertical stroke: corridor forces traversal across its narrow window |
-| L | 1 | |
-| O | 2 | ring cut into two arcs |
-| T | 2 | |
+    p = x_lo + (x_hi - x_lo) * (targets / total)
 
-Residual documented limitations:
+This turns "up left stem -> crossbar -> down right stem" into a
+diagonal through empty space. H's two equations are therefore
+H-*like* but not H-honest. This is THE next fix.
 
-- `C` fails as above. Candidate fixes noted, not applied: per-route
-  orientation-aware far-field rows inside the fitting window; or
-  splitting C's arc at its x-extremum into two routes.
-- Tail permanence beyond the final checkpoint is analytic (root
-  analysis of P'); behaviour between window edge and infinity relies on
-  the outward-slope rows plus that check.
+Measured findings from the attempted fix (reverted to keep master
+green; all diagnostics below were observed live):
+
+- Oriented reconstruction works; continuity violation is exactly 0.
+- Local vertical spreading inside each stroke's own row-run width is
+  computable; a per-group narrowest-run rule avoids crossbar-row
+  poisoning (a member touching a crossbar sees a full-width run).
+- With a final per-corridor-node clamp into its own column's fill
+  runs, both selected H corridors reach corridor_glyph_violation = 0.
+- Routes must additionally be canonicalized left-to-right (some
+  mirror-deduped routes came out right-to-left and collapsed every
+  corridor x to a constant under the monotone clamp).
+- REMAINING BLOCKER: after all the above, HiGHS reports stage-1
+  violations ≈ 10 at degree 24 on H's locally-spread corridors
+  (previously feasible), so something in the spread/clamp interaction
+  (or the slope/ramp rows on the resulting steep tube) is still
+  over-constrained. Next steps: dump the exact conflicting rows for
+  one orientation; check whether the escape-ramp rows collide with the
+  narrow spread window near the route endpoints; consider lowering
+  slope-row pressure on near-vertical sections.
