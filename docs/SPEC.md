@@ -1,6 +1,6 @@
 # SPEC: Single-Letter → Desmos Polynomial Converter
 
-Version 3.0 · Status: draft · Scope frozen: **one letter per run, nothing else**
+Version 3.0 · Status: draft · Scope frozen: **one ASCII letter A-Z or a-z per run**
 
 Version 3.0 is an architectural rewrite: topology is solved **before** polynomial
 fitting. The pipeline is
@@ -20,7 +20,7 @@ restrictions; at most `DEFAULT_MAX_CURVES = 12` curves per letter.
 
 ## 1. Mission
 
-Given exactly one uppercase letter, emit a small set of `y = f(x)` polynomials that,
+Given exactly one ASCII Latin letter (A-Z or a-z; case selects the actual DejaVuSans glyph - lowercase is never an uppercase alias), emit a small set of `y = f(x)` polynomials that,
 pasted into Desmos, render a recognizable outline of the letter. One letter in → one
 letter drawn.
 

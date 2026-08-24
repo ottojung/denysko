@@ -80,33 +80,12 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures / measured state (local vertical unfolding)
+## Known failures / measured state
 
-Landed: LOCAL vertical unfolding. A vertical atom spreads only across
-its OWN stroke width; any overlap with following real geometry decays
-as microscopic crawl steps above the synthetic frontier, and EXACT raw
-x resumes once raw catches up. No persistent downstream translation.
-Per-sample provenance (raw_x/raw_y/realized_x/deform) stored on every
-corridor; R1 gate asserts nonvertical atoms resume exact skeleton x
-(tolerance 0.5 = ~2.5 raster steps); V5 uses contiguous fill runs so
-counters are never "filled"; V6 strict on realized embeddings.
-
-Measured matrix (all pass end-to-end):
-
-| letter | curves | degrees | notes |
-|--------|--------|---------|-------|
-| A | 2 | 4, 6 | |
-| B | 4 | 7,6,6,5 | proven minimum 4 |
-| C | 2 | 9, 9 | x-min source -> two arms |
-| H | 2 | 9, 9 | stems unfold ~6 units each within own width; crossbar real-x preserved; was deg-16 garbage under persistent shift |
-| O | 2 | 7, 8 | |
-| T | 2 | 5, 12 | |
-| I | 1 | 1 | |
-| L | 1 | 5 | |
-| F | 2 | 6, 5 | |
-| E | 3 | 5, 6, 5 | previously infeasible — local unfolding fixed it |
-
-H semantic geometry is regression-tested: each route realizes a stem
-traversal (dy > half glyph, unfolded dx > 1), a long crossbar run, and
-the opposite stem. `denysko-debug realize H` prints per-atom raw vs
-realized geometry.
+Uppercase A-Z and lowercase a-z are both exercised end-to-end: all 52
+ASCII letters exit 0. Route counts for regression letters remain
+A=2 B=4 C=2 H=2 O=2; E passes with 3 curves after the local-unfold fix.
+Residual documented budgets: corridor containment allows <= 1 glyph
+unit outside a fill run plus interpolation overshoot (measured < 1 unit
+at 120 landmarks per route); V5/V6 are hard gates on realized
+embeddings.
