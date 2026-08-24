@@ -40,6 +40,9 @@ from src.topology import (
     route_edge_coverage,
     route_coverage_fraction,
 )
+import argparse
+from dataclasses import dataclass
+
 from src import fitting
 from src.fitting import (
     INITIAL_FIT_DEGREE,
@@ -314,89 +317,148 @@ def fit_selected(selected):
 # ---------------------------------------------------------------------------
 
 
-def run(argv) -> int:
-    letter = None
-    max_curves = DEFAULT_MAX_CURVES
-    positionals = []
-    i = 0
-    while i < len(argv):
-        arg = argv[i]
-        if arg == "--max-curves":
-            if i + 1 >= len(argv):
-                return 2
-            value = argv[i + 1]
-            try:
-                number = int(value)
-            except ValueError:
-                return 2
-            if str(number) != value and not (
-                value.startswith("+") and str(number) == value[1:]
-            ):
-                return 2
-            max_curves = number
-            i += 2
-        elif arg == "--seed":
-            # deprecated: the pipeline is fully deterministic; accepted
-            # (with a value) for CLI compatibility and ignored.
-            if i + 1 >= len(argv):
-                return 2
-            i += 2
-        elif arg.startswith("--"):
-            return 2
-        else:
-            positionals.append(arg)
-            i += 1
-    if len(positionals) != 1:
-        return 2
-    letter = positionals[0]
-    if len(letter) != 1 or not ("A" <= letter <= "Z"):
-        return 2
+# ---------------------------------------------------------------------------
+# Public CLI (argparse)
+# ---------------------------------------------------------------------------
 
+CLI_USAGE_EPILOG = """examples:
+  denysko A
+  denysko h
+  denysko --max-curves 4 B
+  denysko --seed 42 g
+  denysko -q O
+"""
+
+
+def ascii_letter(value: str) -> str:
+    """argparse type: exactly one ASCII letter A-Z or a-z."""
+    from string import ascii_letters
+
+    if len(value) == 1 and value in ascii_letters:
+        return value
+    raise argparse.ArgumentTypeError(
+        "LETTER must be one ASCII letter A-Z or a-z")
+
+
+def max_curves_type(value: str) -> int:
+    """argparse type: integer 1..12 (project output hard limit)."""
     try:
-        geom, graph, candidates, chosen, signatures, selected = \
-            build_phase1(letter)
-        covered = route_edge_coverage(graph, chosen)
-    except Exception as exc:
-        print(f"phase1 failed: {exc}", file=sys.stderr)
-        return 1
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("must be an integer") from None
+    if not 1 <= n <= DEFAULT_MAX_CURVES:
+        raise argparse.ArgumentTypeError(
+            f"must be an integer in 1-{DEFAULT_MAX_CURVES}")
+    return n
+
+
+@dataclass(frozen=True)
+class CliConfig:
+    letter: str
+    max_curves: int
+    seed: int | None
+    quiet: bool
+
+
+def build_parser() -> argparse.ArgumentParser:
+    try:
+        from importlib.metadata import version
+        ver = version("denysko")
+    except Exception:
+        ver = "unknown"
+    parser = argparse.ArgumentParser(
+        prog="denysko",
+        description=(
+            "Approximate a DejaVu Sans letter with a small set of "
+            "unbounded polynomial graphs y=f(x), suitable for Desmos."),
+        epilog=CLI_USAGE_EPILOG,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("letter", type=ascii_letter, metavar="LETTER",
+                        help="one ASCII letter A-Z or a-z")
+    parser.add_argument("--max-curves", dest="max_curves",
+                        type=max_curves_type, metavar="N",
+                        help=f"maximum allowed output curves "
+                             f"(1-{DEFAULT_MAX_CURVES})")
+    parser.add_argument("--seed", type=int, default=None, metavar="SEED",
+                        help="random seed; accepted for "
+                             "reproducibility/API compatibility. The "
+                             "current pipeline is deterministic, so "
+                             "this does not change output.")
+    parser.add_argument("-q", "--quiet", action="store_true",
+                        help="suppress progress diagnostics on stderr")
+    parser.add_argument("--version", action="version",
+                        version=f"denysko {ver}")
+    return parser
+
+
+def parse_cli(argv) -> CliConfig:
+    ns = build_parser().parse_args(list(argv))
+    return CliConfig(letter=ns.letter,
+                     max_curves=ns.max_curves or DEFAULT_MAX_CURVES,
+                     seed=ns.seed, quiet=ns.quiet)
+
+
+def generate(letter: str, *, max_curves: int = DEFAULT_MAX_CURVES,
+             reporter=lambda msg: None) -> list[str]:
+    """Run the full pipeline for one glyph; raises GenerationError with
+    a user-facing message when generation cannot succeed."""
+    geom, graph, candidates, chosen, signatures, selected = \
+        build_phase1(letter)
 
     sel_cov = route_coverage_fraction(graph, chosen)
-    print(
-        f"phase1: {len(candidates)} complete routes, {len(selected)} selected, "
-        f"meaningful-edge coverage {sel_cov:.4f}",
-        file=sys.stderr,
-    )
-    if sel_cov < MIN_COVERAGE or len(selected) > max_curves:
-        print(
-            f"route selection covers {sel_cov:.4f} "
-            f"(< {MIN_COVERAGE} or > {max_curves} curves); cannot emit",
-            file=sys.stderr,
-        )
-        return 1
+    reporter(f"phase1: {len(candidates)} complete routes, "
+             f"{len(selected)} selected, meaningful-atom coverage "
+             f"{sel_cov:.4f}")
+
+    if len(selected) > max_curves:
+        raise GenerationError(
+            f"generation failed: {letter} requires {len(selected)} "
+            f"curves, exceeding --max-curves={max_curves}")
 
     fits, failures = fit_selected(selected[:max_curves])
     if failures:
-        print(
-            f"fitting failed on route(s) {failures} "
-            f"(degree {INITIAL_FIT_DEGREE} could not stay in corridor)",
-            file=sys.stderr,
-        )
-        return 1
+        raise GenerationError(
+            f"generation failed: fitting route(s) {failures} failed up "
+            f"to degree {INITIAL_FIT_DEGREE}")
 
     for i, fit in enumerate(fits):
-        print(
-            f"curve {i}: minimum degree {fit.degree}",
-            file=sys.stderr,
-        )
+        reporter(f"curve {i}: minimum degree {fit.degree}")
 
     lines = [format_expression(f.poly) for f in fits]
     problems = validate_lines(lines, geom, fits, selected[:max_curves],
                               routes=chosen[:max_curves], graph=graph)
     if problems:
-        for msg in problems:
-            print(msg, file=sys.stderr)
+        raise GenerationError("; ".join(problems))
+    return lines
+
+
+class GenerationError(Exception):
+    """Valid request, but generation/validation could not succeed."""
+
+
+def run(argv) -> int:
+    import sys as _sys
+
+    cfg = parse_cli(argv)   # argparse errors SystemExit(2) naturally
+
+    def reporter(msg):
+        if not cfg.quiet:
+            print(msg, file=_sys.stderr)
+
+    try:
+        lines = generate(cfg.letter, max_curves=cfg.max_curves,
+                         reporter=reporter)
+    except GenerationError as exc:
+        print(str(exc), file=_sys.stderr)
         return 1
-    sys.stdout.write("".join(l + "\n" for l in lines))
+    except RuntimeError as exc:
+        # expected geometric/fitting gate failures raise RuntimeError;
+        # anything else is a genuine bug and propagates
+        print(f"generation failed: {exc}", file=_sys.stderr)
+        return 1
+
+    _sys.stdout.write("".join(line + "\n" for line in lines))
     return 0
 
 
@@ -406,25 +468,51 @@ def run(argv) -> int:
 
 
 def debug_entry() -> int:
-    import argparse
-
+    """Development CLI: argparse subcommands over the same pipeline."""
     parser = argparse.ArgumentParser(prog="denysko-debug")
-    parser.add_argument(
-        "command",
-        choices=["routes", "graph", "select", "fit", "uncovered",
-                 "realize"],
-    )
-    parser.add_argument("letter")
-    parser.add_argument("--index", type=int, default=None)
-    args = parser.parse_args(sys.argv[1:])
+    sub = parser.add_subparsers(dest="command", required=True)
 
+    def _add(name, help_text):
+        sp = sub.add_parser(name, help=help_text)
+        sp.add_argument("letter", type=ascii_letter,
+                        help="one ASCII letter A-Z or a-z")
+        return sp
+
+    _add("routes", "enumerate directed candidate routes")
+    _add("graph", "dump routing graph vertices/edges")
+    _add("select", "staged-MILP minimum cover")
+    _add("realize", "per-atom raw vs realized geometry")
+    _add("uncovered", "meaningful atoms without realization")
+    p_fit = _add("fit", "minimum-degree fit per selected corridor")
+    p_fit.add_argument("--index", type=int, default=None)
+
+    args = parser.parse_args(sys.argv[1:])
     geom, graph, candidates, chosen, signatures, selected = \
         build_phase1(args.letter)
 
+    if args.command == "routes":
+        for i, r in enumerate(candidates):
+            print(f"route {i}: "
+                  f"atoms {[graph.physical_atom(s.edge_id) for s in r.steps]} "
+                  f"edges {[s.edge_id for s in r.steps]} "
+                  f"{r.steps[0].from_vertex}->{r.steps[-1].to_vertex}")
+        return 0
+    if args.command == "graph":
+        for v in graph.vertices:
+            print(f"v{v.id}: {v.kind} x={v.x:.1f} "
+                  f"in={v.incoming} out={v.outgoing}")
+        for e in graph.edges:
+            print(f"e{e.id}: v{e.v_from}->v{e.v_to} span={e.span:.2f} "
+                  f"phys={graph.physical_atom(e.id)}")
+        return 0
+    if args.command == "select":
+        cov = route_coverage_fraction(graph, chosen)
+        print(f"selected {len(chosen)} of {len(candidates)} routes; "
+              f"coverage {cov:.4f}")
+        return 0
     if args.command == "realize":
-        for i3, (r, corr) in enumerate(zip(chosen, selected)):
+        for i3, corr in enumerate(selected):
             for a_id, emb in sorted(corr.realized.items()):
-                e = graph.edges[a_id] if a_id < len(graph.edges) else None
                 print(f"route {i3} atom {a_id}: "
                       f"raw x[{emb['raw_x'].min():.1f}..{emb['raw_x'].max():.1f}] "
                       f"y[{emb['raw_y'].min():.1f}..{emb['raw_y'].max():.1f}] "
@@ -432,40 +520,19 @@ def debug_entry() -> int:
                       f"maxdx={float(np.max(np.abs(emb['x'] - emb['raw_x']))):.2f} "
                       f"deform={sorted(set(emb['deform']))}")
         return 0
-    if args.command == "routes":
-        for i, ids in enumerate(candidates):
-            print(f"route {i}: edges {ids}")
-        return 0
-    if args.command == "graph":
-        for v in graph.vertices:
-            print(f"v{v.id}: {v.kind} x={v.x:.1f} "
-                  f"in={v.incoming} out={v.outgoing}")
-        for e in graph.edges:
-            print(f"e{e.id}: v{e.v_from}->v{e.v_to} "
-                  f"x[{e.xs[0]:.1f}..{e.xs[-1]:.1f}] span={e.span:.2f} "
-                  f"h={e.mean_height:.2f} meaningful={e.id in graph.meaningful}")
-        return 0
-    if args.command == "select":
-        cov = route_coverage_fraction(graph, chosen)
-        print(f"selected {len(chosen)} of {len(candidates)} routes; "
-              f"meaningful-edge coverage {cov:.4f}")
-        for i, (ids, corr) in enumerate(zip(chosen, selected)):
-            print(f"curve {i}: edges {ids} "
-                  f"x[{corr.xs[0]:.1f}..{corr.xs[-1]:.1f}] nodes {len(corr.xs)}")
-        return 0
     if args.command == "uncovered":
-        covered = route_edge_coverage(graph, chosen)
-        missing = [e.id for e in graph.edges
-                   if not covered[e.id] and e.id in graph.meaningful]
-        print(f"uncovered meaningful edges: {missing}")
+        covered = set()
+        for corr in selected:
+            covered |= set(corr.realized.keys())
+        missing = sorted(graph.meaningful - covered)
+        print(f"uncovered meaningful atoms: {missing}")
         return 0
-
-    target = selected if args.index is None else [selected[args.index]]
-    for i, c in enumerate(target):
-        fit = fit_route(c, hi=INITIAL_FIT_DEGREE)
-        status = (
-            f"min degree {fit.degree}" if fit is not None
-            else f"infeasible at {INITIAL_FIT_DEGREE}"
-        )
-        print(f"corridor {i}: {status}")
-    return 0
+    if args.command == "fit":
+        target = selected if args.index is None else [selected[args.index]]
+        for i, c in enumerate(target):
+            fit = fit_route(c, hi=INITIAL_FIT_DEGREE)
+            status = (f"min degree {fit.degree}" if fit is not None
+                      else f"infeasible at {INITIAL_FIT_DEGREE}")
+            print(f"corridor {i}: {status}")
+        return 0
+    return 2

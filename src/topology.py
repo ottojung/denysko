@@ -764,10 +764,13 @@ def enumerate_complete_routes(graph: RouteGraph,
     All non-vertical atoms ascend in x, so any directed walk is globally
     x-nondecreasing: backwards-x walks structurally do not exist.
 
-    Starts (structural, not label-based): every vertex with NO incoming
-    directed edge (e.g. an x-extremum bend acting as a directed source,
-    as in C), plus semantic terminals (physical stroke tips whose only
-    incoming edge is the twin of their own arm).
+    Starts (structural, not label-based):
+      - every vertex with NO incoming directed edge (e.g. an x-extremum
+        bend acting as a directed source, as in C);
+      - semantic stroke-tip terminals that have outgoing edges;
+      - VERTICAL-ENTRY vertices: every incoming edge is a vertical
+        twin, i.e. the walk may legitimately BEGIN by unfolding a
+        physical vertical stroke (lowercase e/p spines etc.).
 
     Ends: a semantic terminal, a structurally empty continuation, or an
     x-extremum sink (no outgoing edges - a y=f(x) cannot pass an
@@ -785,8 +788,20 @@ def enumerate_complete_routes(graph: RouteGraph,
     terminals = {v.id for v in graph.vertices
                  if v.kind in ("source", "sink", "terminal")}
 
+    # vertical-twin detection for entry classification
+    def _all_incoming_vertical(v):
+        inc = [eid for e in graph.edges
+               for eid in ([e.id] if e.v_to == v else [])
+               ]
+        # cheaper: rebuild adjacency once outside would be better, but
+        # graphs are small; inspect incoming edges properly:
+        inc = [e.id for e in graph.edges if e.v_to == v]
+        return bool(inc) and all(eid in graph.twin_of for eid in inc)
+
     starts = {v.id for v in graph.vertices
-              if incoming_n.get(v.id, 0) == 0 or v.id in terminals}
+              if incoming_n.get(v.id, 0) == 0
+              or (v.id in terminals and outgoing.get(v.id))
+              or _all_incoming_vertical(v.id)}
 
     raw: list[Route] = []
     budget = [cap]
@@ -1108,13 +1123,21 @@ def build_route_corridor(graph: RouteGraph, route: Route,
         dy = abs(lam[i, 1] - lam[i - 1, 1])
         if abs(dx) < VERT * dy:
             j = i
+            x_lo = x_hi = lam[i, 0]
             while j + 1 < len(p):
                 dx2 = lam[j + 1, 0] - lam[j, 0]
                 dy2 = abs(lam[j + 1, 1] - lam[j, 1])
-                if abs(dx2) < VERT * dy2:
-                    j += 1
-                else:
+                nx_lo = min(x_lo, lam[j + 1, 0])
+                nx_hi = max(x_hi, lam[j + 1, 0])
+                # a group is a PHYSICAL vertical stroke: its total
+                # x-span must stay within the stroke-width tolerance.
+                # Steep-but-slanted strokes (z diagonals) keep their
+                # real x and stay monotone atoms instead.
+                if abs(dx2) >= VERT * dy2 or \
+                        nx_hi - nx_lo > VERTICAL_X_TOL:
                     break
+                x_lo, x_hi = nx_lo, nx_hi
+                j += 1
             wins = [local_run(lam[k, 0], lam[k, 1])
                     or (lam[k, 0] - STROKE_MIN_HALF,
                         lam[k, 0] + STROKE_MIN_HALF)

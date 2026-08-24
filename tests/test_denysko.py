@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from src import denysko as d
+from src.denysko import fit_selected
 from src import fitting as _fitting
 from src.fitting import (
     ORIENTATIONS,
@@ -430,11 +431,13 @@ def test_validate_lines_flags_violations():
 
 
 def test_invalid_cli_input():
-    assert d.run(["1"]) == 2
-    assert d.run(["a"]) == 2
-    assert d.run([]) == 2
-    assert d.run(["AA"]) == 2
-    assert d.run(["--bogus", "A"]) == 2
+    # lowercase is now VALID; usage errors SystemExit(2)
+    for argv in (["1"], ["AB"], [], ["--seed", "nope", "A"],
+                 ["--max-curves", "0", "A"], ["--max-curves", "13", "A"],
+                 ["--unknown", "A"], ["é"]):
+        with pytest.raises(SystemExit) as ei:
+            d.run(argv)
+        assert ei.value.code == 2, argv
 
 
 def test_entry_propagates_exit_code(monkeypatch, capsys):
@@ -813,3 +816,48 @@ def test_r1_nonvertical_realization_error_zero_on_real_letters():
             from src.topology import nonvertical_realization_x_error
             err = nonvertical_realization_x_error(c.realized)
             assert err < 0.5, L
+
+
+# ---------------------------------------------------------------------------
+# argparse CLI and lowercase glyphs
+# ---------------------------------------------------------------------------
+
+
+def test_cli_parse_config():
+    cfg = d.parse_cli(["A"])
+    assert cfg.letter == "A" and cfg.max_curves == 12
+    assert cfg.seed is None and cfg.quiet is False
+    cfg = d.parse_cli(["--seed", "42", "--max-curves", "4", "-q", "z"])
+    assert (cfg.letter, cfg.max_curves, cfg.seed, cfg.quiet) == \
+        ("z", 4, 42, True)
+
+
+def test_lowercase_uses_actual_lowercase_glyph():
+    la = glyph_geometry("a")
+    ua = glyph_geometry("A")
+    assert not np.array_equal(la.fill, ua.fill)
+    assert glyph_geometry("g").fill.any()
+
+
+def test_dotted_i_dot_survives_realization():
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("i")
+    rep = graph.atom_report
+    assert rep["unclassified_length"] == 0.0
+    ys = []
+    for c in selected:
+        for emb in c.realized.values():
+            ys.append((float(emb["raw_y"].min()),
+                       float(emb["raw_y"].max())))
+    spans = sorted(ys)
+    assert len(spans) >= 2
+    assert any(spans[k + 1][0] - spans[k][1] > 5.0
+               for k in range(len(spans) - 1))
+
+
+def test_seed_pipeline_deterministic(monkeypatch):
+    monkeypatch.setattr(_fitting, "USE_LP", True)
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
+    fits_a, _ = fit_selected(selected)
+    fits_b, _ = fit_selected(selected)
+    assert [d.format_expression(f.poly) for f in fits_a] == \
+        [d.format_expression(f.poly) for f in fits_b]
