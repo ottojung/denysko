@@ -12,6 +12,8 @@ from src.fitting import (
 )
 from src.topology import (
     ESC_OFFSETS,
+    build_stroke_route_graph,
+    _route_signature as route_sig_top,
     route_edge_ids,
     GlyphGeometry,
     RouteEdge,
@@ -466,3 +468,122 @@ def test_stale_pinch_branch_terminates():
     assert all(v.x < gap_hi for v in sinks_mid)
     for e in graph.edges:               # no edge crosses the empty gap
         assert not (e.xs[0] < gap_lo and e.xs[-1] > gap_hi)
+
+
+# ---------------------------------------------------------------------------
+# Oriented-route geometry regressions
+# ---------------------------------------------------------------------------
+
+
+def test_oriented_reconstruction_reverses_stored_direction():
+    """v0 --e0--> v1 <--e1-- v2 : walking v0->v1->v2 must use e0 forward
+    and e1 reversed, with exact point order."""
+    from src.topology import (OrientedRouteEdge, Route, RouteEdge,
+                              RouteGraph, route_polyline)
+
+    edges = [
+        RouteEdge(0, 0, 1, xs=np.array([0.0, 1.0]),
+                  lower=np.zeros(2), upper=np.zeros(2),
+                  points=np.array([[0.0, 0.0], [1.0, 0.0]])),
+        RouteEdge(1, 2, 1, xs=np.array([1.0, 2.0]),
+                  lower=np.zeros(2), upper=np.zeros(2),
+                  points=np.array([[2.0, 0.0], [1.0, 0.0]])),
+    ]
+    verts = [RouteVertex(0, 0.0, "terminal"),
+             RouteVertex(1, 1.0, "junction"),
+             RouteVertex(2, 2.0, "terminal")]
+    for v in verts:
+        v.outgoing = tuple(e.id for e in edges if e.v_from == v.id)
+        v.incoming = tuple(e.id for e in edges if e.v_to == v.id)
+    g = RouteGraph(vertices=verts, edges=edges,
+                   meaningful=frozenset({0, 1}))
+    route = Route((OrientedRouteEdge(0, 0, 1), OrientedRouteEdge(1, 1, 2)))
+    pl = route_polyline(g, route)
+    np.testing.assert_allclose(pl[:, 0], [0.0, 1.0, 1.0, 2.0])
+    # a step that matches neither stored direction must fail loudly
+    with pytest.raises(Exception):
+        route_polyline(g, Route((OrientedRouteEdge(1, 0, 1),)))
+
+
+def test_mirror_routes_dedupe_and_canonicalize_left_to_right():
+    from src.topology import glyph_geometry
+
+    geom = glyph_geometry("A")
+    graph = build_stroke_route_graph(geom)
+    routes = enumerate_complete_routes(graph)
+    sigs = {route_sig_top(r) for r in routes}
+    assert len(routes) == len(sigs)              # no mirrored pairs
+    assert len(routes) == 2
+    for r in routes:                             # all left-to-right
+        x0 = graph.vertices[r.steps[0].from_vertex].x
+        x1 = graph.vertices[r.steps[-1].to_vertex].x
+        assert x0 <= x1
+
+
+def _h_glyph():
+    return glyph_geometry("H")
+
+
+def test_h_corridors_are_continuous_and_inside_glyph():
+    """The old diagonal arc-length remapping crossed empty quadrants;
+    both selected H corridors must now satisfy corridor ⊂ glyph."""
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
+    assert len(selected) == 2
+    for r, c in zip(chosen, selected):
+        assert d.route_continuity_violation(graph, r) < 1e-6
+        assert d.corridor_glyph_violation(c, geom) < 0.02
+        # probe the previously-fake diagonal zone between stems/bar
+        xs_probe = np.linspace(20.0, 55.0, 40)
+        mids = 0.5 * (c.lower_at(xs_probe) + c.upper_at(xs_probe))
+        step = 100.0 / 512
+        cols = np.clip(np.round(xs_probe / step).astype(int), 0, 511)
+        rows = np.clip(np.round(mids / step).astype(int), 0,
+                       geom.fill.shape[0] - 1)
+        assert geom.fill[rows, cols].mean() > 0.97
+
+
+def test_tiny_leading_coefficient_sets_degree_for_v3():
+    corr = _slab_corridor()
+    # P = 50 + 1e-16 x^4 : degree 4, +inf both sides -> right-up escapes,
+    # but at the checkpoints it is still inside the band -> V3 flags it.
+    coef = np.array([50.0, 0.0, 0.0, 0.0, 1e-16])
+    for ori in ORIENTATIONS:
+        assert d.tail_reentry_violation(coef, corr, ori) > 0
+    # far outside already, tiny NEGATIVE leading term dominates: a
+    # right-down orientation sees permanent outward behaviour only if
+    # the asymptote is downward: -50 - 1e-16 x^4 -> -inf on the right
+    coef_dn = np.array([-200.0, 0.0, 0.0, 0.0, -1e-16])
+    assert d.tail_reentry_violation(coef_dn, corr, (-1, -1)) == 0.0
+    # flipping the tiny sign flips the asymptotic verdict
+    coef_up = np.array([-200.0, 0.0, 0.0, 0.0, 1e-16])
+    assert d.tail_reentry_violation(coef_up, corr, (-1, -1)) > 0
+
+
+def test_chebyshev_derivative_rows_match_chebder():
+    import numpy.polynomial.chebyshev as cheb
+
+    rng = np.random.RandomState(7)
+    degree = 12
+    z = np.linspace(-0.9, 0.9, 9)
+    dzdx = 2.0 / (60.0 - 10.0)
+    A = np.zeros((len(z), degree + 1))
+    for k in range(1, degree + 1):
+        dcoef = cheb.chebder(np.eye(degree + 1)[k])
+        A[:, k] = dzdx * cheb.chebval(z, dcoef)
+    cvec = rng.uniform(-3, 3, degree + 1)
+    expected = dzdx * cheb.chebval(z, cheb.chebder(cvec))
+    np.testing.assert_allclose(A @ cvec, expected, rtol=1e-10)
+
+
+def test_synthetic_valid_h_fits_with_permanent_tails(monkeypatch):
+    monkeypatch.setattr(_fitting, "USE_LP", True)
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
+    assert len(selected) == 2
+    fits = []
+    for c in selected:
+        fit = fit_route(c, hi=24)
+        assert fit is not None
+        fits.append(fit)
+    lines = [d.format_expression(f) for f in fits]
+    problems = d.validate_lines(lines, geom, fits, selected)
+    assert problems == []

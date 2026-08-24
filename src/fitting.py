@@ -403,9 +403,11 @@ def tail_reentry_violation(poly_coef, corridor, orientation):
                     viol = max(viol, 2.0 + min(abs(float(r) - x_c), 1.0))
                     break
 
-        # 3) asymptotic direction must be outward
+        # 3) asymptotic direction must be outward. ptrim already
+        # stripped EXACT zeros only: a 1e-16 leading coefficient still
+        # dominates at infinity and must be honoured.
         c = ptrim.coef
-        if len(c) >= 2 and abs(c[-1]) > 1e-12:
+        if len(c) >= 2:
             lead = c[-1] > 0
             even = (len(c) - 1) % 2 == 0
             # P -> +infinity on the right iff lead > 0; on the left iff
