@@ -217,13 +217,6 @@ class RouteGraph:
         return [v for v in self.vertices if v.kind == "sink"]
 
 
-@dataclass
-class Route:
-    edge_ids: tuple                 # ordered source -> sink
-    signature: str
-    corridor: "Corridor"
-
-
 def _column_runs(colmask: np.ndarray, min_rows: int):
     """Maximal contiguous True runs as (row_lo, row_hi) inclusive."""
     runs = []
@@ -408,148 +401,6 @@ def build_route_graph(geom: GlyphGeometry) -> RouteGraph:
     return RouteGraph(vertices=vertices, edges=edges, meaningful=meaningful)
 
 
-@dataclass(frozen=True)
-class OrientedRouteEdge:
-    """One graph edge as traversed by a route (explicit direction)."""
-    edge_id: int
-    from_vertex: int
-    to_vertex: int
-
-
-@dataclass(frozen=True)
-class Route:
-    """A complete route: an oriented walk between terminal vertices."""
-    steps: tuple
-
-
-@dataclass(frozen=True)
-class StrokeAtom:
-    """One x-monotone (or genuinely vertical) required stroke piece.
-
-    Every atom corresponds to exactly one directed graph edge (vertical
-    atoms have two twin directed edges). Provenance records the raw
-    skeleton chains it came from, so raw material is fully accounted:
-    atomized + discarded == raw.
-    """
-    id: int
-    from_vertex: int
-    to_vertex: int
-    points: np.ndarray
-    length: float
-    kind: str                        # 'mono' | 'vertical'
-    source_skeleton_edge_ids: tuple
-
-
-def _route_signature(route):
-    if isinstance(route, tuple):
-        return "/".join(f"e{e}" for e in route)
-    return "/".join(
-        f"e{s.edge_id}:{s.from_vertex}-{s.to_vertex}" for s in route.steps
-    )
-
-
-def enumerate_complete_routes(graph: RouteGraph,
-                              cap: int = MAX_ROUTES) -> list[Route]:
-    """Enumerate every DIRECTED x-realizable route.
-
-    All non-vertical atoms ascend in x, so any directed walk is globally
-    x-nondecreasing: backwards-x walks structurally do not exist.
-
-    Starts (structural, not label-based): every vertex with NO incoming
-    directed edge (e.g. an x-extremum bend acting as a directed source,
-    as in C), plus semantic terminals (physical stroke tips whose only
-    incoming edge is the twin of their own arm).
-
-    Ends: a semantic terminal, a structurally empty continuation, or an
-    x-extremum sink (no outgoing edges - a y=f(x) cannot pass an
-    extremum and return). Immediate twin retracing is forbidden.
-    Exceeding MAX_ROUTES RAISES rather than truncating.
-    """
-    outgoing: dict[int, list[tuple[int, int]]] = {}
-    incoming_n: dict[int, int] = {}
-    for e in graph.edges:
-        outgoing.setdefault(e.v_from, []).append((e.id, e.v_to))
-        incoming_n[e.v_to] = incoming_n.get(e.v_to, 0) + 1
-    for v in outgoing:
-        outgoing[v].sort()
-
-    terminals = {v.id for v in graph.vertices
-                 if v.kind in ("source", "sink", "terminal")}
-
-    starts = {v.id for v in graph.vertices
-              if incoming_n.get(v.id, 0) == 0 or v.id in terminals}
-
-    raw: list[Route] = []
-    budget = [cap]
-
-    def dfs(v, seen, path):
-        nxt = []
-        for eid, w in sorted(outgoing.get(v, [])):
-            if eid in seen:
-                continue
-            if path and graph.twin_of.get(eid) == path[-1].edge_id \
-                    and w == path[-1].from_vertex:
-                continue   # no immediate retrace along the twin
-            nxt.append((eid, w))
-        if not nxt:
-            # dead end: still a complete realization of what it covers
-            if path:
-                raw.append(Route(path))
-                budget[0] -= 1
-                if budget[0] < 0:
-                    raise RuntimeError(
-                        f"route enumeration exceeded MAX_ROUTES={cap}")
-            return
-        for eid, w in nxt:
-            npath = path + (OrientedRouteEdge(eid, v, w),)
-            if w in terminals:
-                raw.append(Route(npath))
-                budget[0] -= 1
-                if budget[0] < 0:
-                    raise RuntimeError(
-                        f"route enumeration exceeded MAX_ROUTES={cap}")
-                continue
-            dfs(w, seen | {eid}, npath)
-
-    for t in sorted(starts):
-        dfs(t, frozenset(), ())
-    return sorted(set(raw), key=_route_signature)
-
-
-def route_edge_ids(route):
-    if isinstance(route, tuple):
-        return route
-    return tuple(s.edge_id for s in route.steps)
-
-
-def route_atom_ids(graph: RouteGraph, route) -> frozenset:
-    """Physical atom ids a route realizes (twins collapse)."""
-    if isinstance(route, Route):
-        ids = (s.edge_id for s in route.steps)
-    else:
-        ids = route
-    return frozenset(graph.physical_atom(e) for e in ids)
-
-
-def route_edge_coverage(graph: RouteGraph, selected: list) -> np.ndarray:
-    """Boolean coverage vector over all graph edges for chosen routes."""
-    covered = np.zeros(len(graph.edges), dtype=bool)
-    for r in selected:
-        for eid in route_edge_ids(r):
-            covered[eid] = True
-    return covered
-
-
-def route_coverage_fraction(graph: RouteGraph, selected: list):
-    """Fraction of meaningful edges covered by the selected routes."""
-    if not graph.meaningful:
-        return 1.0
-    hit = set()
-    for r in selected:
-        hit |= route_atom_ids(graph, r)
-    return len(graph.meaningful & hit) / len(graph.meaningful)
-
-
 def select_routes_min_cover(graph: RouteGraph, candidates: list):
     """Exact minimum cover of meaningful PHYSICAL atoms by valid routes.
 
@@ -603,595 +454,68 @@ def select_routes_min_cover(graph: RouteGraph, candidates: list):
     return [j for j in range(n_r) if res2.x[j] > 0.5]
 
 
-def route_edge_coverage(graph: RouteGraph, selected: list) -> np.ndarray:
-    """Boolean coverage vector over all graph edges for chosen routes."""
-    covered = np.zeros(len(graph.edges), dtype=bool)
-    for r in selected:
-        for eid in route_edge_ids(r):
-            covered[eid] = True
-    return covered
-
-
-def route_coverage_fraction(graph: RouteGraph, selected: list):
-    """Fraction of meaningful edges covered by the selected routes."""
-    if not graph.meaningful:
-        return 1.0
-    hit = set()
-    for r in selected:
-        hit |= route_atom_ids(graph, r)
-    return len(graph.meaningful & hit) / len(graph.meaningful)
-
-
-def select_routes_min_cover(graph: RouteGraph, candidates: list):
-    """Exact minimum cover of all meaningful graph edges by complete
-    routes via one lexicographically weighted HiGHS MILP:
-
-        BIG * route_count + total_complexity + tiny * stable_index
-
-    No exhaustive subset enumeration is ever performed.
-    """
-    from scipy.optimize import milp, LinearConstraint, Bounds
-
-    meaningful = sorted(graph.meaningful)
-    if not meaningful or not candidates:
-        return []
-
-    cand_sets = [route_atom_ids(graph, r) & set(meaningful)
-                 for r in candidates]
-    n_r = len(candidates)
-    n_e = len(meaningful)
-    BIG = float(n_e + 1) * 1000.0
-
-    c = (np.full(n_r, BIG)
-         + np.array([float(len(route_edge_ids(r))) for r in candidates])
-         + np.array([1e-6 * j / max(1, n_r) for j in range(n_r)]))
-
-    A = np.zeros((n_e, n_r))
-    for j, cs in enumerate(cand_sets):
-        for eid in cs:
-            A[meaningful.index(eid), j] = 1.0
-    res = milp(
-        c=c,
-        constraints=[LinearConstraint(A, lb=np.ones(n_e),
-                                      ub=np.full(n_e, np.inf))],
-        integrality=np.ones(n_r),
-        bounds=Bounds(0, 1),
-    )
-    if not res.success:
-        raise RuntimeError("route cover MILP failed")
-    return [j for j in range(n_r) if res.x[j] > 0.5]
-
-
-@dataclass
-class Corridor:
-    """Allowed region for one complete route.
-
-    Piecewise-linear [lower(x), upper(x)] from the route's slice
-    intervals (with interior safety margin applied). (ylo, yhi) is the
-    glyph vertical band the tails must escape permanently; escape
-    directions are a deterministic fitting-time choice per side.
-    """
-
-    path: BoundaryPath
-    xa: float
-    xb: float
-    xs: np.ndarray
-    lower: np.ndarray
-    upper: np.ndarray
-    ylo: float
-    yhi: float
-    realized: dict = None            # phys atom id -> (xs, ys, lo, hi)
-
-    def __post_init__(self):
-        if self.realized is None:
-            self.realized = {}
-
-    def lower_at(self, x):
-        return np.interp(x, self.xs, self.lower)
-
-    def upper_at(self, x):
-        return np.interp(x, self.xs, self.upper)
-
-
-def route_polyline(graph: RouteGraph, route: Route) -> np.ndarray:
-    """Exact oriented polyline of a route.
-
-    Each step's points are used as stored when the stored edge direction
-    matches the traversal direction, else reversed. No endpoint guessing.
-    """
-    pts_all = []
-    for s in route.steps:
-        e = graph.edges[s.edge_id]
-        if e.v_from == s.from_vertex and e.v_to == s.to_vertex:
-            pts_all.append(np.asarray(e.points, dtype=float))
-        elif e.v_to == s.from_vertex and e.v_from == s.to_vertex:
-            pts_all.append(np.asarray(e.points, dtype=float)[::-1])
-        else:
-            raise RuntimeError(
-                f"route discontinuity at edge {s.edge_id}: walk "
-                f"{s.from_vertex}->{s.to_vertex} vs stored "
-                f"{e.v_from}->{e.v_to}")
-    return np.vstack(pts_all)
-
-
-def route_continuity_violation(graph: RouteGraph, route: Route) -> float:
-    """Largest geometric gap between consecutive step endpoints."""
-    for a, b in zip(route.steps, route.steps[1:]):
-        if a.to_vertex != b.from_vertex:
-            return float("inf")
-    pl = route_polyline(graph, route)
-    spans = []
-    k = 0
-    for s in route.steps:
-        n = len(graph.edges[s.edge_id].points)
-        spans.append((k, k + n - 1))
-        k += n - 1
-    worst = 0.0
-    for (_, e0), (s1, _) in zip(spans, spans[1:]):
-        worst = max(worst, float(np.hypot(*(pl[e0] - pl[s1]))))
-    return worst
-
-
-def _fill_at(geom: GlyphGeometry, xs, ys):
-    step = SIZE / GRID
-    cols = np.clip(np.round(np.asarray(xs) / step).astype(int), 0,
-                   geom.fill.shape[1] - 1)
-    rows = np.clip(np.round(np.asarray(ys) / step).astype(int), 0,
-                   geom.fill.shape[0] - 1)
-    return geom.fill[rows, cols]
-
-
-def atom_coverage_misses(graph: RouteGraph, atoms_polys,
-                         grid_per_atom: int = 24, tol: float = None):
-    """Geometric same-x coverage of every meaningful StrokeAtom.
-
-    atoms_polys: iterable of (edge_id, coef-array) pairs realized by
-    corridors or emitted polynomials. For each meaningful atom, sample
-    its polyline; every sample (x_s, y_s) must satisfy
-    min_j |P_j(x_s) - y_s| <= tol for some curve j whose physical atom
-    matches. Returns (uncovered_atom_ids, per_atom_report).
-    """
-    if tol is None:
-        tol = STROKE_COVER_TOL
-    from numpy.polynomial import Polynomial as _P
-
-    realized = [(eid, _P(coef)) for eid, coef in atoms_polys]
-    uncovered = []
-    report = []
-    for a_id in sorted(graph.meaningful):
-        e = next((e for e in graph.edges
-                  if graph.physical_atom(e.id) == a_id
-                  and e.points is not None), None)
-        if e is None:
-            continue
-        if e.xs is not None and len(e.xs) > 1 and \
-                abs(e.xs[-1] - e.xs[0]) <= VERTICAL_X_TOL:
-            # vertical atom: same-x sampling is degenerate (one column);
-            # covered structurally via directed traversal + the Phase-1
-            # glyph gate on its locally-unfolded corridor
-            report.append({"atom": a_id, "kind": "vertical",
-                           "covered": "structural"})
-            continue
-        pts = e.points
-        n = max(4, grid_per_atom)
-        xs = np.linspace(pts[0, 0], pts[-1, 0], n)
-        ys = np.interp(xs, pts[:, 0], pts[:, 1])
-        local = [(eid, poly) for eid, poly in realized
-                 if graph.physical_atom(eid) == a_id]
-        curves = set()
-        covered_n = 0
-        worst = 0.0
-        for xi, yi in zip(xs, ys):
-            best = min((abs(float(poly(xi)) - yi)
-                        for _, poly in local), default=1e9)
-            if best <= tol:
-                covered_n += 1
-                worst = max(worst, best)
-                curves.update(eid for eid, poly in local
-                              if abs(float(poly(xi)) - yi) <= tol)
-            else:
-                worst = max(worst, best)
-        entry = {"atom": a_id, "n": n, "covered": covered_n,
-                 "worst_miss": round(worst, 2),
-                 "curves": sorted(curves)}
-        report.append(entry)
-        if covered_n < n:
-            uncovered.append(a_id)
-    return uncovered, report
-
-
 def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,
-                             grid: int = 200) -> float:
-    """Fraction of dense route-domain samples whose corridor MIDPOINT
-    lies outside the canonical glyph fill (minimum 'corridor ⊂ glyph'
-    requirement)."""
+                             grid: int = 200,
+                             raster_tol: float = 1.0) -> float:
+    """Worst violation of 'corridor interval subset-of glyph fill' over
+    dense route-domain samples. For each sampled x the ENTIRE vertical
+    interval [lower, upper] must lie inside one filled column run
+    (modulo raster_tol). Returns the worst outside distance in glyph
+    units; 0.0 means fully contained."""
     xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
-    mids = 0.5 * (corridor.lower_at(xs) + corridor.upper_at(xs))
-    return float(1.0 - _fill_at(geom, xs, mids).mean())
+    lo = corridor.lower_at(xs)
+    hi = corridor.upper_at(xs)
+    step = SIZE / GRID
+    worst = 0.0
+    for i in range(len(xs)):
+        col = int(min(max(round(xs[i] / step), 0),
+                      geom.fill.shape[1] - 1))
+        colm = geom.fill[:, col]
+        runs, r0 = [], None
+        for rr in range(len(colm)):
+            if colm[rr] and r0 is None:
+                r0 = rr
+            elif not colm[rr] and r0 is not None:
+                runs.append((r0 * step, rr * step))
+                r0 = None
+        if r0 is not None:
+            runs.append((r0 * step, len(colm) * step))
+        best = None
+        for blo, bhi in runs:
+            d = (max(blo - raster_tol - lo[i], lo[i] - (bhi + raster_tol),
+                     0.0)
+                 + max(blo - raster_tol - hi[i],
+                       hi[i] - (bhi + raster_tol), 0.0))
+            if best is None or d < best:
+                best = d
+        if best is not None:
+            worst = max(worst, best)
+    return float(worst)
 
 
 def poly_glyph_violation(coef, corridor: Corridor, geom: GlyphGeometry,
-                         grid: int = 300) -> float:
-    """V5: fraction of dense in-route x samples where (x, P(x)) lies
-    outside the canonical glyph fill."""
+                         grid: int = 300,
+                         raster_tol: float = 1.0) -> float:
+    """V5: worst distance (glyph units) by which the emitted polynomial
+    leaves the filled stroke at the same x over dense route-domain
+    samples. Zero means every sample is inside the glyph."""
     xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
     vals = np.polynomial.Polynomial(coef)(xs)
-    return float(1.0 - _fill_at(geom, xs, vals).mean())
-
-
-def build_route_corridor(graph: RouteGraph, route: Route,
-                         geom: GlyphGeometry) -> Corridor:
-    """Corridor for one ORIENTED skeleton route (left-to-right).
-
-    Real skeleton x is preserved wherever the route already progresses
-    in x; only near-vertical stretches receive an artificial LOCAL x
-    spread inside their own stroke's filled width, starting where the
-    walk currently is so constraint positions stay strictly increasing.
-    Every band is clamped into the fill of its own column and every
-    final node into its own constraint column, so the corridor is a
-    geometric subset of the glyph.
-    """
-    from scipy import ndimage  # lazy
-
-    if not isinstance(route, Route):
-        raise TypeError("build_route_corridor requires an oriented Route")
-
     step = SIZE / GRID
-    route_pts = route_polyline(graph, route)
-
-    seg = np.hypot(*np.diff(route_pts, axis=0).T)
-    s_arc = np.concatenate([[0.0], np.cumsum(seg)])
-    total = float(s_arc[-1])
-    n_lm = min(STROKE_LANDMARKS, max(8, int(total)))
-    targets = np.linspace(0.0, total, n_lm)
-    lam = np.column_stack([
-        np.interp(targets, s_arc, route_pts[:, 0]),
-        np.interp(targets, s_arc, route_pts[:, 1]),
-    ])
-
-    radius = ndimage.distance_transform_edt(geom.fill)
-
-    # per-step arc ranges -> atom attribution for landmarks
-    step_arc = []
-    acc = 0.0
-    for s_id in route.steps:
-        e_pts = graph.edges[s_id.edge_id].points
-        L = float(np.hypot(*np.diff(e_pts, axis=0).T).sum())
-        step_arc.append((acc, acc + L, s_id))
-        acc += L
-
-    def atom_at(t_arc):
-        for a0, a1, s_id in step_arc:
-            if t_arc <= a1 or s_id is step_arc[-1][2]:
-                return graph.physical_atom(s_id.edge_id)
-        return graph.physical_atom(step_arc[-1][2].edge_id)
-
-    def row_fill_runs(row):
-        runs, c0 = [], None
-        rowm = geom.fill[row, :]
-        for cc in range(len(rowm)):
-            if rowm[cc] and c0 is None:
-                c0 = cc
-            elif not rowm[cc] and c0 is not None:
-                runs.append((c0 * step, cc * step))
-                c0 = None
-        if c0 is not None:
-            runs.append((c0 * step, len(rowm) * step))
-        return runs
-
-    def col_fill_runs(col):
-        runs, r0 = [], None
+    worst = 0.0
+    for xi, yi in zip(xs, vals):
+        col = int(min(max(round(xi / step), 0), geom.fill.shape[1] - 1))
         colm = geom.fill[:, col]
-        for rr in range(len(colm)):
-            if colm[rr] and r0 is None:
-                r0 = rr
-            elif not colm[rr] and r0 is not None:
-                runs.append((r0 * step, rr * step))
-                r0 = None
-        if r0 is not None:
-            runs.append((r0 * step, len(colm) * step))
-        return runs
-
-    def col_fill_runs(col):
-        runs, r0 = [], None
-        colm = geom.fill[:, col]
-        for rr in range(len(colm)):
-            if colm[rr] and r0 is None:
-                r0 = rr
-            elif not colm[rr] and r0 is not None:
-                runs.append((r0 * step, rr * step))
-                r0 = None
-        if r0 is not None:
-            runs.append((r0 * step, len(colm) * step))
-        return runs
-
-    def local_run(x_g, y_g):
-        row = int(min(max(round(y_g / step), 0), geom.fill.shape[0] - 1))
-        for lo_g, hi_g in row_fill_runs(row):
-            if lo_g - 2 * step <= x_g <= hi_g + 2 * step:
-                return lo_g, hi_g
-        return None
-
-    # ---- constraint positions --------------------------------------
-    VERT = 0.25          # |dx| < VERT*dy => locally vertical
-    p = np.array(lam[:, 0], dtype=float)
-    shift = 0.0
-    in_unfold_exit = False
-    i = 1
-    while i < len(p):
-        dx = lam[i, 0] - lam[i - 1, 0]
-        dy = abs(lam[i, 1] - lam[i - 1, 1])
-        if abs(dx) < VERT * dy:
-            j = i
-            while j + 1 < len(p):
-                dx2 = lam[j + 1, 0] - lam[j, 0]
-                dy2 = abs(lam[j + 1, 1] - lam[j, 1])
-                if abs(dx2) < VERT * dy2:
-                    j += 1
-                else:
-                    break
-            wins = [local_run(lam[k, 0], lam[k, 1])
-                    or (lam[k, 0] - STROKE_MIN_HALF,
-                        lam[k, 0] + STROKE_MIN_HALF)
-                    for k in range(i, j + 1)]
-            lo_r, hi_r = min(wins, key=lambda w: w[1] - w[0])
-            margin = min(CORRIDOR_MARGIN, max((hi_r - lo_r) * 0.15, 1e-3))
-            win_lo = max(lo_r + margin, p[i - 1])
-            win_hi = max(hi_r - margin, win_lo + STROKE_MIN_HALF)
-            n_v = j - i + 2
-            for k in range(i, j + 1):
-                frac = (k - i + 1) / n_v
-                cand = win_lo + frac * (win_hi - win_lo)
-                cand = min(max(cand, lo_r + 1e-3), hi_r - 1e-3)
-                p[k] = max(cand, p[k - 1] + 1e-4)
-            in_unfold_exit = True   # next real section may start inside
-            i = j + 1               # the consumed window
-        else:
-            # Nonvertical: real skeleton x. A small backwards step right
-            # after a vertical unfold is the unfold OVERLAP (the next
-            # atom starts inside the consumed window) - resolved by a
-            # tracked forward continuation that preserves downstream
-            # real spacing. A LATER genuine decrease (after real x has
-            # caught up) is a Phase-1 bug and raises.
-            raw = lam[i, 0] + shift
-            if raw < p[i - 1]:
-                if p[i - 1] - raw > 1e-6 and not in_unfold_exit:
-                    raise RuntimeError(
-                        "Phase 1 bug: genuine backwards x "
-                        f"({raw:.3f} after {p[i - 1]:.3f})")
-                p[i] = p[i - 1] + 1e-4
-            else:
-                p[i] = raw
-            shift = max(shift, p[i] - lam[i, 0])
-            if lam[i, 0] >= p[i - 1] - 1e-9:
-                in_unfold_exit = False
-            i += 1
-
-    # ---- node bands: continuity-tracked fill intervals ---------------
-    # Each node's band lives inside a filled run of ITS OWN constraint
-    # column. Run identity is tracked continuously: a node picks the run
-    # overlapping its predecessor's band (same physical stroke), only
-    # falling back to the skeleton-point run at route start/junctions.
-    # This prevents silent snaps between nearby branches (e.g. B bowls).
-    lo_list, hi_list = [], []
-    atom_of_landmark = []
-    prev_band = None
-    for i2 in range(len(p)):
-        y_g = lam[i2, 1]
-        row = int(min(max(round(y_g / step), 0), geom.fill.shape[0] - 1))
-        scol = int(min(max(round(lam[i2, 0] / step), 0),
-                       geom.fill.shape[1] - 1))
-        ccol = int(min(max(round(p[i2] / step), 0),
-                       geom.fill.shape[1] - 1))
-        half = max(STROKE_RADIUS_GAIN * float(radius[row, scol]) * step,
-                   STROKE_MIN_HALF)
-        cand_lo, cand_hi = y_g - half, y_g + half
-
-        runs_c = col_fill_runs(ccol)
-        chosen = None
-        if prev_band is not None:
-            pb_lo, pb_hi = prev_band
-            best_ov = 0.0
-            for blo, bhi in runs_c:
-                ov = min(pb_hi, bhi) - max(pb_lo, blo)
-                if ov > best_ov:
-                    best_ov = ov
-                    chosen = (blo, bhi)
-        if chosen is None:
-            # skeleton-provenance: run at the skeleton column containing
-            # (or nearest) the skeleton point
-            best_d = None
-            for blo, bhi in col_fill_runs(scol):
-                d = max(blo - step - y_g, y_g - (bhi + step), 0.0)
-                if d == 0.0:
-                    chosen = (blo, bhi)
-                    break
-                if best_d is None or d < best_d:
-                    best_d = d
-                    chosen = (blo, bhi)
-        if chosen is None:
-            chosen = (y_g - STROKE_MIN_HALF, y_g + STROKE_MIN_HALF)
-
-        blo, bhi = chosen
-        lo_y = max(cand_lo, blo)
-        hi_y = min(cand_hi, bhi)
-        # honour the skeleton point whenever the stroke does
-        if not (lo_y <= y_g <= hi_y) and blo - step <= y_g <= bhi + step:
-            lo_y = min(lo_y, max(y_g, blo))
-            hi_y = max(hi_y, min(y_g, bhi))
-            lo_y = max(lo_y, blo)
-            hi_y = min(hi_y, bhi)
-        if hi_y - lo_y < MIN_CORRIDOR_WIDTH:
-            mid_y = 0.5 * (lo_y + hi_y)
-            lo_y, hi_y = mid_y - MIN_CORRIDOR_WIDTH / 2, \
-                mid_y + MIN_CORRIDOR_WIDTH / 2
-        lo_list.append(lo_y)
-        hi_list.append(hi_y)
-        atom_of_landmark.append(atom_at(float(targets[i2])))
-        prev_band = (lo_y, hi_y)
-    lo_arr = np.asarray(lo_list)
-    hi_arr = np.asarray(hi_list)
-
-    # drop leading/trailing nodes whose constraint column is empty
-    # (unfold overshoot past a thin tip); interior nodes stay
-    def _col_has(col_i):
-        return any(True for _ in col_fill_runs(col_i))
-
-    lo_keep = 0
-    while lo_keep < len(p) - 2 and not _col_has(int(round(p[lo_keep] / step))):
-        lo_keep += 1
-    hi_keep = len(p) - 1
-    while hi_keep > lo_keep + 1 and \
-            not _col_has(int(round(p[hi_keep] / step))):
-        hi_keep -= 1
-    p, lower0, upper0 = p[lo_keep:hi_keep + 1], \
-        lo_arr[lo_keep:hi_keep + 1].copy(), hi_arr[lo_keep:hi_keep + 1]
-    lam_kept = lam[lo_keep:hi_keep + 1]
-
-    heights = upper0 - lower0
-    mm = np.minimum(CORRIDOR_MARGIN,
-                    np.maximum(0.0, (heights - MIN_CORRIDOR_WIDTH)) / 2.0)
-    lower = lower0 + mm
-    upper = upper0 - mm
-
-    center = (lower + upper) / 2.0
-    path = BoundaryPath(points=np.column_stack([p, center]),
-                        contour_id=-1)
-
-    # realized embedding per physical atom (for strict V6), restricted
-    # to the kept node range
-    realized = {}
-    for i3 in range(lo_keep, hi_keep + 1):
-        a_id = atom_of_landmark[i3]
-        realized.setdefault(a_id, [[], [], [], []])
-        realized[a_id][0].append(p[i3 - lo_keep])
-        realized[a_id][1].append(center[i3 - lo_keep])
-        realized[a_id][2].append(lower[i3 - lo_keep])
-        realized[a_id][3].append(upper[i3 - lo_keep])
-    realized = {k: tuple(np.asarray(v) for v in v4)
-                for k, v4 in realized.items()}
-
-    pad = ESC_OFFSETS[-1] + 1.0
-    return Corridor(
-        path=path,
-        xa=float(p[0] - pad),
-        xb=float(p[-1] + pad),
-        xs=p,
-        lower=lower,
-        upper=upper,
-        ylo=float(geom.ymin),
-        yhi=float(geom.ymax),
-        realized=realized,
-    )
-
-
-
-def build_slice_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
-    if isinstance(edge_ids, Route):
-        edge_ids = route_edge_ids(edge_ids)
-    elif edge_ids and hasattr(edge_ids[0], "edge_id"):
-        edge_ids = route_edge_ids(edge_ids)
-    """Corridor for one complete route: concatenated slice intervals of
-    its graph edges, with CORRIDOR_MARGIN applied per column (reduced
-    deterministically on thin slices; never inverted)."""
-    xs_all, lo_all, hi_all = [], [], []
-    for eid in edge_ids:
-        e = graph.edges[eid]
-        xs_all.extend(e.xs)
-        lo_all.extend(e.lower)
-        hi_all.extend(e.upper)
-
-    xs = np.asarray(xs_all, dtype=float)
-    lo = np.asarray(lo_all, dtype=float)
-    hi = np.asarray(hi_all, dtype=float)
-    keep = np.concatenate([[True], np.diff(xs) > 1e-12])
-    xs, lo, hi = xs[keep], lo[keep], hi[keep]
-
-    heights = hi - lo
-    mm = np.minimum(CORRIDOR_MARGIN,
-                    np.maximum(0.0, (heights - MIN_CORRIDOR_WIDTH)) / 2.0)
-    lower = lo + mm
-    upper = hi - mm
-
-    center = (lower + upper) / 2.0
-    path = BoundaryPath(points=np.column_stack([xs, center]),
-                        contour_id=-1)
-
-    pad = ESC_OFFSETS[-1] + 1.0   # window covers all escape checkpoints
-    return Corridor(
-        path=path,
-        xa=float(xs[0] - pad),
-        xb=float(xs[-1] + pad),
-        xs=xs,
-        lower=lower,
-        upper=upper,
-        ylo=float(geom.ymin),
-        yhi=float(geom.ymax),
-    )
-
-
-
-
-# ---------------------------------------------------------------------------
-# Combined stroke/hole route graph (skeleton-derived)
-# ---------------------------------------------------------------------------
-
-STROKE_COVER_TOL = 10.0         # >= max corridor half-width (TAU +
-                               # STROKE_RADIUS_GAIN * max radius): a
-                               # poly inside its corridor can miss the
-                               # skeleton by at most this much
-VERTICAL_X_TOL = 1.0          # |dx_total| <= this => vertical atom
-STROKE_LANDMARKS = 80        # corridor landmark samples per route
-STROKE_RADIUS_GAIN = 1.6     # corridor half-width = gain * stroke radius
-STROKE_MIN_HALF = 0.8        # never narrower than this
-
-
-def _monotone_pieces(pts: np.ndarray):
-    """Split a polyline into x-monotone pieces at GENUINE local x
-    extrema. Zero dx (locally vertical motion) continues the current
-    direction: an extremum is where the SIGN OF NONZERO dx flips.
-    Returns a list of (i0, i1) index ranges into pts."""
-    n = len(pts)
-    if n < 2:
-        return []
-    dx = np.diff(pts[:, 0])
-    cuts = [0]
-    last_sign = 0
-    for i in range(len(dx)):
-        sgn = 1 if dx[i] > 0 else (-1 if dx[i] < 0 else 0)
-        if sgn == 0:
+        rr = np.nonzero(colm)[0]
+        if len(rr) == 0:
             continue
-        if last_sign == 0:
-            last_sign = sgn
-        elif sgn != last_sign:
-            # the extremum POINT is index i (dx flips on the edge
-            # i->i+1); both pieces share it deterministically, which
-            # also places plateau extrema at the first plateau point
-            cuts.append(i)
-            last_sign = sgn
-    if cuts[-1] != n - 1:
-        cuts.append(n - 1)
-    return [(cuts[k], cuts[k + 1]) for k in range(len(cuts) - 1)
-            if cuts[k] < cuts[k + 1]]
-
-
-def atom_x_monotonicity_violation(points: np.ndarray,
-                                  tol: float = 1e-9) -> float:
-    """Worst genuine backwards-x step of an oriented atom polyline.
-
-    Vertical atoms (constant x) return 0. Nonvertical atoms must have
-    dx >= -tol everywhere after left-to-right orientation; a real
-    reversal is a Phase-1 bug, never repaired downstream.
-    """
-    pts = np.asarray(points, dtype=float)
-    if len(pts) < 2:
-        return 0.0
-    dx = np.diff(pts[:, 0])
-    if abs(float(dx.sum())) <= VERTICAL_X_TOL and float(np.max(np.abs(dx))) \
-            <= VERTICAL_X_TOL:
-        return 0.0                    # genuinely vertical stroke
-    worst = float(np.max(-dx)) if len(dx) else 0.0
-    return max(0.0, worst - tol)
+        inside = (yi >= rr.min() * step - raster_tol
+                  and yi <= (rr.max() + 1) * step + raster_tol)
+        if not inside:
+            d = min(abs(yi - rr.min() * step),
+                    abs((rr.max() + 1) * step - yi))
+            worst = max(worst, d - raster_tol)
+    return float(max(0.0, worst))
 
 
 def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
@@ -1530,118 +854,6 @@ def route_coverage_fraction(graph: RouteGraph, selected: list):
     return len(graph.meaningful & hit) / len(graph.meaningful)
 
 
-def select_routes_min_cover(graph: RouteGraph, candidates: list):
-    """Exact minimum cover of meaningful PHYSICAL atoms by valid routes.
-
-    Staged MILP proof (HiGHS):
-      stage 1: minimize route count -> proven optimum K
-      stage 2: fix count == K, minimize total complexity
-      stage 3 (folded into 2's cost): stable index tie-break
-
-    Candidate enumeration is complete over the directed x-realizable
-    graph and overflow raises, so K is a proven exact minimum.
-    """
-    from scipy.optimize import milp, LinearConstraint, Bounds
-
-    meaningful = sorted(graph.meaningful)
-    if not meaningful or not candidates:
-        return []
-
-    cand_sets = [route_atom_ids(graph, r) & set(meaningful)
-                 for r in candidates]
-    n_r = len(candidates)
-    n_e = len(meaningful)
-
-    A = np.zeros((n_e, n_r))
-    for j, cs in enumerate(cand_sets):
-        for eid in cs:
-            A[meaningful.index(eid), j] = 1.0
-    cover = LinearConstraint(A, lb=np.ones(n_e), ub=np.full(n_e, np.inf))
-    bounds = Bounds(0, 1)
-    integrality = np.ones(n_r)
-
-    def _solve(cost, extra_con=None):
-        cons = [cover] + ([extra_con] if extra_con is not None else [])
-        res = milp(c=cost, constraints=cons, integrality=integrality,
-                   bounds=bounds)
-        if not res.success or res.x is None:
-            raise RuntimeError("route cover MILP failed")
-        return res
-
-    # stage 1: proven minimum route count K
-    res1 = _solve(np.ones(n_r))
-    K = float(round(sum(res1.x)))
-
-    # stage 2+3: fix count == K; minimize complexity then stable index
-    con2 = LinearConstraint(np.ones((1, n_r)), lb=[K], ub=[K])
-    complexity = np.array([float(len(route_edge_ids(r)))
-                           for r in candidates])
-    cost2 = complexity + np.array([1e-6 * j / max(1, n_r)
-                                   for j in range(n_r)])
-    res2 = _solve(cost2, con2)
-
-    return [j for j in range(n_r) if res2.x[j] > 0.5]
-
-
-def route_edge_coverage(graph: RouteGraph, selected: list) -> np.ndarray:
-    """Boolean coverage vector over all graph edges for chosen routes."""
-    covered = np.zeros(len(graph.edges), dtype=bool)
-    for r in selected:
-        for eid in route_edge_ids(r):
-            covered[eid] = True
-    return covered
-
-
-def route_coverage_fraction(graph: RouteGraph, selected: list):
-    """Fraction of meaningful edges covered by the selected routes."""
-    if not graph.meaningful:
-        return 1.0
-    hit = set()
-    for r in selected:
-        hit |= route_atom_ids(graph, r)
-    return len(graph.meaningful & hit) / len(graph.meaningful)
-
-
-def select_routes_min_cover(graph: RouteGraph, candidates: list):
-    """Exact minimum cover of all meaningful graph edges by complete
-    routes via one lexicographically weighted HiGHS MILP:
-
-        BIG * route_count + total_complexity + tiny * stable_index
-
-    No exhaustive subset enumeration is ever performed.
-    """
-    from scipy.optimize import milp, LinearConstraint, Bounds
-
-    meaningful = sorted(graph.meaningful)
-    if not meaningful or not candidates:
-        return []
-
-    cand_sets = [route_atom_ids(graph, r) & set(meaningful)
-                 for r in candidates]
-    n_r = len(candidates)
-    n_e = len(meaningful)
-    BIG = float(n_e + 1) * 1000.0
-
-    c = (np.full(n_r, BIG)
-         + np.array([float(len(route_edge_ids(r))) for r in candidates])
-         + np.array([1e-6 * j / max(1, n_r) for j in range(n_r)]))
-
-    A = np.zeros((n_e, n_r))
-    for j, cs in enumerate(cand_sets):
-        for eid in cs:
-            A[meaningful.index(eid), j] = 1.0
-    res = milp(
-        c=c,
-        constraints=[LinearConstraint(A, lb=np.ones(n_e),
-                                      ub=np.full(n_e, np.inf))],
-        integrality=np.ones(n_r),
-        bounds=Bounds(0, 1),
-    )
-    if not res.success:
-        raise RuntimeError("route cover MILP failed")
-    return [j for j in range(n_r) if res.x[j] > 0.5]
-
-
 @dataclass
 class Corridor:
     """Allowed region for one complete route.
@@ -1778,25 +990,6 @@ def atom_coverage_misses(graph: RouteGraph, atoms_polys,
         if covered_n < n:
             uncovered.append(a_id)
     return uncovered, report
-
-
-def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,
-                             grid: int = 200) -> float:
-    """Fraction of dense route-domain samples whose corridor MIDPOINT
-    lies outside the canonical glyph fill (minimum 'corridor ⊂ glyph'
-    requirement)."""
-    xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
-    mids = 0.5 * (corridor.lower_at(xs) + corridor.upper_at(xs))
-    return float(1.0 - _fill_at(geom, xs, mids).mean())
-
-
-def poly_glyph_violation(coef, corridor: Corridor, geom: GlyphGeometry,
-                         grid: int = 300) -> float:
-    """V5: fraction of dense in-route x samples where (x, P(x)) lies
-    outside the canonical glyph fill."""
-    xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
-    vals = np.polynomial.Polynomial(coef)(xs)
-    return float(1.0 - _fill_at(geom, xs, vals).mean())
 
 
 def build_route_corridor(graph: RouteGraph, route: Route,

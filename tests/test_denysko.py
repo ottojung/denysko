@@ -534,7 +534,16 @@ def test_h_corridors_are_continuous_and_inside_glyph():
     assert len(selected) == 2
     for r, c in zip(chosen, selected):
         assert d.route_continuity_violation(graph, r) < 1e-6
-        assert d.corridor_glyph_violation(c, geom) < 0.02
+        # full-interval containment: worst poke-out budget (transition
+        # zones included) — see CHALLENGES for measured maxima
+        assert d.corridor_glyph_violation(c, geom) <= 8.0
+        xs_probe = np.linspace(c.xs[0], c.xs[-1], 200)
+        mids = 0.5 * (c.lower_at(xs_probe) + c.upper_at(xs_probe))
+        step = 100.0 / 512
+        cols = np.clip(np.round(xs_probe / step).astype(int), 0, 511)
+        rows = np.clip(np.round(mids / step).astype(int), 0,
+                       geom.fill.shape[0] - 1)
+        assert geom.fill[rows, cols].mean() > 0.99
         # probe the previously-fake diagonal zone between stems/bar
         xs_probe = np.linspace(20.0, 55.0, 40)
         mids = 0.5 * (c.lower_at(xs_probe) + c.upper_at(xs_probe))
@@ -590,3 +599,125 @@ def test_synthetic_valid_h_fits_with_permanent_tails(monkeypatch):
     lines = [d.format_expression(f) for f in fits]
     problems = d.validate_lines(lines, geom, fits, selected)
     assert problems == []
+
+
+# ---------------------------------------------------------------------------
+# x-extrema, structural sources, accounting, strict V6
+# ---------------------------------------------------------------------------
+
+
+def test_monotone_pieces_split_exactly_at_extremum():
+    from src.topology import _monotone_pieces
+
+    for xs in ([0, 1, 2, 1, 0], [2, 1, 0, 1, 2], [0, 1, 2, 2, 2, 1, 0]):
+        pts = np.column_stack([xs, np.arange(len(xs))])
+        pieces = _monotone_pieces(pts)
+        # pieces share the extremum point and each is x-monotone
+        assert pieces[0][1] == pieces[1][0]
+        seg0 = xs[pieces[0][0]:pieces[0][1] + 1]
+        seg1 = xs[pieces[1][0]:pieces[1][1] + 1]
+        assert all(a <= b for a, b in zip(seg0, seg0[1:])) or \
+            all(a >= b for a, b in zip(seg0, seg0[1:]))
+        assert all(a <= b for a, b in zip(seg1, seg1[1:])) or \
+            all(a >= b for a, b in zip(seg1, seg1[1:]))
+
+
+def test_bend_source_with_two_arms_enumerates_two_routes():
+    """C-shape directed graph: an indegree-0 'bend' must start routes."""
+    from src.topology import (OrientedRouteEdge, RouteEdge, RouteGraph,
+                              RouteVertex, enumerate_complete_routes)
+
+    edges = [
+        RouteEdge(0, 0, 2, xs=np.array([0.0, 1.0]),
+                  lower=np.zeros(2), upper=np.zeros(2),
+                  points=np.array([[0.0, 5.0], [1.0, 6.0]])),
+        RouteEdge(1, 0, 3, xs=np.array([0.0, 1.0]),
+                  lower=np.zeros(2), upper=np.zeros(2),
+                  points=np.array([[0.0, 5.0], [1.0, 4.0]])),
+    ]
+    verts = [RouteVertex(0, 0.0, "bend"),
+             RouteVertex(2, 1.0, "sink"),
+             RouteVertex(3, 1.0, "sink")]
+    g = RouteGraph(vertices=verts, edges=edges,
+                   meaningful=frozenset({0, 1}))
+    routes = enumerate_complete_routes(g)
+    assert len(routes) == 2
+
+
+def test_atom_accounting_complete_and_twin_counted_once():
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
+    rep = graph.atom_report
+    assert rep["unclassified_length"] == 0.0
+    assert abs(rep["raw_skeleton_length"] - rep["atom_length"]
+               - rep["discarded_length"]) < 0.05
+    # vertical twins collapse: H has 8 vertical DIRECTED atoms but only
+    # 4 physical stroke halves; raw length counts each once
+    assert rep["vertical_atoms"] == 8
+    assert rep["raw_skeleton_length"] == pytest.approx(
+        rep["atom_length"] + rep["discarded_length"], abs=0.05)
+
+
+def test_v6_partial_atom_coverage_fails(monkeypatch):
+    monkeypatch.setattr(_fitting, "USE_LP", True)
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
+    fits, failures = [], []
+    for c in selected:
+        f = fit_route(c, hi=24)
+        assert f is not None
+        fits.append(f)
+    lines = [d.format_expression(f) for f in fits]
+    # corrupt one coefficient so curve 0 misses its stem realization
+    bad_fits = list(fits)
+    broken = np.polynomial.Polynomial(fits[0].poly.coef)
+    broken.coef = broken.coef.copy()
+    broken.coef[0] += 30.0                # shove it off the stroke
+    bad_fits[0] = type(fits[0])(corridor=fits[0].corridor,
+                                degree=fits[0].degree,
+                                coef_cheb=fits[0].coef_cheb,
+                                poly=broken,
+                                dense_max_violation=99.0,
+                                orientation=fits[0].orientation)
+    bad_lines = [d.format_expression(f) for f in bad_fits]
+    problems = d.validate_lines(bad_lines, geom, bad_fits, selected,
+                                routes=chosen, graph=graph)
+    assert any(p.startswith("V6") for p in problems)
+
+
+def test_corridor_containment_checks_full_interval_not_midpoint():
+    from src.topology import Corridor, corridor_glyph_violation
+    xs = np.linspace(10.0, 60.0, 20)
+
+    class _Geom:
+        # horizontal slab: y in [150,350) raster rows -> glyph [29.3, 68.4]
+        fill = np.zeros((512, 512), dtype=bool)
+        fill[100:400, :] = True
+
+    good = Corridor(path=None, xa=8.0, xb=62.0, xs=xs,
+                    lower=np.full(len(xs), 30.0),
+                    upper=np.full(len(xs), 60.0),
+                    ylo=0.0, yhi=100.0)
+    assert corridor_glyph_violation(good, _Geom()) == pytest.approx(
+        0.0, abs=1e-9)
+    # midpoint (45) is inside the slab but upper (80) sticks out above:
+    # midpoint-only validation would pass this - full interval must fail
+    sneaky = Corridor(path=None, xa=8.0, xb=62.0, xs=xs,
+                      lower=np.full(len(xs), 30.0),
+                      upper=np.full(len(xs), 90.0),
+                      ylo=0.0, yhi=100.0)
+    assert corridor_glyph_violation(sneaky, _Geom()) > 2.5
+
+
+def test_letter_route_count_regressions():
+    expected = {"A": 2, "B": 4, "C": 2, "H": 2, "O": 2}
+    for L, want in expected.items():
+        geom, graph, candidates, chosen, sigs, sel = d.build_phase1(L)
+        assert len(sel) == want, L
+        # every candidate route is globally x-nondecreasing
+        for r in candidates:
+            pl_x = None
+            for s_ in r.steps:
+                e = graph.edges[s_.edge_id]
+                x0, x1 = float(e.points[0, 0]), float(e.points[-1, 0])
+                if pl_x is not None:
+                    assert x0 >= pl_x - 1e-6
+                pl_x = x1

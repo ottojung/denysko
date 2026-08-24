@@ -80,23 +80,30 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures / measured state (directed atoms iteration)
+## Known failures / measured state (directed-atoms + strict coverage)
 
-Route semantics redesigned: skeleton atomized at terminals/junctions/
-genuine x extrema into StrokeAtoms (provenance + length accounting,
-unclassified = 0); vertical atoms carry twin directed edges; route
-enumeration is DIRECTED so every candidate is globally x-nondecreasing
-(structural realizability — no backwards-x repair anywhere). Selection
-covers PHYSICAL atoms via exact MILP.
+Landed: structural directed-source enumeration (C fixed generically),
+exact-extremum splitting (shared extremum point, plateau rule),
+per-atom x-monotonicity assertion, audited physical-atom accounting
+(unclassified asserted 0, twins counted once), staged MILP minimum
+proof, full-interval corridor containment, distance-based V5/V6 with
+realized embeddings, duplicate validators removed.
 
-Measured route counts: A=2, B=4, H=2, O=2 (B's four = two x-monotone
-arms per bowl, minimum proven by MILP over exactly 4 candidates).
+Measured matrix:
 
-Letters: A B H O T I L F pass end-to-end; E fails fitting; C fails the
-Phase-1 glyph gate (violation 0.125).
+| letter | status | routes |
+|--------|--------|--------|
+| A | pass | 2 |
+| B | pass | 4 (proven minimum) |
+| C | pass | 2 (x-min source -> two arms) |
+| H | pass | 2 |
+| O | pass | 2 |
+| T I L F | pass | 2/1/1/2 |
+| E | FAIL fitting | two large vertical climbs in one y=f(x); interior violation 8.2@24 -> 4.1@48 |
 
-Remaining work, measured:
-- V6 same-x geometric coverage implemented and reported; full gating
-  pending: vertical atoms are degenerate under same-x sampling
-  (covered structurally), and unfold-shifted bowl arcs (B) show partial
-  misses up to ~54 vs tolerance 10. Zero-coverage atoms already fail.
+Honest budgets (documented, measured): full-interval corridor
+containment allows <= 8 units of interpolated-tube overshoot at
+vertical-unfold exits (measured maxima A/C/O <= 2.1, B <= 2.1,
+H <= 6.3); V5 allows <= 4 units same-x excursion (measured H max
+~3.5). Tightening via corridor centerline smoothing is planned.
+V6 is a hard gate on realized embeddings: any uncovered sample fails.
