@@ -401,17 +401,37 @@ class Route:
     corridor: "Corridor"
 
 
-def enumerate_complete_routes(graph: RouteGraph,
-                              cap: int = MAX_ROUTES) -> list[tuple]:
-    """Enumerate complete routes as ordered edge-id tuples.
+@dataclass(frozen=True)
+class OrientedRouteEdge:
+    """One graph edge as traversed by a route (explicit direction)."""
+    edge_id: int
+    from_vertex: int
+    to_vertex: int
 
-    Routes are undirected edge-simple paths between terminal vertices
-    ('source', 'sink' or 'terminal' kinds): a stroke chain may be
-    traversed in either x-direction since a corridor constrains
-    y-over-x regardless of walk order. Deterministic DFS ordered by
-    edge id. The MAX_ROUTES cap guards against blowup: exceeding it
-    RAISES rather than silently truncating, so an exact-minimum-cover
-    claim is never based on an incomplete candidate set.
+
+@dataclass(frozen=True)
+class Route:
+    """A complete route: an oriented walk between terminal vertices."""
+    steps: tuple
+
+
+def _route_signature(route):
+    if isinstance(route, tuple):
+        return "/".join(f"e{e}" for e in route)
+    return "/".join(
+        f"e{s.edge_id}:{s.from_vertex}-{s.to_vertex}" for s in route.steps
+    )
+
+
+def enumerate_complete_routes(graph: RouteGraph,
+                              cap: int = MAX_ROUTES) -> list[Route]:
+    """Enumerate complete routes as oriented walks.
+
+    Routes are undirected edge-simple paths between terminal vertices;
+    each traversal direction is recorded explicitly. A terminal always
+    terminates a route. Mirror duplicates (same walk, opposite
+    direction) are canonicalized away deterministically. Exceeding
+    MAX_ROUTES RAISES rather than silently truncating.
     """
     incident: dict[int, list[tuple[int, int]]] = {}
     for e in graph.edges:
@@ -423,18 +443,16 @@ def enumerate_complete_routes(graph: RouteGraph,
     terminals = {v.id for v in graph.vertices
                  if v.kind in ("source", "sink", "terminal")}
 
-    routes: list[tuple] = []
+    raw: list[Route] = []
     budget = [cap]
 
     def dfs(v, seen, path):
         for eid, w in incident.get(v, []):
             if eid in seen:
                 continue
-            npath = path + (eid,)
+            npath = path + (OrientedRouteEdge(eid, v, w),)
             if w in terminals:
-                # a terminal always terminates a route: passing THROUGH
-                # one would let a single polynomial claim a whole cycle
-                routes.append(npath)
+                raw.append(Route(npath))
                 budget[0] -= 1
                 if budget[0] < 0:
                     raise RuntimeError(
@@ -444,20 +462,54 @@ def enumerate_complete_routes(graph: RouteGraph,
 
     for t in sorted(terminals):
         dfs(t, frozenset(), ())
-    return sorted(set(routes))   # dedupe mirrored walks, deterministic
+
+    def canon_key(r):
+        rev = Route(tuple(OrientedRouteEdge(s.edge_id, s.to_vertex,
+                                            s.from_vertex)
+                           for s in reversed(r.steps)))
+        return min(_route_signature(r), _route_signature(rev))
+
+    best: dict[str, Route] = {}
+    for r in raw:
+        k = canon_key(r)
+        cur = best.get(k)
+        if cur is None or _route_signature(r) < _route_signature(cur):
+            best[k] = r
+    return [best[k] for k in sorted(best)]
 
 
-def _route_signature(edge_ids):
-    return "/".join(f"e{e}" for e in edge_ids)
+def route_edge_ids(route):
+    if isinstance(route, tuple):
+        return route
+    return tuple(s.edge_id for s in route.steps)
 
 
-def select_routes_min_cover(graph: RouteGraph, candidates: list[tuple]):
+def route_edge_coverage(graph: RouteGraph, selected: list) -> np.ndarray:
+    """Boolean coverage vector over all graph edges for chosen routes."""
+    covered = np.zeros(len(graph.edges), dtype=bool)
+    for r in selected:
+        for eid in route_edge_ids(r):
+            covered[eid] = True
+    return covered
+
+
+def route_coverage_fraction(graph: RouteGraph, selected: list):
+    """Fraction of meaningful edges covered by the selected routes."""
+    if not graph.meaningful:
+        return 1.0
+    hit = set()
+    for r in selected:
+        hit |= set(route_edge_ids(r))
+    return len(graph.meaningful & hit) / len(graph.meaningful)
+
+
+def select_routes_min_cover(graph: RouteGraph, candidates: list):
     """Exact minimum cover of all meaningful graph edges by complete
-    routes (deterministic HiGHS MILP; falls back to exhaustive subset
-    search for tiny candidate counts).
+    routes via one lexicographically weighted HiGHS MILP:
 
-    Tie-break: fewer routes, then larger geometric coverage, then lower
-    total complexity (sum of degrees), then stable signature order.
+        BIG * route_count + total_complexity + tiny * stable_index
+
+    No exhaustive subset enumeration is ever performed.
     """
     from scipy.optimize import milp, LinearConstraint, Bounds
 
@@ -465,87 +517,30 @@ def select_routes_min_cover(graph: RouteGraph, candidates: list[tuple]):
     if not meaningful or not candidates:
         return []
 
-    cand_sets = []
-    for sig_ids in candidates:
-        cand_sets.append(frozenset(sig_ids) & set(meaningful))
-
+    cand_sets = [frozenset(route_edge_ids(r)) & set(meaningful)
+                 for r in candidates]
     n_r = len(candidates)
     n_e = len(meaningful)
+    BIG = float(n_e + 1) * 1000.0
 
-    def total_coverage(sel):
-        u = set()
-        for r in sel:
-            u |= cand_sets[r]
-        return len(u)
+    c = (np.full(n_r, BIG)
+         + np.array([float(len(route_edge_ids(r))) for r in candidates])
+         + np.array([1e-6 * j / max(1, n_r) for j in range(n_r)]))
 
-    def complexity(sel):
-        # deterministic proxy: total number of graph edges traversed
-        return sum(len(candidates[r]) for r in sel)
-
-    # exact via MILP
     A = np.zeros((n_e, n_r))
     for j, cs in enumerate(cand_sets):
         for eid in cs:
-            k = meaningful.index(eid)
-            A[k, j] = 1.0
-    c = np.ones(n_r)
-    # deterministic tie-break: lexicographic route order micro-costs
-    for j in range(n_r):
-        c[j] += 1e-9 * j / max(1, n_r)
+            A[meaningful.index(eid), j] = 1.0
     res = milp(
         c=c,
-        constraints=[LinearConstraint(A, lb=np.ones(n_e), ub=np.full(n_e, np.inf))],
+        constraints=[LinearConstraint(A, lb=np.ones(n_e),
+                                      ub=np.full(n_e, np.inf))],
         integrality=np.ones(n_r),
         bounds=Bounds(0, 1),
     )
     if not res.success:
         raise RuntimeError("route cover MILP failed")
-
-    chosen = [j for j in range(n_r) if res.x[j] > 0.5]
-    best_count = len(chosen)
-
-    # deterministic tie-break among equal-count covers
-    import itertools
-    best_key, best_sel = None, None
-    idx_sorted = sorted(range(n_r),
-                        key=lambda j: (_route_signature(candidates[j])))
-    for size in range(best_count, best_count + 1):
-        for combo in itertools.combinations(idx_sorted, size):
-            u = set()
-            for j in combo:
-                u |= cand_sets[j]
-            if not set(meaningful) <= u:
-                continue
-            cov = total_coverage(combo)
-            cx = complexity(combo)
-            key = (-cov, cx, tuple(combo))
-            if best_key is None or key < best_key:
-                best_key, best_sel = key, combo
-        break  # fixed size = proven minimum
-
-    return list(best_sel or chosen)
-
-
-def route_edge_coverage(graph: RouteGraph,
-                        selected: list[tuple]) -> np.ndarray:
-    """Boolean coverage vector over all graph edges for the chosen
-    routes (used by validation V1 and diagnostics)."""
-    n_e = len(graph.edges)
-    covered = np.zeros(n_e, dtype=bool)
-    for sig_ids in selected:
-        for eid in sig_ids:
-            covered[eid] = True
-    return covered
-
-
-def route_coverage_fraction(graph: RouteGraph, selected: list[tuple]):
-    """Fraction of meaningful edges covered by the selected routes."""
-    if not graph.meaningful:
-        return 1.0
-    hit = set()
-    for sig_ids in selected:
-        hit |= set(sig_ids)
-    return len(graph.meaningful & hit) / len(graph.meaningful)
+    return [j for j in range(n_r) if res.x[j] > 0.5]
 
 
 @dataclass
@@ -574,8 +569,11 @@ class Corridor:
         return np.interp(x, self.xs, self.upper)
 
 
-def build_route_corridor(graph: RouteGraph, edge_ids: tuple,
-                         geom: GlyphGeometry) -> Corridor:
+def build_route_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
+    if isinstance(edge_ids, Route):
+        edge_ids = route_edge_ids(edge_ids)
+    elif edge_ids and hasattr(edge_ids[0], "edge_id"):
+        edge_ids = route_edge_ids(edge_ids)
     """Corridor for one complete route: concatenated slice intervals of
     its graph edges, with CORRIDOR_MARGIN applied per column (reduced
     deterministically on thin slices; never inverted)."""
@@ -750,8 +748,12 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
     return RouteGraph(vertices=vertices, edges=edges, meaningful=meaningful)
 
 
-def _route_corridor_from_stroke(graph: RouteGraph, edge_ids: tuple,
+def _route_corridor_from_stroke(graph: RouteGraph, edge_ids,
                                 geom: GlyphGeometry) -> Corridor:
+    if isinstance(edge_ids, Route):
+        edge_ids = route_edge_ids(edge_ids)
+    elif edge_ids and hasattr(edge_ids[0], "edge_id"):
+        edge_ids = route_edge_ids(edge_ids)
     """Corridor for one complete skeleton route.
 
     Landmarks are sampled evenly along the concatenated route polyline;
@@ -762,6 +764,9 @@ def _route_corridor_from_stroke(graph: RouteGraph, edge_ids: tuple,
     traversal of every major feature is forced while one route always
     maps x to one connected interval.
     """
+    if not isinstance(edge_ids, tuple) or (
+            edge_ids and hasattr(edge_ids[0], "edge_id")):
+        edge_ids = route_edge_ids(edge_ids)
     from scipy import ndimage  # lazy
 
     step = SIZE / GRID

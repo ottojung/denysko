@@ -12,6 +12,7 @@ from src.fitting import (
 )
 from src.topology import (
     ESC_OFFSETS,
+    route_edge_ids,
     GlyphGeometry,
     RouteEdge,
     RouteGraph,
@@ -109,7 +110,7 @@ def test_diamond_split_merge_two_routes():
     chosen = select_routes_min_cover(graph, routes)
     covered = set()
     for j in chosen:
-        covered |= set(routes[j])
+        covered |= set(route_edge_ids(routes[j]))
     assert covered == set(graph.meaningful)
     assert len(chosen) == 2
 
@@ -156,7 +157,7 @@ def test_a_topology_is_diamond():
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("A")
     assert len(candidates) >= 2
     assert len(selected) == 2
-    r0, r1 = [set(ids) for ids in chosen]
+    r0, r1 = [set(route_edge_ids(x)) for x in chosen]
     shared = r0 & r1
     only0, only1 = r0 - r1, r1 - r0
     assert shared and only0 and only1        # shared trunks, own middles

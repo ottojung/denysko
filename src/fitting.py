@@ -103,10 +103,9 @@ def _side_slope_rows(corridor: Corridor, degree: int,
     z = _zmap(xs_d, corridor.xa, corridor.xb)
     dzdx = 2.0 / (corridor.xb - corridor.xa)
     A = np.zeros((len(z), degree + 1))
-    if degree >= 1:
-        Vd = cheb.chebvander(z, degree - 1)
-        # T'_k(z) = k * U_{k-1}(z)
-        A[:, 1:] = dzdx * Vd * np.arange(1, degree + 1)[None, :]
+    for k in range(1, degree + 1):
+        dcoef = cheb.chebder(np.eye(degree + 1)[k])
+        A[:, k] = dzdx * cheb.chebval(z, dcoef)
     req = float(sigma * sgn) * ESC_SLOPE_MIN   # required dP/dx value
     if req >= 0:
         lo, hi = np.full(len(z), req), np.full(len(z), np.inf)
@@ -369,7 +368,12 @@ def tail_reentry_violation(poly_coef, corridor, orientation):
     """
     viol = 0.0
     poly = np.polynomial.Polynomial(np.asarray(poly_coef, dtype=float))
-    ptrim = poly.trim(1e-12)
+    # exact emitted degree: strip ONLY exact zeros - a 1e-16 leading
+    # coefficient still dominates at infinity
+    c_arr = np.asarray(poly_coef, dtype=float)
+    nz = np.nonzero(c_arr != 0.0)[0]
+    ptrim = (poly if len(nz) == 0
+             else np.polynomial.Polynomial(c_arr[:nz[-1] + 1]))
     droots_all = _real_roots(ptrim.deriv().coef)
 
     sig_l, sig_r = int(orientation[0]), int(orientation[1])
