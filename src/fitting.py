@@ -211,18 +211,34 @@ def _project_feasible(A, lo, hi, c0, sweeps=None):
 
 def _dense_violation(corridor: Corridor, coef: np.ndarray,
                      sig_l: int, sig_r: int,
-                     grid: int = DENSE_GRID) -> float:
-    """Dense validation against the corridor and both tail ramps."""
+                     grid: int = DENSE_GRID,
+                     power_coef: np.ndarray = None) -> float:
+    """Dense validation against the corridor and both tail ramps.
+
+    When power_coef is given, the EMITTED power-basis polynomial is
+    validated instead of the Chebyshev solution: cheb->power conversion
+    can lose fractions of a unit on steep corridors, and only the
+    emitted polynomial is what users paste.
+    """
     viol = 0.0
-    xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
-    vals = cheb.chebval(_zmap(xs, corridor.xa, corridor.xb), coef)
+    # include the exact constraint NODES: steep unfolded sections can
+    # spike between uniform samples
+    xs = np.union1d(np.linspace(corridor.xs[0], corridor.xs[-1], grid),
+                    corridor.xs)
+
+    def _eval(xq):
+        if power_coef is not None:
+            return np.polynomial.polynomial.polyval(xq, power_coef)
+        return cheb.chebval(_zmap(xq, corridor.xa, corridor.xb), coef)
+
+    vals = _eval(xs)
     lo = corridor.lower_at(xs)
     hi = corridor.upper_at(xs)
     viol = max(viol, float(np.maximum(lo - vals, vals - hi).max()))
     for sigma, side in ((sig_l, "L"), (sig_r, "R")):
         xs_e, lo_e, hi_e = _side_rows(corridor, sigma, side,
                                       max(60, grid // 4))
-        v_e = cheb.chebval(_zmap(xs_e, corridor.xa, corridor.xb), coef)
+        v_e = _eval(xs_e)
         viol = max(
             viol,
             float(max(np.max(lo_e - v_e), np.max(v_e - hi_e), 0.0)),
@@ -265,7 +281,8 @@ def fit_degree(corridor: Corridor, degree: int,
     # independent dense check passes (steep escape cliffs ring between
     # sparse rows).
     dv = None
-    for n_esc_d, n_int_d in ((200, DENSE_GRID), (600, 2 * DENSE_GRID)):
+    for n_esc_d, n_int_d in ((200, DENSE_GRID), (600, 2 * DENSE_GRID),
+                              (900, 3 * DENSE_GRID)):
         A_d, lo_d, hi_d = _constraint_set(corridor, degree, sig_l, sig_r,
                                           n_int=n_int_d, n_esc=n_esc_d)
         coef, dviol = _project_feasible(A_d, lo_d, hi_d, coef)
@@ -287,6 +304,13 @@ def fit_degree(corridor: Corridor, degree: int,
     poly = zpoly(affine)
     if not np.all(np.isfinite(poly.coef)):
         return None
+    # verify the EMITTED polynomial (power basis, post conversion):
+    # cheb->power can lose fractions of a unit on steep corridors
+    dv_p = _dense_violation(corridor, coef, sig_l, sig_r,
+                            power_coef=np.asarray(poly.coef))
+    if dv_p > CORRIDOR_EPS:
+        return None
+    dv = max(dv, dv_p)
     return PathFit(
         corridor=corridor,
         degree=degree,

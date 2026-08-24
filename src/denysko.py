@@ -214,25 +214,30 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
         v5 = poly_glyph_violation(coef, corr, geom)
         if v5 > 0.05:
             problems.append(f"V5 curve {i}: leaves glyph ({v5:.3f})")
-    # V6: geometric same-x stroke coverage by parsed polynomials.
-    # Reported on stderr; gating requires zero-coverage semantics for
-    # unfolded vertical/shifted atoms which is still being tightened
-    # (see CHALLENGES). Partial misses are listed for inspection.
+    # V6: geometric realization of every meaningful atom against its
+    # REALIZED embedding (unfolded x, corridor interval) — strict:
+    # any uncovered sample fails. Assignment is branch-aware: the curve
+    # of the route claiming the atom is the one checked.
     if routes is not None and graph is not None:
         polys = [(s_.edge_id,
                   np.asarray(parse_line(line).poly.coef, dtype=float))
                  for r, line in zip(routes, lines)
                  for s_ in r.steps]
-        unc, rep = atom_coverage_misses(graph, polys)
-        dead = [e["atom"] for e in rep
-                if isinstance(e.get("covered"), int) and e["covered"] == 0]
-        for a_id in dead:
-            problems.append(
-                f"V6: atom {a_id} has NO geometric coverage")
-        if unc:
-            import sys as _sys
-            print(f"V6 diagnostic: partially uncovered atoms {unc}",
-                  file=_sys.stderr)
+        for i3, (r, corr) in enumerate(zip(routes, corridors)):
+            for a_id, (rx, ry, rlo, rhi) in corr.realized.items():
+                poly = np.polynomial.Polynomial(
+                    np.asarray(parse_line(lines[i3]).poly.coef,
+                               dtype=float))
+                vals = poly(rx)
+                bad = ~((vals >= rlo - CORRIDOR_EPS)
+                        & (vals <= rhi + CORRIDOR_EPS))
+                if bad.any():
+                    problems.append(
+                        f"V6 atom {a_id}: {int(bad.sum())}/{len(rx)} "
+                        f"realized samples unrealized by curve {i3} "
+                        f"(worst miss "
+                        f"{float(np.max(np.maximum(rlo - vals, vals - rhi))):.2f})"
+                    )
     return problems
 
 
@@ -257,6 +262,16 @@ def build_phase1(letter: str):
             raise RuntimeError(
                 f"Phase 1: corridor {j} leaves glyph "
                 f"(glyph violation {v:.3f})")
+    # Phase-1 geometric realization: every meaningful physical atom
+    # must appear in some selected corridor's realized embedding
+    covered_atoms = set()
+    for corr in selected:
+        covered_atoms |= set(corr.realized.keys())
+    missing = sorted(graph.meaningful - covered_atoms)
+    if missing:
+        raise RuntimeError(
+            f"Phase 1: atoms not realized by any selected corridor: "
+            f"{missing}")
     signatures = [_route_signature(ids) for ids in chosen]
     return geom, graph, candidates, chosen, signatures, selected
 

@@ -163,12 +163,15 @@ def test_a_topology_is_diamond():
     shared = r0 & r1
     only0, only1 = r0 - r1, r1 - r0
     assert shared and only0 and only1        # shared trunks, own middles
-    # the two differing middle branches live at different heights
-    from src.topology import _route_corridor_from_stroke
-    ys0 = [_route_corridor_from_stroke(graph, chosen[0], geom).lower.mean()]
-    c0 = _route_corridor_from_stroke(graph, tuple(sorted(only0)), geom)
-    c1 = _route_corridor_from_stroke(graph, tuple(sorted(only1)), geom)
-    assert abs(c0.lower.mean() - c1.lower.mean()) > 10.0
+    # the two differing middle branches live at different heights:
+    # compare realized center y of the differing atoms
+    ys = []
+    for r in chosen:
+        for s_ in r.steps:
+            if s_.edge_id in only0 or s_.edge_id in only1:
+                e = graph.edges[s_.edge_id]
+                ys.append(float(e.points[:, 1].mean()))
+    assert max(ys) - min(ys) > 20.0          # roof vs crossbar height
     assert route_coverage_fraction(graph, chosen) >= 0.999
 
 
