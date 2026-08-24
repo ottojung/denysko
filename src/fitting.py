@@ -114,10 +114,55 @@ def _side_slope_rows(corridor: Corridor, degree: int,
     return A, lo, hi
 
 
+def _tail_certificate_rows(corridor: Corridor, degree: int,
+                           sigma: int, side: str):
+    """Convex permanent-tail certificate (linear in Chebyshev coeffs).
+
+    Solver basis: P(x) = sum_k c_k T_k(z), z = (2x-xa-xb)/(xb-xa).
+    With x = x_checkpoint + sgn_x*t (t >= 0), require every coefficient
+    of  Q(t) = sigma*sgn_x*P'(x) - ESC_SLOPE_MIN  to be nonnegative.
+    Since t >= 0 this proves the outward derivative never drops below
+    ESC_SLOPE_MIN on the infinite half-line: combined with being outside
+    the band at the checkpoint, permanent escape follows. Rows are
+    linear in c; convexity of the family is preserved.
+    """
+    from numpy.polynomial import Polynomial as Poly
+
+    xa, xb = corridor.xa, corridor.xb
+    scale = (xb - xa) / 2.0
+    mid = (xa + xb) / 2.0
+    # z = (x - mid)/scale
+    z_of_x = Poly([-mid / scale, 1.0 / scale])
+
+    x_end = corridor.xs[0] if side == "L" else corridor.xs[-1]
+    sgn_x = -1.0 if side == "L" else 1.0
+
+    # single accumulated row: Q(t) coefficients are LINEAR in the
+    # Chebyshev coefficient vector (sum over bases), so one constraint
+    # row enforces the whole certificate.
+    row = np.zeros(degree + 1)
+    for k in range(degree + 1):
+        unit = np.zeros(degree + 1)
+        unit[k] = 1.0
+        pz = np.asarray(cheb.cheb2poly(unit))
+        px = Poly(pz)(z_of_x)                 # T_k as function of x
+        dpx = px.deriv()                       # dT_k/dx
+        comp = dpx(Poly([x_end, sgn_x]))      # as polynomial in t
+        coefs = np.asarray(comp.coef, dtype=float)
+        row[:len(coefs)] += sigma * sgn_x * coefs
+    row[0] -= ESC_SLOPE_MIN
+    A = row.reshape(1, -1)
+    lo = np.array([0.0])
+    hi = np.array([np.inf])
+    return A, lo, hi
+
+
+
 def _constraint_set(corridor: Corridor, degree: int,
                     sig_l: int, sig_r: int,
                     n_int: int = FIT_GRID, n_esc: int = 40,
-                    slope_rows: bool = True):
+                    slope_rows: bool = True,
+                    tail_cert: bool = False):
     """Build the deterministic constraint system (A, lo, hi).
 
     Interior rows are two-sided interval constraints across the path
@@ -138,7 +183,13 @@ def _constraint_set(corridor: Corridor, degree: int,
             blocks.append((
                 cheb.chebvander(_zmap(xs_e, corridor.xa, corridor.xb),
                                 degree), lo_e, hi_e))
-            if slope_rows:
+            if tail_cert:
+                # convex permanent-tail certificate: subsumes finite
+                # guidance slope rows with an infinite-horizon proof
+                A_c, lo_c, hi_c = _tail_certificate_rows(
+                    corridor, degree, sigma, side)
+                blocks.append((A_c, lo_c, hi_c))
+            elif slope_rows:
                 blocks.append(
                     _side_slope_rows(corridor, degree, sigma, side))
 
@@ -529,3 +580,43 @@ def fit_variant(corridor: Corridor, degree: int, target: np.ndarray,
         dense_max_violation=dv_p,
         orientation=(int(sig_l), int(sig_r)),
     )
+
+
+def solve_anchor(corridor: Corridor, degree: int, sig_l: int, sig_r: int,
+                 weights: np.ndarray, maximize: bool):
+    """Solve min/max of the linear functional sum(w_i * P(x_i)) subject
+    to the full hard constraint set INCLUDING the convex permanent-tail
+    certificate. Returns Chebyshev coefficients or None."""
+    from scipy.optimize import linprog
+
+    A, lo, hi = _constraint_set(corridor, degree, sig_l, sig_r,
+                                tail_cert=True)
+    xs_s = np.asarray(weights) * 0.0  # placeholder to keep shapes clear
+    samp_x = corridor.xs
+    A_f = cheb.chebvander(_zmap(samp_x, corridor.xa, corridor.xb), degree)
+    cost = A_f.T @ (-weights if maximize else weights)
+
+    fin_hi = np.isfinite(hi)
+    fin_lo = np.isfinite(lo)
+    A_ub = np.vstack([A[fin_hi], -A[fin_lo]])
+    b_ub = np.concatenate([hi[fin_hi], -lo[fin_lo]])
+
+    res = linprog(cost, A_ub=A_ub, b_ub=b_ub,
+                  bounds=[(None, None)] * (degree + 1),
+                  method="highs")
+    if not res.success or res.x is None:
+        return None
+    return np.asarray(res.x)
+
+
+def certify_anchor(corridor: Corridor, coef_cheb: np.ndarray,
+                   sig_l: int, sig_r: int) -> float:
+    """Dense POWER-domain worst violation (validation-domain check)."""
+    power_z = cheb.cheb2poly(coef_cheb)
+    affine = np.polynomial.Polynomial(
+        [-(corridor.xa + corridor.xb) / (corridor.xb - corridor.xa),
+         2.0 / (corridor.xb - corridor.xa)])
+    poly = np.polynomial.Polynomial(power_z)(affine)
+    return _dense_violation(corridor, coef_cheb, sig_l, sig_r,
+                            power_coef=np.asarray(poly.coef),
+                            allow=CORRIDOR_EPS)

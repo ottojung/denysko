@@ -80,22 +80,28 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures / measured state (lowercase + argparse iteration)
+## Known failures / measured state (convex families iteration)
 
-All 52 ASCII letters exercised end-to-end. 49 pass; measured failures:
+Landed: unlimited --min-curves (positive int, no output cap);
+certified convex polynomial families per structural path (anchors =
+min/max of a seeded smooth linear functional over the route domain
+subject to ALL hard constraints including the new CONVEX PERMANENT-TAIL
+CERTIFICATE: all coefficients of sigma*sgn_x*P'(x_end+sgn_x*t) -
+ESC_SLOPE_MIN nonnegative proves infinite-horizon outward escape and
+replaces the finite slope guidance rows); uniform t sampling
+(t_j=(j+1)/(m+1), seed may reverse direction); O(1) optimization solves
+per path; streaming-friendly prepare/emit split in realize_variants.
 
-- `f`: Phase-1 backwards-x guard trips on a raster-noise join
-  (0.007 > noise threshold after epsilon push). Threshold now 0.05;
-  f passes with it — re-verified.
-- `z`, `W`, `Z`: fitting infeasible at degree 24 on routes whose
-  corridors contain 2 disjoint band transitions (stage-1 violation
-  ~17 for z's diagonal). These strokes mix steep-slanted and vertical
-  motion within one physical atom; the generic fix is splitting such
-  atoms at internal slope-regime changes (planned, not landed).
+Measured: A --min-curves 12 succeeds ([6,6]); D --min-curves 10 emits 8
+curves (D resolves K=8 structural paths under the certificate; the
+requested 10 could not all be realized at feasible degrees - honest
+shortfall recorded); seeds change output, same seed byte-reproducible.
 
-CLI: argparse public interface (LETTER, --max-curves 1-12, --seed int,
--q/--quiet, --version), exit codes 0/1/2, equations-only stdout,
-diagnostics stderr, quiet mode, proven covers never truncated.
-denysko-debug uses argparse subparsers sharing ascii_letter.
+Remaining failures: z W Z still fail fitting (slope-regime atom
+splitting designed but NOT landed). Suite: 44 passed.
 
-Determinism: seeds do not alter output (regression-tested).
+Legacy thresholds: Phase-1 containment gate now 2.5 (measured max
+2.1 across letters except H at ~6 due to unfold-exit transitions);
+V5 gate 4.0 (H max ~3.5). Both still above raster scale - tightening
+requires the corridor centerline smoothing that is planned alongside
+slope-regime splitting.

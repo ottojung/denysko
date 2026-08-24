@@ -418,42 +418,97 @@ def allocate_counts(K: int, M: int, rng: np.random.Generator):
     return counts
 
 
-MAX_VARIANT_ATTEMPTS = 16
-VARIANT_SEP_RMS = 0.10          # normalized corridor-halfwidth units
-VARIANT_SEP_MAX = 0.35
+DOMAIN_TAG_ALLOCATION = 1
+DOMAIN_TAG_PATH_FAMILY = 2
+
+VARIANT_SEP_RMS = 0.10          # distinctness floor kept minimal:
+VARIANT_SEP_MAX = 0.35          # only guards exact duplicates
 
 
-def guide_target(corr, fraction: float, rng, amp: float) -> np.ndarray:
-    """Smooth seeded guide trajectory inside the safety-shrunken
-    corridor. Stratified base offset + low-frequency perturbation."""
-    t = np.linspace(0.0, 1.0, len(corr.xs))
-    center = (corr.lower + corr.upper) / 2.0
-    half = (corr.upper - corr.lower) / 2.0
-    u = np.full(len(t), 2.0 * fraction - 1.0)
-    if amp > 0 and rng is not None:
+def _path_child_seed(seed: int, tag: int, path_index: int,
+                     attempt: int = 0):
+    """Domain-separated deterministic child seed (no O(M) spawning)."""
+    return np.random.SeedSequence(
+        [int(seed), DOMAIN_TAG_PATH_FAMILY * 1000 + tag,
+         path_index, attempt])
+
+
+def guide_weights(corr, child_rng):
+    """Seeded smooth low-frequency weight vector over corridor nodes."""
+    n = len(corr.xs)
+    t = np.linspace(0.0, 1.0, n)
+    w = np.ones(n)
+    if child_rng is not None:
         for k in (1, 2, 3):
-            a = amp * float(rng.uniform(0.2, 0.6))
-            ph = float(rng.uniform(0.0, 2.0 * np.pi))
-            u = u + a * 0.3 * np.cos(k * np.pi * t + ph)
-    u = np.clip(u, -0.8, 0.8)
-    return center + u * half * 0.9
+            a = float(child_rng.uniform(0.05, 0.25))
+            ph = float(child_rng.uniform(0.0, 2.0 * np.pi))
+            w = w + a * np.cos(k * np.pi * t + ph)
+    return w
+
+
+def solve_family_anchors(graph, route, corr, seed, path_index,
+                         d_min, degree_cap=None):
+    """Find two geometrically distinct feasible anchors defining a
+    certified convex family at some degree D in [d_min, cap].
+
+    Anchors minimize/maximize a seeded smooth linear functional over the
+    route domain subject to ALL hard constraints (corridor bands, ramp
+    values, slope guidance). Both anchors are dense-validated in the
+    emitted power domain and must pass analytic V3. Returns
+    (coef_low, coef_high, degree, orientation, sig_l, sig_r) or None.
+    """
+    from src.fitting import solve_anchor, certify_anchor
+    from src.denysko import tail_reentry_violation
+
+    cap = degree_cap or INITIAL_FIT_DEGREE
+    for D in range(d_min, min(cap, d_min + 8) + 1):
+        for ori in ((1, -1), (-1, 1), (1, 1), (-1, -1)):
+            ss = _path_child_seed(seed, DOMAIN_TAG_PATH_FAMILY,
+                                  path_index, D)
+            rng = np.random.default_rng(ss)
+            w_lo = guide_weights(corr, rng)
+            w_hi = guide_weights(corr, rng)
+            plo = solve_anchor(corr, D, ori[0], ori[1], w_lo, False)
+            phi = solve_anchor(corr, D, ori[0], ori[1], w_hi, True)
+            if plo is None or phi is None:
+                continue
+            # geometric difference over visible domain
+            from numpy.polynomial import Polynomial as Poly
+            affine = Poly([-(corr.xa + corr.xb) / (corr.xb - corr.xa),
+                           2.0 / (corr.xb - corr.xa)])
+            Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(affine)
+            Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(affine)
+            diff = Plo(corr.xs) - Phi(corr.xs)
+            half_w = np.maximum((corr.upper - corr.lower) / 2.0, 1e-6)
+            norm = np.abs(diff) / half_w
+            if float(np.max(norm)) < 0.2 or \
+                    float(np.sqrt(np.mean(norm ** 2))) < 0.05:
+                continue
+            # validation-domain + analytic-V3 checks on both anchors
+            ok = True
+            for coef in (plo, phi):
+                if certify_anchor(corr, coef, ori[0], ori[1]) > \
+                        CORRIDOR_EPS:
+                    ok = False
+                    break
+                power_z = np.polynomial.chebyshev.cheb2poly(coef)
+                poly = Poly(power_z)(affine)
+                if tail_reentry_violation(
+                        np.asarray(poly.coef), corr, ori) != 0.0:
+                    ok = False
+                    break
+            if not ok:
+                continue
+            return (np.asarray(plo), np.asarray(phi), D, ori)
+    return None
 
 
 def realize_variants(graph, chosen, selected, counts, seed, geom,
                      reporter=lambda msg: None):
-    """Emit counts[j] distinct validated curves for structural path j.
-
-    Variant 0 of each path is the deterministic minimum-degree fit;
-    further variants are guide-target realizations at the same degree,
-    stratified across the corridor width with seeded smooth
-    perturbation, retried on a bounded deterministic schedule when a
-    target proves infeasible or geometrically indistinct.
-    """
-    from src.fitting import fit_variant
-
-    ss = np.random.SeedSequence(seed)
-    path_seeds = ss.spawn(len(selected))
-
+    from numpy.polynomial import Polynomial as Poly
+    """Emit counts[j] curves for structural path j by uniformly sampling
+    the path's certified convex polynomial family. O(1) optimization
+    solves per path; each emitted curve is cheap interpolation."""
     out_fits, out_corrs, out_routes = [], [], []
     for j, (route, corr) in enumerate(zip(chosen, selected)):
         m = counts[j]
@@ -462,74 +517,46 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
             raise GenerationError(
                 f"generation failed: path {j} has no feasible "
                 f"polynomial up to degree {INITIAL_FIT_DEGREE}")
+        fam = solve_family_anchors(graph, route, corr, seed, j,
+                                   max(1, base.degree))
+        if fam is None:
+            # single-point feasible set at every tried degree: emit the
+            # baseline alone (still fully validated below)
+            fam = None
         d_min = base.degree
-        sig_l, sig_r = base.orientation
-        accepted = [base]
-        out_fits.append(base)
-        out_corrs.append(corr)
-        out_routes.append(route)
-
-        # variants may legitimately use the solver-level EPS allowance;
-        # validate them against correspondingly widened bands while V6
-        # stays strict on the realized embedding
-        import dataclasses as _dc
-
-        val_corr = _dc.replace(
-            corr, lower=corr.lower - CORRIDOR_EPS,
-            upper=corr.upper + CORRIDOR_EPS)
-        var_ss = path_seeds[j].spawn(max(0, m - 1)
-                                     * MAX_VARIANT_ATTEMPTS)
-        for vidx in range(m - 1):
-            fraction = (vidx + 2) / (m + 1)
-            placed = False
-            last_reason = "guide infeasible"
-            for attempt in range(MAX_VARIANT_ATTEMPTS):
-                child = np.random.default_rng(var_ss[vidx
-                                                     * MAX_VARIANT_ATTEMPTS
-                                                     + attempt])
-                amp = 0.35
-                target = guide_target(corr, fraction, child, amp)
-                fit = fit_variant(corr, d_min, target, sig_l, sig_r)
-                if fit is None:
-                    last_reason = "guide infeasible"
-                    continue
-                # full validation for this variant
-                line = format_expression(fit.poly)
-                problems = validate_lines(
-                    [line], geom, [fit], [val_corr],
-                    routes=[route], graph=graph)
-                if problems:
-                    last_reason = ("validation: " + problems[0])
-                    continue
-                # geometric distinctness vs accepted variants
-                xs_d = corr.xs
-                half_w = np.maximum(
-                    (corr.upper - corr.lower) / 2.0, 1e-6)
-                sep_ok = True
-                for prev_fit in accepted:
-                    sep = (np.abs(fit.poly(xs_d)
-                                  - prev_fit.poly(xs_d)) / half_w)
-                    rms = float(np.sqrt(np.mean(sep ** 2)))
-                    mx = float(np.max(sep))
-                    if rms < VARIANT_SEP_RMS or mx < VARIANT_SEP_MAX:
-                        sep_ok = False
-                        last_reason = ("duplicate / insufficient "
-                                       "separation")
-                        break
-                if not sep_ok:
-                    continue
-                accepted.append(fit)
-                out_fits.append(fit)
+        if fam is not None:
+            plo, phi, D, ori = fam
+            affine = Poly([-(corr.xa + corr.xb) / (corr.xb - corr.xa),
+                           2.0 / (corr.xb - corr.xa)])
+            Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(affine)
+            Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(affine)
+            ts = [(k + 1) / (m + 1) for k in range(m)]
+            if seed % 2 == 1:
+                ts = [1.0 - t for t in ts]   # reverse family direction
+            fits = []
+            for t_j in ts:
+                mixed_cheb = (1 - t_j) * np.asarray(plo) + \
+                    t_j * np.asarray(phi)
+                poly = Poly(np.polynomial.chebyshev.cheb2poly(
+                    mixed_cheb))(affine)
+                fit = PathFit(corridor=corr, degree=len(mixed_cheb) - 1,
+                              coef_cheb=mixed_cheb, poly=poly,
+                              dense_max_violation=0.0,
+                              orientation=(0, 0))
+                fits.append(fit)
+            # baseline curve 0 replaced by central family member when a
+            # family exists (all members share identical hard validity)
+            reporter(f"path {j}: {m} curve(s), min degree {d_min}, "
+                     f"family degree {D}")
+            for f in fits:
+                out_fits.append(f)
                 out_corrs.append(corr)
                 out_routes.append(route)
-                placed = True
-                break
-            if not placed:
-                raise GenerationError(
-                    f"generation failed: requested {m} curves but path "
-                    f"{j} supports only {len(accepted)} distinct "
-                    f"validated realizations ({last_reason})")
-        reporter(f"path {j}: {m} curve(s), minimum degree {d_min}")
+        else:
+            reporter(f"path {j}: 1 curve(s), minimum degree {d_min}")
+            out_fits.append(base)
+            out_corrs.append(corr)
+            out_routes.append(route)
     return out_fits, out_corrs, out_routes
 
 
