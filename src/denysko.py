@@ -30,9 +30,11 @@ from src.topology import (
     glyph_geometry,
     build_stroke_route_graph,
     enumerate_complete_routes,
-    select_routes_min_cover,)
-from src.topology import (
-    _route_corridor_from_stroke as build_route_corridor,
+    select_routes_min_cover,
+    build_route_corridor,
+    corridor_glyph_violation,
+    poly_glyph_violation,
+    route_continuity_violation,
     route_edge_coverage,
     route_coverage_fraction,
 )
@@ -204,6 +206,9 @@ def validate_lines(lines, geom, fits, corridors):
         v3 = tail_reentry_violation(coef, corr, ori)
         if v3:
             problems.append(f"V3 curve {i}: tail re-entry {v3:.3f}")
+        v5 = poly_glyph_violation(coef, corr, geom)
+        if v5 > 0.05:
+            problems.append(f"V5 curve {i}: leaves glyph ({v5:.3f})")
     return problems
 
 
@@ -220,10 +225,14 @@ def build_phase1(letter: str):
     candidates = enumerate_complete_routes(graph)
     chosen_idx = select_routes_min_cover(graph, candidates)
     chosen = [candidates[j] for j in chosen_idx]
-    selected = [
-        build_route_corridor(graph, edge_ids, geom)
-        for edge_ids in chosen
-    ]
+    selected = [build_route_corridor(graph, route, geom)
+                for route in chosen]
+    for j, corr in enumerate(selected):
+        v = corridor_glyph_violation(corr, geom)
+        if v > 0.02:
+            raise RuntimeError(
+                f"Phase 1: corridor {j} leaves glyph "
+                f"(glyph violation {v:.3f})")
     signatures = [_route_signature(ids) for ids in chosen]
     return geom, graph, candidates, chosen, signatures, selected
 

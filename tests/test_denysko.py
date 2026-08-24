@@ -136,9 +136,9 @@ def test_route_corridor_matches_slice_intervals():
     geom = _graph_from_columns(cols)
     graph = build_route_graph(geom)
     routes = enumerate_complete_routes(graph)
-    from src.topology import CORRIDOR_MARGIN
+    from src.topology import CORRIDOR_MARGIN, build_slice_corridor
 
-    corr = build_route_corridor(graph, routes[0], geom)
+    corr = build_slice_corridor(graph, route_edge_ids(routes[0]), geom)
     step = 100.0 / 512
     np.testing.assert_allclose(
         corr.lower, 3 * SCALE * step + CORRIDOR_MARGIN, rtol=1e-9)
@@ -313,6 +313,11 @@ def _slab_corridor(y_lo=49.0, y_hi=51.0):
                           np.full(len(xs), y_hi))
 
 
+class _SlabGeom:
+    fill = np.zeros((512, 512), dtype=bool)
+    fill[:, 40:470] = True
+
+
 def test_constant_line_v2_passes_v3_fails():
     """P(x)=50 inside a slab corridor: perfect V2 adherence, but its
     tails stay horizontal forever - V3 must reject it."""
@@ -327,7 +332,7 @@ def test_constant_line_v2_passes_v3_fails():
         poly = np.polynomial.Polynomial(coef)
         orientation = (1, -1)
 
-    problems = d.validate_lines(["y=50"], object(), [_Fit()], [corr])
+    problems = d.validate_lines(["y=50"], _SlabGeom(), [_Fit()], [corr])
     assert any(p.startswith("V2") is False and p.startswith("V3")
                for p in problems)
 
@@ -389,7 +394,8 @@ def test_emitted_poly_leaving_corridor_rejected():
 
 def test_validate_lines_flags_violations():
     class _Geom:
-        pass
+        fill = np.zeros((512, 512), dtype=bool)
+        fill[:, 40:470] = True          # generous slab: y 0..100 all x
 
     xs = np.linspace(10.0, 60.0, 30)
     c = _corridor_from(xs, np.full(len(xs), 20.0), np.full(len(xs), 22.0))

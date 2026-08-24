@@ -475,7 +475,21 @@ def enumerate_complete_routes(graph: RouteGraph,
         cur = best.get(k)
         if cur is None or _route_signature(r) < _route_signature(cur):
             best[k] = r
-    return [best[k] for k in sorted(best)]
+
+    # orient every route LEFT-TO-RIGHT: y=f(x) corridors ascend in x, so
+    # a right-to-left walk must be replaced by its reverse (otherwise
+    # the monotone cleanup collapses the corridor to constant x)
+    out = []
+    for k in sorted(best):
+        r = best[k]
+        x0 = graph.vertices[r.steps[0].from_vertex].x
+        x1 = graph.vertices[r.steps[-1].to_vertex].x
+        if x0 > x1 + 1e-9:
+            r = Route(tuple(OrientedRouteEdge(s.edge_id, s.to_vertex,
+                                              s.from_vertex)
+                             for s in reversed(r.steps)))
+        out.append(r)
+    return out
 
 
 def route_edge_ids(route):
@@ -569,7 +583,255 @@ class Corridor:
         return np.interp(x, self.xs, self.upper)
 
 
-def build_route_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
+def route_polyline(graph: RouteGraph, route: Route) -> np.ndarray:
+    """Exact oriented polyline of a route.
+
+    Each step's points are used as stored when the stored edge direction
+    matches the traversal direction, else reversed. No endpoint guessing.
+    """
+    pts_all = []
+    for s in route.steps:
+        e = graph.edges[s.edge_id]
+        if e.v_from == s.from_vertex and e.v_to == s.to_vertex:
+            pts_all.append(np.asarray(e.points, dtype=float))
+        elif e.v_to == s.from_vertex and e.v_from == s.to_vertex:
+            pts_all.append(np.asarray(e.points, dtype=float)[::-1])
+        else:
+            raise RuntimeError(
+                f"route discontinuity at edge {s.edge_id}: walk "
+                f"{s.from_vertex}->{s.to_vertex} vs stored "
+                f"{e.v_from}->{e.v_to}")
+    return np.vstack(pts_all)
+
+
+def route_continuity_violation(graph: RouteGraph, route: Route) -> float:
+    """Largest geometric gap between consecutive step endpoints."""
+    for a, b in zip(route.steps, route.steps[1:]):
+        if a.to_vertex != b.from_vertex:
+            return float("inf")
+    pl = route_polyline(graph, route)
+    spans = []
+    k = 0
+    for s in route.steps:
+        n = len(graph.edges[s.edge_id].points)
+        spans.append((k, k + n - 1))
+        k += n - 1
+    worst = 0.0
+    for (_, e0), (s1, _) in zip(spans, spans[1:]):
+        worst = max(worst, float(np.hypot(*(pl[e0] - pl[s1]))))
+    return worst
+
+
+def _fill_at(geom: GlyphGeometry, xs, ys):
+    step = SIZE / GRID
+    cols = np.clip(np.round(np.asarray(xs) / step).astype(int), 0,
+                   geom.fill.shape[1] - 1)
+    rows = np.clip(np.round(np.asarray(ys) / step).astype(int), 0,
+                   geom.fill.shape[0] - 1)
+    return geom.fill[rows, cols]
+
+
+def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,
+                             grid: int = 200) -> float:
+    """Fraction of dense route-domain samples whose corridor MIDPOINT
+    lies outside the canonical glyph fill (minimum 'corridor ⊂ glyph'
+    requirement)."""
+    xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
+    mids = 0.5 * (corridor.lower_at(xs) + corridor.upper_at(xs))
+    return float(1.0 - _fill_at(geom, xs, mids).mean())
+
+
+def poly_glyph_violation(coef, corridor: Corridor, geom: GlyphGeometry,
+                         grid: int = 300) -> float:
+    """V5: fraction of dense in-route x samples where (x, P(x)) lies
+    outside the canonical glyph fill."""
+    xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
+    vals = np.polynomial.Polynomial(coef)(xs)
+    return float(1.0 - _fill_at(geom, xs, vals).mean())
+
+
+def build_route_corridor(graph: RouteGraph, route: Route,
+                         geom: GlyphGeometry) -> Corridor:
+    """Corridor for one ORIENTED skeleton route (left-to-right).
+
+    Real skeleton x is preserved wherever the route already progresses
+    in x; only near-vertical stretches receive an artificial LOCAL x
+    spread inside their own stroke's filled width, starting where the
+    walk currently is so constraint positions stay strictly increasing.
+    Every band is clamped into the fill of its own column and every
+    final node into its own constraint column, so the corridor is a
+    geometric subset of the glyph.
+    """
+    from scipy import ndimage  # lazy
+
+    if not isinstance(route, Route):
+        raise TypeError("build_route_corridor requires an oriented Route")
+
+    step = SIZE / GRID
+    route_pts = route_polyline(graph, route)
+
+    seg = np.hypot(*np.diff(route_pts, axis=0).T)
+    s_arc = np.concatenate([[0.0], np.cumsum(seg)])
+    total = float(s_arc[-1])
+    n_lm = min(STROKE_LANDMARKS, max(8, int(total)))
+    targets = np.linspace(0.0, total, n_lm)
+    lam = np.column_stack([
+        np.interp(targets, s_arc, route_pts[:, 0]),
+        np.interp(targets, s_arc, route_pts[:, 1]),
+    ])
+
+    radius = ndimage.distance_transform_edt(geom.fill)
+
+    def row_fill_runs(row):
+        runs, c0 = [], None
+        rowm = geom.fill[row, :]
+        for cc in range(len(rowm)):
+            if rowm[cc] and c0 is None:
+                c0 = cc
+            elif not rowm[cc] and c0 is not None:
+                runs.append((c0 * step, cc * step))
+                c0 = None
+        if c0 is not None:
+            runs.append((c0 * step, len(rowm) * step))
+        return runs
+
+    def col_fill_runs(col):
+        runs, r0 = [], None
+        colm = geom.fill[:, col]
+        for rr in range(len(colm)):
+            if colm[rr] and r0 is None:
+                r0 = rr
+            elif not colm[rr] and r0 is not None:
+                runs.append((r0 * step, rr * step))
+                r0 = None
+        if r0 is not None:
+            runs.append((r0 * step, len(colm) * step))
+        return runs
+
+    def local_run(x_g, y_g):
+        row = int(min(max(round(y_g / step), 0), geom.fill.shape[0] - 1))
+        for lo_g, hi_g in row_fill_runs(row):
+            if lo_g - 2 * step <= x_g <= hi_g + 2 * step:
+                return lo_g, hi_g
+        return None
+
+    # ---- constraint positions --------------------------------------
+    VERT = 0.25          # |dx| < VERT*dy => locally vertical
+    p = np.array(lam[:, 0], dtype=float)
+    i = 1
+    while i < len(p):
+        dx = lam[i, 0] - lam[i - 1, 0]
+        dy = abs(lam[i, 1] - lam[i - 1, 1])
+        if abs(dx) < VERT * dy:
+            j = i
+            while j + 1 < len(p):
+                dx2 = lam[j + 1, 0] - lam[j, 0]
+                dy2 = abs(lam[j + 1, 1] - lam[j, 1])
+                if abs(dx2) < VERT * dy2:
+                    j += 1
+                else:
+                    break
+            # vertical group i..j: spread across this stroke's OWN width.
+            # Reference window = NARROWEST member run (a member touching
+            # a crossbar row sees a full-width run that would poison the
+            # estimate). The window STARTS where the walk currently is:
+            # win_lo = max(run_lo+margin, p[i-1]) — never behind it, so
+            # bands cannot stack conflicting y demands at equal x.
+            wins = [local_run(lam[k, 0], lam[k, 1])
+                    or (lam[k, 0] - STROKE_MIN_HALF,
+                        lam[k, 0] + STROKE_MIN_HALF)
+                    for k in range(i, j + 1)]
+            lo_r, hi_r = min(wins, key=lambda w: w[1] - w[0])
+            margin = min(CORRIDOR_MARGIN, max((hi_r - lo_r) * 0.15, 1e-3))
+            win_lo = max(lo_r + margin, p[i - 1])
+            win_hi = max(hi_r - margin, win_lo + STROKE_MIN_HALF)
+            n_v = j - i + 2
+            for k in range(i, j + 1):
+                frac = (k - i + 1) / n_v
+                cand = win_lo + frac * (win_hi - win_lo)
+                cand = min(max(cand, lo_r + 1e-3), hi_r - 1e-3)
+                p[k] = max(cand, p[k - 1] + 1e-4)
+            i = j + 1
+        else:
+            p[i] = max(lam[i, 0], p[i - 1] + 1e-4)
+            i += 1
+
+    # ---- node bands: skeleton band clamped into its own column ------
+    # One robust pass: each constraint node's vertical band starts as
+    # skeleton point +/- local stroke radius, then is clamped into the
+    # filled interval of ITS OWN constraint column (the run containing
+    # the skeleton point, or the nearest run otherwise). The band always
+    # stays inside the fill and keeps the skeleton point whenever the
+    # fill does.
+    lo_list, hi_list = [], []
+    for i2 in range(len(p)):
+        x_g, y_g = p[i2], lam[i2, 1]
+        col = int(min(max(round(x_g / step), 0), geom.fill.shape[1] - 1))
+        row = int(min(max(round(lam[i2, 1] / step), 0),
+                      geom.fill.shape[0] - 1))
+        half = max(STROKE_RADIUS_GAIN * float(radius[row, col]) * step,
+                   STROKE_MIN_HALF)
+        cand_lo, cand_hi = y_g - half, y_g + half
+
+        def _runs():
+            return col_fill_runs(col)
+
+        best = None
+        best_overlap = -1.0
+        for blo, bhi in _runs():
+            ov_lo, ov_hi = max(cand_lo, blo), min(cand_hi, bhi)
+            ov = ov_hi - ov_lo
+            if ov > best_overlap:
+                best_overlap = ov
+                best = (ov_lo, ov_hi) if ov > 0 else (
+                    blo, bhi)
+        if best is None:
+            mid_y = 0.5 * (cand_lo + cand_hi)
+            best = (mid_y - STROKE_MIN_HALF, mid_y + STROKE_MIN_HALF)
+        lo_y, hi_y = best
+        if not (lo_y <= y_g <= hi_y):
+            # keep the skeleton point honoured: widen toward it
+            lo_y = min(lo_y, y_g)
+            hi_y = max(hi_y, y_g)
+            # re-clamp into the containing run if possible
+            for blo, bhi in _runs():
+                if blo - step <= y_g <= bhi + step:
+                    lo_y = max(lo_y, blo)
+                    hi_y = min(hi_y, bhi)
+                    break
+        if hi_y - lo_y < MIN_CORRIDOR_WIDTH:
+            mid_y = 0.5 * (lo_y + hi_y)
+            lo_y, hi_y = mid_y - MIN_CORRIDOR_WIDTH / 2, \
+                mid_y + MIN_CORRIDOR_WIDTH / 2
+        lo_list.append(lo_y)
+        hi_list.append(hi_y)
+    lo_arr = np.asarray(lo_list)
+    hi_arr = np.asarray(hi_list)
+
+    heights = hi_arr - lo_arr
+    mm = np.minimum(CORRIDOR_MARGIN,
+                    np.maximum(0.0, (heights - MIN_CORRIDOR_WIDTH)) / 2.0)
+    lower = lo_arr + mm
+    upper = hi_arr - mm
+
+    center = (lower + upper) / 2.0
+    path = BoundaryPath(points=np.column_stack([p, center]),
+                        contour_id=-1)
+    pad = ESC_OFFSETS[-1] + 1.0
+    return Corridor(
+        path=path,
+        xa=float(p[0] - pad),
+        xb=float(p[-1] + pad),
+        xs=p,
+        lower=lower,
+        upper=upper,
+        ylo=float(geom.ymin),
+        yhi=float(geom.ymax),
+    )
+
+
+
+def build_slice_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
     if isinstance(edge_ids, Route):
         edge_ids = route_edge_ids(edge_ids)
     elif edge_ids and hasattr(edge_ids[0], "edge_id"):
@@ -619,7 +881,7 @@ def build_route_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
 # Combined stroke/hole route graph (skeleton-derived)
 # ---------------------------------------------------------------------------
 
-STROKE_LANDMARKS = 48        # corridor landmark samples per route
+STROKE_LANDMARKS = 64        # corridor landmark samples per route
 STROKE_RADIUS_GAIN = 1.6     # corridor half-width = gain * stroke radius
 STROKE_MIN_HALF = 0.8        # never narrower than this
 
@@ -817,6 +1079,16 @@ def _route_corridor_from_stroke(graph: RouteGraph, edge_ids,
         x_hi = x_lo + 1e-6
     p = x_lo + (x_hi - x_lo) * (targets / max(total, 1e-9))
 
+    pre_lo, pre_hi = lo_arr.copy(), hi_arr.copy()
+    import os
+    if os.environ.get("DBG4"):
+        for i2 in range(len(p)):
+            if hi_arr[i2] - lo_arr[i2] < 1.0:
+                print("POST-THIN", i2, "p", round(p[i2],3),
+                      "band", (round(lo_arr[i2],2), round(hi_arr[i2],2)),
+                      "pre", (round(pre_lo[i2],2), round(pre_hi[i2],2)),
+                      "lam", (round(lam[i2,0],2), round(lam[i2,1],2)))
+        import sys; print("DBG4 done", file=sys.stderr)
     heights = hi_arr - lo_arr
     mm = np.minimum(CORRIDOR_MARGIN,
                     np.maximum(0.0, (heights - MIN_CORRIDOR_WIDTH)) / 2.0)

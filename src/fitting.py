@@ -265,9 +265,9 @@ def fit_degree(corridor: Corridor, degree: int,
     # independent dense check passes (steep escape cliffs ring between
     # sparse rows).
     dv = None
-    for n_esc_d in (200, 600):
+    for n_esc_d, n_int_d in ((200, DENSE_GRID), (600, 2 * DENSE_GRID)):
         A_d, lo_d, hi_d = _constraint_set(corridor, degree, sig_l, sig_r,
-                                          n_int=DENSE_GRID, n_esc=n_esc_d)
+                                          n_int=n_int_d, n_esc=n_esc_d)
         coef, dviol = _project_feasible(A_d, lo_d, hi_d, coef)
         if not np.isfinite(dviol) or dviol > 1e5:
             return None
