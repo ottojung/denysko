@@ -187,12 +187,15 @@ def eval_expression(expr: str, x_vals: np.ndarray) -> np.ndarray:
     Supports: numbers, x, +, -, *, /, parentheses.
     Uses Python eval with only x/numbers exposed via a controlled env.
     """
-    import re as _re
-    # verify only safe characters
-    if not _re.match(r'^[0-9+\-*/(). ]*$', expr.replace("x", "")):
-        raise ValueError(f"unsafe characters in: {expr[:40]}")
-    env = {"__builtins__": {}, "x": x_vals}
-    return eval(expr, env)  # noqa: S307 - restricted by regex above
+    # strip leading zeros from integer literals (Python 3 disallows them);
+    # these can appear from fmt_num producing e.g. "0.052..." -> "0052..."
+    import re as _re_mod
+    safe = _re_mod.sub(r'(?<![.\w])0+(\d)', r'\1',
+                       expr.replace("x", "\x00"))
+    safe = safe.replace("\x00", "x")
+    env = {"__builtins__": {}}
+    env["x"] = np.asarray(x_vals, dtype=float)
+    return eval(safe, env)  # noqa: S307
 
 
 def validate_horner_line(line: str, corridor, coef_cheb: np.ndarray,

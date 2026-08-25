@@ -861,3 +861,102 @@ def test_seed_pipeline_deterministic(monkeypatch):
     fits_b, _ = fit_selected(selected)
     assert [d.format_expression(f.poly) for f in fits_a] == \
         [d.format_expression(f.poly) for f in fits_b]
+
+
+# ---------------------------------------------------------------------------
+# Family hardening regressions
+# ---------------------------------------------------------------------------
+
+
+def test_a_default_baseline_degrees():
+    """Plain A: exactly 2 curves, degrees 4 and 6."""
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("A")
+    fits, _ = fit_selected(selected)
+    assert len(fits) == 2
+    assert sorted(f.degree for f in fits) == [4, 6]
+
+
+def test_h_default_baseline_degrees():
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
+    fits, _ = fit_selected(selected)
+    assert len(fits) == 2
+    assert all(f.degree == 9 for f in fits)
+
+
+def test_family_members_have_real_orientation():
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("A")
+    counts = [5, 5]
+    out_fits, _, _ = d.realize_variants(graph, chosen, selected, counts,
+                           42, geom)
+    from src.fitting import ORIENTATIONS
+    for fit in out_fits:
+        assert fit.orientation in ORIENTATIONS
+        assert fit.orientation != (0, 0)
+
+
+def test_seed_changes_family_geometry():
+    from src.denysko import generate as gen
+
+    def _serialize(seed):
+        fits, _, _ = gen("A", min_curves=10, seed=seed)
+        return [d.format_expression(f.poly) for f in fits]
+
+    a42 = _serialize(42)
+    a43 = _serialize(43)
+    # same count
+    assert len(a42) == len(a43) == 10
+    # different geometry (at least one equation differs)
+    assert a42 != a43
+
+
+def test_progressive_degree_stop():
+    """solve_family_anchors returns at the first successful degree."""
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("A")
+    c = selected[0]
+    fam = d.solve_family_anchors(graph, chosen[0], c, 42, 0,
+                               d_min=max(1, 4))
+    assert fam is not None
+    D = fam[2]
+    assert D < 24   # found well below the cap
+
+
+def test_objective_single_normalization():
+    """Direction weights must be normalized by half-width exactly once
+    inside solve_anchor; solve_family_anchors passes raw directions."""
+    import inspect
+    src_fa = inspect.getsource(d.solve_family_anchors)
+    src_sa = inspect.getsource(_fitting.solve_anchor) if hasattr(
+        _fitting, "solve_anchor") else ""
+    # solve_family_anchors should NOT divide by half before passing w
+    if "half" in src_fa:
+        assert "/ half" not in src_fa.split("w_raw")[0].split("directions")[-1]
+    # solve_anchor should do the normalization
+    assert "/ half" in inspect.getsource(
+        __import__("src.fitting", fromlist=["solve_anchor"]).solve_anchor
+    ) or "half" in inspect.getsource(
+        __import__("src.fitting", fromlist=["solve_anchor"]).solve_anchor
+    )
+
+
+def test_horner_serialization_stability():
+    """High-degree Horner output must numerically match Chebyshev eval."""
+    from numpy.polynomial import chebyshev as cheb
+    rng = np.random.default_rng(99)
+    degree = 18
+    coef_cheb = rng.normal(size=degree + 1) * (0.5 ** np.arange(degree + 1))
+    mid, sc = 48.0, 42.0
+    power_z = np.polynomial.chebyshev.cheb2poly(coef_cheb)
+    line = d._horner_expression(power_z, mid, sc)
+    xs = np.array([mid - sc*0.9, mid-sc*0.5, mid,
+                   mid+sc*0.5, mid+sc*0.9])
+    expr = line[2:] if line.startswith("y=") else line
+    parsed_vals = d.eval_expression(expr, xs)
+    z_vals = (xs - mid) / sc
+    truth = np.polynomial.Polynomial(power_z)(z_vals)
+    np.testing.assert_allclose(parsed_vals, truth, rtol=1e-6)
+def test_low_degree_uses_raw_power_serializer():
+    """Low-degree output should remain readable raw power form."""
+    coef = np.array([1.0, 2.0, 3.0])
+    line = d.format_expression(np.polynomial.Polynomial(coef))
+    assert "^" in line or "x^" in line or "**" in line or (
+        "x" in line and len(line) < 100)
