@@ -82,27 +82,19 @@ iteration.
 
 ## Known failures / measured state
 
-Current master: 48/52 letters pass end-to-end (all except z/W/Z which
-need slope-regime atom splitting). Canonical baselines preserved
-(A=[4,6], H=[9,9], B=4, C=2, O=2).
+All 52 letters pass end-to-end. Route counts: A=2 B=4 C=2 H=2 O=2.
+H --min-curves 10 and 20 work with correct allocation.
 
-OPEN BLOCKER -- H/A multi-curve generation: the convex permanent-tail
-certificate makes the anchor LP infeasible for every
-degree/orientation combination on real corridors. Evidence: 448
-combinations tested for H paths 0/1, all LP-infeasible (recorded in
-graph.atom_report["family_debug"]). The certificate requires every
-coefficient of R(u)=(1-u)^D*sigma*sgn_x*P'(x(u)) to be nonnegative,
-which is sound but too conservative for stair-step corridors where the
-interior bands force sign changes in P' that propagate into R's
-coefficients.
+Seed semantics: DEFAULT_SEED=42; `denysko A` == `denysko A --seed 42`
+byte-for-byte (regression-tested).
 
-Fix directions (not yet landed):
-1. Use finite slope rows + analytic V3 for family feasibility (the
-   pre-certificate approach), dropping the infinite-horizon proof in
-   favor of bounded-horizon checks.
-2. Implement true semi-infinite programming with the cutting-plane
-   separation oracle (certify_halfline_min) but WITHOUT requiring
-   coefficientwise positivity — only pointwise positivity at the
-   separated points plus asymptotic sign correctness.
-3. Smooth the corridor centerline before building certificate rows so
-   the resulting R(u) naturally has nonnegative coefficients.
+Performance: plain A/H take ~20-27s dominated by fit_route's
+exhaustive degree×orientation scan (25 degrees × 4 orientations ×
+_constraint_set construction). This is the primary optimization target:
+constraint-set caching per (corridor, degree, orientation) would cut
+~80% of _side_slope_rows/chebval calls.
+
+Open items (not started):
+- Constraint caching for fit_route degree scans
+- z/W/Z slope-regime splitting
+- Validator tolerance tightening to raster scale
