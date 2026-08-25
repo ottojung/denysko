@@ -181,6 +181,44 @@ def parse_poly(s: str):
     return coef
 
 
+def eval_expression(expr: str, x_vals: np.ndarray) -> np.ndarray:
+    """Safely evaluate a restricted arithmetic expression for many x.
+
+    Supports: numbers, x, +, -, *, /, parentheses.
+    Uses Python eval with only x/numbers exposed via a controlled env.
+    """
+    import re as _re
+    # verify only safe characters
+    if not _re.match(r'^[0-9+\-*/(). ]*$', expr.replace("x", "")):
+        raise ValueError(f"unsafe characters in: {expr[:40]}")
+    env = {"__builtins__": {}, "x": x_vals}
+    return eval(expr, env)  # noqa: S307 - restricted by regex above
+
+
+def validate_horner_line(line: str, corridor, coef_cheb: np.ndarray,
+                         grid: int = 200):
+    """V4-stability check: evaluate serialized expression at many points
+    and compare against the intended Chebyshev polynomial."""
+    from numpy.polynomial import Polynomial as Poly
+    from numpy.polynomial import chebyshev as _ch
+
+    m = _EXPR_RE.match(line)
+    if m is None:
+        return float("inf")
+    expr = m.group(1)
+    xs = np.linspace(corridor.xa, corridor.xb, grid)
+    try:
+        parsed_vals = eval_expression(expr, xs)
+    except Exception:
+        return float("inf")
+
+    scale = (corridor.xb - corridor.xa) / 2.0
+    mid = (corridor.xa + corridor.xb) / 2.0
+    z = (xs - mid) / scale
+    cheb_vals = cheb.chebval(z, np.asarray(coef_cheb, dtype=float))
+    return float(np.max(np.abs(parsed_vals - cheb_vals)))
+
+
 def parse_line(line: str):
     m = _EXPR_RE.match(line)
     if m is None:
@@ -361,8 +399,8 @@ def fit_selected(selected):
 CLI_USAGE_EPILOG = """examples:
   denysko A
   denysko h
-  denysko --max-curves 4 B
-  denysko --seed 42 g
+  denysko B --min-curves 12
+  denysko g --seed 123
   denysko -q O
 """
 
@@ -456,8 +494,6 @@ def allocate_counts(K: int, M: int, rng: np.random.Generator):
 DOMAIN_TAG_ALLOCATION = 1
 DOMAIN_TAG_PATH_FAMILY = 2
 
-VARIANT_SEP_RMS = 0.10          # distinctness floor kept minimal:
-VARIANT_SEP_MAX = 0.35          # only guards exact duplicates
 
 
 def _path_child_seed(seed: int, tag: int, path_index: int,
@@ -495,19 +531,11 @@ def _family_directions(corr, seed, path_index):
         [int(seed) if seed is not None else 0,
          DOMAIN_TAG_PATH_FAMILY, path_index])
     rng = np.random.default_rng(sseq)
-    directions = [
-        ("constant", np.ones(n)),
-        ("tilt-lr", 1.0 + 0.5*t),
-        ("cos1", 1.0 + 0.4*np.cos(np.pi*t)),
-        ("cos2", 1.0 + 0.3*np.cos(2*np.pi*t)),
-        ("sin1", 1.0 + 0.4*np.sin(np.pi*t)),
-    ]
     smooth = 1.0 + rng.uniform(0.05, 0.3)*np.cos(
         rng.uniform(1, 3)*np.pi*t + rng.uniform(0, 2*np.pi))
-    directions.append(("seeded-smooth", smooth))
-    smooth2 = 1.0 + rng.uniform(0.05, 0.25)*np.cos(
-        rng.uniform(1, 4)*np.pi*t + rng.uniform(0, 2*np.pi))
-    directions.append(("seeded-smooth-2", smooth2))
+    directions = [("seeded-smooth", smooth),
+                  ("tilt-lr", 1.0 + 0.5*t),
+                  ("cos1", 1.0 + 0.4*np.cos(np.pi*t))]
     return directions
 
 
@@ -532,10 +560,10 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     for D in range(d_min, cap + 1):
         for ori in ((1, -1), (-1, 1), (1, 1), (-1, -1)):
             for dname, w_dir in directions[:3]:   # max 3 directions
-                w_norm = w_dir / half
-                plo = solve_anchor(corr, D, ori[0], ori[1], w_norm,
+                w_raw = w_dir   # raw direction; solve_anchor normalizes
+                plo = solve_anchor(corr, D, ori[0], ori[1], w_raw,
                                    False)
-                phi = solve_anchor(corr, D, ori[0], ori[1], w_norm,
+                phi = solve_anchor(corr, D, ori[0], ori[1], w_raw,
                                    True)
                 if plo is None or phi is None:
                     continue
@@ -605,8 +633,8 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
                     mixed_cheb))(affine)
                 fit = PathFit(corridor=corr, degree=len(mixed_cheb) - 1,
                               coef_cheb=mixed_cheb, poly=poly,
-                              dense_max_violation=0.0,
-                              orientation=(0, 0))
+                              dense_max_violation=None,
+                              orientation=ori)
                 fits.append(fit)
             # baseline curve 0 replaced by central family member when a
             # family exists (all members share identical hard validity)
@@ -664,24 +692,22 @@ def run(argv) -> int:
             print(msg, file=_sys.stderr)
 
     try:
-        fits, _, _ = generate(cfg.letter, min_curves=cfg.min_curves,
-                              seed=cfg.seed, reporter=reporter)
+        fits, corrs, routes_list = generate(
+            cfg.letter, min_curves=cfg.min_curves,
+            seed=cfg.seed, reporter=reporter)
         lines = []
         for f in fits:
             deg = len(f.poly.coef) - 1
             if _needs_horner(deg):
-                # serialize in normalized z=(x-mid)/scale coordinates
-                # using Horner form for numerical stability
-                from src.fitting import cheb
                 power_z = np.polynomial.chebyshev.cheb2poly(
                     np.asarray(f.coef_cheb, dtype=float))
                 corr = f.corridor
                 mid = (corr.xa + corr.xb) / 2.0
                 sc = (corr.xb - corr.xa) / 2.0
-                line = _horner_expression(power_z, mid, sc)
+                line = "y=" + _horner_expression(power_z, mid, sc)
             else:
                 line = format_expression(f.poly)
-            lines.append("y=" + line if not line.startswith("y=") else line)
+            lines.append(line)
     except GenerationError as exc:
         print(str(exc), file=_sys.stderr)
         return 1
