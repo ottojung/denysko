@@ -389,7 +389,8 @@ def build_parser() -> argparse.ArgumentParser:
                              "Denysko emits more automatically if "
                              "required for complete glyph coverage. "
                              "No upper limit.")
-    parser.add_argument("--seed", type=int, default=0, metavar="SEED",
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED,
+                        metavar="SEED",
                         help="seed controlling deterministic variation "
                              "among valid curve realizations")
     parser.add_argument("-q", "--quiet", action="store_true",
@@ -537,7 +538,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
                 if status != "ok":
                     continue
                 # measure usable width: max normalized span
-                key = (-D, -span_max)   # prefer lowest D then widest
+                key = -span_max   # within this degree: prefer widest
                 if best_key is None or key < best_key:
                     best_key = key
                     best = (np.asarray(plo), np.asarray(phi), D, ori)
@@ -563,8 +564,10 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
             raise GenerationError(
                 f"generation failed: path {j} has no feasible "
                 f"polynomial up to degree {INITIAL_FIT_DEGREE}")
-        fam = solve_family_anchors(graph, route, corr, seed, j,
-                                   max(1, base.degree))
+        fam = None
+        if m > 1:
+            fam = solve_family_anchors(graph, route, corr, seed, j,
+                                       max(1, base.degree))
         if fam is None and m > 1:
             raise GenerationError(
                 f"generation failed: path {j} supports only its "
@@ -624,17 +627,14 @@ def generate(letter: str, *, min_curves: int = 1, seed: int = DEFAULT_SEED,
 
     K = len(selected)
     M = max(K, min_curves)
-    # seed always has a concrete value (DEFAULT_SEED if not given)
-    eff_seed = DEFAULT_SEED if seed is None else seed
-    ss = np.random.SeedSequence([eff_seed, DOMAIN_TAG_ALLOCATION * 1000])
-    alloc_rng = np.random.default_rng(ss)
-    counts = allocate_counts(K, M, alloc_rng)
+    counts = allocate_counts(K, M,
+                             np.random.default_rng(seed))
     reporter(f"phase1: {len(candidates)} candidate routes, "
              f"minimum cover {K}")
     reporter(f"target curves: {M}, allocation {counts}")
 
     return realize_variants(graph, chosen, selected, counts,
-                            eff_seed, geom, reporter)
+                            seed, geom, reporter)
 
 
 class GenerationError(Exception):

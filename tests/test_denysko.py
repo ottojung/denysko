@@ -826,7 +826,7 @@ def test_r1_nonvertical_realization_error_zero_on_real_letters():
 def test_cli_parse_config():
     cfg = d.parse_cli(["A"])
     assert cfg.letter == "A" and cfg.min_curves == 1
-    assert cfg.seed == 0 and cfg.quiet is False
+    assert cfg.seed == 42 and cfg.quiet is False
     cfg = d.parse_cli(["--seed", "42", "--min-curves", "4", "-q", "z"])
     assert (cfg.letter, cfg.min_curves, cfg.seed, cfg.quiet) == \
         ("z", 4, 42, True)
