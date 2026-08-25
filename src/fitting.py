@@ -117,23 +117,14 @@ def _side_slope_rows(corridor: Corridor, degree: int,
 
 def _tail_certificate_matrix(corridor: Corridor, degree: int,
                              sigma: int, side: str):
-    """Exact coefficient map for the compactified half-line tail
-    condition.
+    """Exact coefficient matrix for the compactified tail condition.
 
-    x(t) = x_checkpoint + sgn_x*t (t >= 0), compactified by
-    t = u/(1-u), u in [0,1]. For each Chebyshev basis vector T_k the
-    function builds
+    Builds Q(t) = sigma*sgn_x*P'(x_checkpoint+sgn_x*t) - ESC_SLOPE_MIN
+    as a polynomial in t, then compactifies t=u/(1-u):
+    R(u) = sum_j q_j u^j (1-u)^(d_q-j).
 
-        r_k(u) = (1-u)^degree * sigma*sgn_x * dT_k/dx (x(u))
-
-    as an exact polynomial in u, and returns M with M[j,k] = coefficient
-    of u^j in r_k(u), so R(u) = sum_j u^j * (M @ c)[j] for the Chebyshev
-    coefficient vector c of P. Requiring
-
-        R(u) >= ESC_SLOPE_MIN * (1-u)^degree   for all u in [0,1]
-
-    is exactly equivalent to sigma*sgn_x*P'(x) >= ESC_SLOPE_MIN on the
-    entire outward half-line.
+    Returns M with M[j,k] = coefficient of u^j contributed by Chebyshev
+    basis vector c_k. So R(u) = sum_j u^j * (M @ c)[j].
     """
     from numpy.polynomial import Polynomial as Poly
 
@@ -142,49 +133,61 @@ def _tail_certificate_matrix(corridor: Corridor, degree: int,
     mid = (xa + xb) / 2.0
     x_end = float(corridor.xs[0] if side == "L" else corridor.xs[-1])
     sgn_x = -1.0 if side == "L" else 1.0
-    A_c = (x_end - mid) / scale
-    B_c = sgn_x / scale
-    Num = Poly([A_c, B_c])
-    Den = Poly([1.0, -1.0])
 
     M = np.zeros((degree + 1, degree + 1))
-    one = Poly([1.0])
     for k in range(degree + 1):
+        # T_k(z) as power-basis polynomial in z:
         unit = np.zeros(degree + 1)
         unit[k] = 1.0
-        pz = np.asarray(cheb.cheb2poly(unit))       # T_k in z powers
-        g = Poly(pz)                                 # dT_k/dz below
-        dg = g.deriv()
-        # embed dg(z(u)) * (1-u)^(k-1): z(u)=Num/Den
-        emb = Poly([0.0])
-        npow = Poly([1.0])
-        dpow = Den ** max(k - 1, 0)
-        for jj in range(len(dg.coef)):
-            emb = emb + dg.coef[jj] * npow
-            npow = npow * Num
-            dpow = dpow * Den
-        extra = Den ** (degree - (k - 1)) if k >= 1 else Den ** degree
-        rk = (sigma * sgn_x / scale) * emb * extra
-        coefs = np.asarray(rk.coef, dtype=float)
-        M[:len(coefs), k] += coefs
+        Tk_z_coefs = np.asarray(cheb.cheb2poly(unit))
+        Tk_z = Poly(Tk_z_coefs)
+
+        # compose with affine map z(x) = (x - mid)/scale:
+        z_of_x = Poly([-mid / scale, 1.0 / scale])
+        Tk_x = Tk_z(z_of_x)          # T_k as poly in x
+
+        # derivative wrt x:
+        dTk_dx = Tk_x.deriv()
+
+        # compose with x(t) = x_end + sgn_x*t:
+        x_of_t = Poly([x_end, sgn_x])
+        dTk_dt = dTk_dx(x_of_t)      # dT_k/dt
+
+        # Q contribution: sigma*sgn_x*dT_k/dt, minus ESC on constant term
+        qk = (sigma * sgn_x) * dTk_dt
+        q_coefs = np.asarray(qk.coef, dtype=float)
+        if len(q_coefs) < degree + 1:
+            q_coefs = np.pad(q_coefs, (0, degree + 1 - len(q_coefs)))
+
+        # compactify: R(u) = sum_j q_coefs[j] * u^j * (1-u)^(dq-j)
+        dq = len(q_coefs) - 1
+        onem = Poly([1.0, -1.0])
+        upow = Poly([0.0, 1.0])
+        Ru = Poly([0.0])
+        for j in range(dq + 1):
+            if j <= degree:
+                Ru = Ru + q_coefs[j] * upow**j * onem**(dq - j)
+
+        cs = np.asarray(Ru.coef, dtype=float)
+        cs_padded = np.zeros(degree + 1)
+        cs_padded[:min(len(cs), degree+1)] = cs[:degree+1]
+        M[:, k] += cs_padded
     return M
 
 
-def _tail_certificate_rows(corridor: Corridor, degree: int,
-                           sigma: int, side: str, u_points):
-    """Coefficientwise certificate rows at sampled compactified points.
 
-    Returns (A_rows, lo_rows) with A_rows[j] the u_j row of the
-    certificate matrix and lo_rows[j] = ESC_SLOPE_MIN*(1-u_j)^degree:
-    certified solutions satisfy A_rows @ c >= lo_rows pointwise.
+def _tail_certificate_rows(corridor: Corridor, degree: int,
+                           sigma: int, side: str):
+    """Coefficientwise certificate rows (sound sufficient condition).
+
+    Every coefficient of R(u) must be >= 0 except the constant which
+    must be >= ESC_SLOPE_MIN. Returns (A=M, lo) where lo[0] =
+    ESC_SLOPE_MIN and lo[j>0] = 0.
     """
     M = _tail_certificate_matrix(corridor, degree, sigma, side)
-    A_rows, lo_rows = [], []
-    for u in u_points:
-        upow = np.array([u ** j for j in range(degree + 1)])
-        A_rows.append(M @ upow)
-        lo_rows.append(ESC_SLOPE_MIN * (1.0 - u) ** degree)
-    return np.vstack(A_rows), np.asarray(lo_rows)
+    lo = np.full(degree + 1, 0.0)
+    lo[0] = ESC_SLOPE_MIN
+    return M, lo
 
 
 def certify_halfline_min(coef_cheb: np.ndarray, corridor: Corridor,
@@ -242,10 +245,9 @@ def _constraint_set(corridor: Corridor, degree: int,
             if tail_cert:
                 # convex permanent-tail certificate: subsumes finite
                 # guidance slope rows with an infinite-horizon proof
-                cu = cert_u_points or [0.0, 0.25, 0.5, 0.75, 1.0]
                 A_c, lo_c = _tail_certificate_rows(
-                    corridor, degree, sigma, side, cu)
-                hi_c = np.full(len(cu), np.inf)
+                    corridor, degree, sigma, side)
+                hi_c = np.full(degree + 1, np.inf)
                 blocks.append((A_c, lo_c, hi_c))
             elif slope_rows:
                 blocks.append(
