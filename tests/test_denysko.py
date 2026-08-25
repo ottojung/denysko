@@ -119,7 +119,7 @@ def test_diamond_split_merge_two_routes():
 
 
 def test_single_stripe_one_route():
-    cols = [[(3, 5)] for _ in range(200)]
+    cols = [[(300, 500)] for _ in range(500)]
     graph = build_route_graph(_graph_from_columns(cols))
     routes = enumerate_complete_routes(graph)
     chosen = select_routes_min_cover(graph, routes)
@@ -135,7 +135,7 @@ def test_two_disjoint_stripes_two_routes():
 
 
 def test_route_corridor_matches_slice_intervals():
-    cols = [[(3, 7)] for _ in range(200)]
+    cols = [[(300, 700)] for _ in range(500)]
     geom = _graph_from_columns(cols)
     graph = build_route_graph(geom)
     routes = enumerate_complete_routes(graph)
