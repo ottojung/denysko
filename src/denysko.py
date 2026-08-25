@@ -446,63 +446,108 @@ def guide_weights(corr, child_rng):
     return w
 
 
-def solve_family_anchors(graph, route, corr, seed, path_index,
-                         d_min, degree_cap=None, use_cert=False):
-    """Find two geometrically distinct feasible anchors defining a
-    certified convex family at some degree D in [d_min, cap].
+def _family_directions(corr, seed, path_index):
+    """Deterministic candidate direction vectors for family search.
 
-    Anchors minimize/maximize a seeded smooth linear functional over the
-    route domain subject to ALL hard constraints (corridor bands, ramp
-    values, slope guidance). Both anchors are dense-validated in the
-    emitted power domain and must pass analytic V3. Returns
-    (coef_low, coef_high, degree, orientation, sig_l, sig_r) or None.
+    All operate on normalized corridor displacement
+    (P(x_i)-center_i)/half_i. Returns list of (name, w) where w is the
+    weight vector for the linear functional sum(w_i * P(x_i)/half_i).
+    """
+    n = len(corr.xs)
+    half = np.maximum((corr.upper - corr.lower) / 2.0, 0.5)
+    t = np.linspace(0, 1, n)
+    sseq = np.random.SeedSequence(
+        [int(seed) if seed is not None else 0,
+         DOMAIN_TAG_PATH_FAMILY, path_index])
+    rng = np.random.default_rng(sseq)
+    directions = [
+        ("constant", np.ones(n)),
+        ("tilt-lr", 1.0 + 0.5*t),
+        ("cos1", 1.0 + 0.4*np.cos(np.pi*t)),
+        ("cos2", 1.0 + 0.3*np.cos(2*np.pi*t)),
+        ("sin1", 1.0 + 0.4*np.sin(np.pi*t)),
+    ]
+    smooth = 1.0 + rng.uniform(0.05, 0.3)*np.cos(
+        rng.uniform(1, 3)*np.pi*t + rng.uniform(0, 2*np.pi))
+    directions.append(("seeded-smooth", smooth))
+    smooth2 = 1.0 + rng.uniform(0.05, 0.25)*np.cos(
+        rng.uniform(1, 4)*np.pi*t + rng.uniform(0, 2*np.pi))
+    directions.append(("seeded-smooth-2", smooth2))
+    return directions
+
+
+def solve_family_anchors(graph, route, corr, seed, path_index,
+                         d_min, degree_cap=None):
+    """Find two geometrically distinct certified anchors defining a
+    convex family at some degree D in [d_min, INITIAL_FIT_DEGREE].
+
+    For each degree D and tail orientation, tries multiple deterministic
+    direction candidates. Both anchors minimize/maximize the SAME
+    objective F_w(P)=sum(w_i*(P(x_i)-center_i)/half_i). The winning
+    family maximizes normalized visible span at the lowest degree.
+    Returns (coef_low, coef_high, degree, orientation) or None with
+    diagnostic info attached to graph.atom_report['family_debug'].
     """
     from src.fitting import solve_anchor, certify_anchor
     from src.denysko import tail_reentry_violation
 
-    cap = degree_cap or INITIAL_FIT_DEGREE
-    for D in range(d_min, min(cap, d_min + 8) + 1):
+    cap = INITIAL_FIT_DEGREE
+    half = np.maximum((corr.upper - corr.lower) / 2.0, 0.5)
+    center = (corr.lower + corr.upper) / 2.0
+    directions = _family_directions(corr, seed, path_index)
+
+    best = None
+    best_key = None
+    debug_log = []
+
+    for D in range(d_min, cap + 1):
         for ori in ((1, -1), (-1, 1), (1, 1), (-1, -1)):
-            ss = _path_child_seed(seed, DOMAIN_TAG_PATH_FAMILY,
-                                  path_index, D)
-            rng = np.random.default_rng(ss)
-            w_lo = guide_weights(corr, rng)
-            w_hi = guide_weights(corr, rng)
-            plo = solve_anchor(corr, D, ori[0], ori[1], w_lo, False,
-                               tail_cert=use_cert)
-            phi = solve_anchor(corr, D, ori[0], ori[1], w_hi, True,
-                               tail_cert=use_cert)
-            if plo is None or phi is None:
-                continue
-            # geometric difference over visible domain
-            from numpy.polynomial import Polynomial as Poly
-            affine = Poly([-(corr.xa + corr.xb) / (corr.xb - corr.xa),
-                           2.0 / (corr.xb - corr.xa)])
-            Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(affine)
-            Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(affine)
-            diff = Plo(corr.xs) - Phi(corr.xs)
-            half_w = np.maximum((corr.upper - corr.lower) / 2.0, 1e-6)
-            norm = np.abs(diff) / half_w
-            if float(np.max(norm)) < 0.2 or \
-                    float(np.sqrt(np.mean(norm ** 2))) < 0.05:
-                continue
-            # validation-domain + analytic-V3 checks on both anchors
-            ok = True
-            for coef in (plo, phi):
-                if certify_anchor(corr, coef, ori[0], ori[1]) > \
-                        CORRIDOR_EPS:
-                    ok = False
-                    break
-                power_z = np.polynomial.chebyshev.cheb2poly(coef)
-                poly = Poly(power_z)(affine)
-                if tail_reentry_violation(
-                        np.asarray(poly.coef), corr, ori) != 0.0:
-                    ok = False
-                    break
-            if not ok:
-                continue
-            return (np.asarray(plo), np.asarray(phi), D, ori)
+            for dname, w_dir in directions:
+                w = w_dir / half   # normalize by corridor width
+                plo = solve_anchor(corr, D, ori[0], ori[1], w, False,
+                                   tail_cert=True)
+                phi = solve_anchor(corr, D, ori[0], ori[1], w, True,
+                                   tail_cert=True)
+                status = "ok"
+                if plo is None or phi is None:
+                    status = "LP-infeasible"
+                else:
+                    # check V3 and geometric span
+                    from numpy.polynomial import Polynomial as Poly
+                    affine = Poly([-(corr.xa + corr.xb) /
+                                   (corr.xb - corr.xa),
+                                   2.0 / (corr.xb - corr.xa)])
+                    Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(
+                        affine)
+                    Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(
+                        affine)
+                    v3lo = tail_reentry_violation(
+                        np.asarray(Plo.coef), corr, ori)
+                    v3hi = tail_reentry_violation(
+                        np.asarray(Phi.coef), corr, ori)
+                    diff = Plo(corr.xs) - Phi(corr.xs)
+                    norm = np.abs(diff) / half
+                    span_max = float(np.max(norm))
+                    if v3lo != 0.0 or v3hi != 0.0:
+                        status = f"V3-fail({v3lo:.1f}/{v3hi:.1f})"
+                    elif span_max < 1e-6:
+                        status = "degenerate"
+                debug_log.append({
+                    "degree": D, "orientation": ori,
+                    "direction": dname, "status": status})
+                if status != "ok":
+                    continue
+                # measure usable width: max normalized span
+                key = (-D, -span_max)   # prefer lowest D then widest
+                if best_key is None or key < best_key:
+                    best_key = key
+                    best = (np.asarray(plo), np.asarray(phi), D, ori)
+
+    graph.atom_report["family_debug"] = debug_log
+    if best is not None:
+        return best
     return None
+
 
 
 def realize_variants(graph, chosen, selected, counts, seed, geom,
