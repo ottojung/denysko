@@ -53,6 +53,9 @@ from src.fitting import (
 
 PRECISION = 12
 DEFAULT_SEED = 42
+MAX_POLY_GLYPH_MISS = 0.04        # ~20 raster steps at normalized scale
+MAX_CORRIDOR_GLYPH_MISS = 0.08    # ~40 raster steps
+MAX_REALIZATION_X_ERROR = 0.005   # ~2.5 raster steps
 
 
 # ---------------------------------------------------------------------------
@@ -288,9 +291,8 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
         if v3:
             problems.append(f"V3 curve {i}: tail re-entry {v3:.3f}")
         v5 = poly_glyph_violation(coef, corr, geom)
-        # measured H maximum at unfold-exit transitions is ~3.5 units;
-        # anything beyond 4.0 is a real excursion (documented budget)
-        if v5 > 4.0:
+        # raster-derived tolerance (see CHALLENGES for derivation)
+        if v5 > MAX_POLY_GLYPH_MISS:
             problems.append(
                 f"V5 curve {i}: leaves glyph by {v5:.3f} at same x")
     # V6: geometric realization of every meaningful atom against its
@@ -341,12 +343,11 @@ def build_phase1(letter: str):
                 for route in chosen]
     for j, corr in enumerate(selected):
         v = corridor_glyph_violation(corr, geom)
-        # Interpolated-tube overshoot across vertical-unfold exits and
-        # stem/bar transitions is tolerated up to 8 glyph units (measured
+        # raster-derived tolerance; see CHALLENGES (measured
         # maxima: A/B/C/O <= 2.1, H <= 6.3); the corridor MIDPOINT must
         # always stay inside a filled run. Tightening this budget via
         # corridor centerline smoothing is documented future work.
-        if v > 8.0:
+        if v > MAX_CORRIDOR_GLYPH_MISS:
             raise RuntimeError(
                 f"Phase 1: corridor {j} leaves glyph "
                 f"(worst containment miss {v:.3f})")
@@ -365,7 +366,7 @@ def build_phase1(letter: str):
     # Tolerance = ~2.5 raster steps (interpolation between landmarks).
     for j, corr in enumerate(selected):
         err = nonvertical_realization_x_error(corr.realized)
-        if err > 0.5:
+        if err > MAX_REALIZATION_X_ERROR:
             raise RuntimeError(
                 f"Phase 1 R1: corridor {j} realization x error "
                 f"{err:.3f} exceeds raster-derived tolerance")
@@ -528,7 +529,7 @@ def _family_directions(corr, seed, path_index):
     weight vector for the linear functional sum(w_i * P(x_i)/half_i).
     """
     n = len(corr.xs)
-    half = np.maximum((corr.upper - corr.lower) / 2.0, 0.5)
+    half = np.maximum((corr.upper - corr.lower) / 2.0, 0.005)
     t = np.linspace(0, 1, n)
     sseq = np.random.SeedSequence(
         [int(seed) if seed is not None else 0,
@@ -556,7 +557,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     from src.denysko import tail_reentry_violation
 
     cap = degree_cap or INITIAL_FIT_DEGREE
-    half = np.maximum((corr.upper - corr.lower) / 2.0, 0.5)
+    half = np.maximum((corr.upper - corr.lower) / 2.0, 0.005)
     center = (corr.lower + corr.upper) / 2.0
     directions = _family_directions(corr, seed, path_index)
 

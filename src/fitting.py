@@ -47,7 +47,7 @@ ORIENTATIONS = ((1, 1), (1, -1), (-1, 1), (-1, -1))  # stable order
 # Stage-1 skip rule (sound): the probe solves a strict SUBSET of the
 # full constraint rows, so probe-infeasible => truly infeasible; only
 # then is the degree/orientation skipped without a false negative.
-STAGE1_SKIP_VIOL = 0.5
+STAGE1_SKIP_VIOL = 0.005
 
 
 @dataclass

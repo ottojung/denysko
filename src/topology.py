@@ -42,9 +42,9 @@ SLIVER_SPAN = 0.005   # ~2.5 raster steps                # route edges shorter t
 
 CORRIDOR_MARGIN = 0.004            # interior safety margin (actually applied)
 MIN_CORRIDOR_WIDTH = 0.0005        # never produce an inverted/empty interval
-CORRIDOR_EPS = 0.35              # solver-numerics tolerance (see CHALLENGES)
+CORRIDOR_EPS = 0.0035              # solver-numerics tolerance (see CHALLENGES)
 SELECT_COVERAGE_TARGET = 0.97    # route-edge coverage buffer
-ESCAPE_RATE = 0.025                # tail ramp: clearance growth per unit x
+ESCAPE_RATE = 2.5                # tail ramp: clearance growth per unit x
 ESC_OFFSETS = (0.03, 0.06, 0.10, 0.16)   # ramp checkpoints beyond ends
 ESC_SLOPE_MIN = 0.05             # min outward |dP/dx| along the ramp
 

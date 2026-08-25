@@ -80,19 +80,20 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures / current state
+## Known failures / measured state
 
-NORMALIZED_SIZE = 1.0 landed (was 100.0). All geometric constants
-scaled proportionally. All 52 letters pass end-to-end.
+Normalization to NORMALIZED_SIZE=1.0 landed with dimensional audit:
+- LENGTH constants scaled by /100: TAU, CORRIDOR_MARGIN, MIN_CORRIDOR_WIDTH, SLIVER_SPAN, ESC_OFFSETS, VERTICAL_X_TOL, STROKE_MIN_HALF, CERT_TOL, CORRIDOR_PAD
+- SLOPE constants unchanged: ESCAPE_RATE=2.5, ESC_SLOPE_MIN=0.05
+- DIMENSIONLESS unchanged: STROKE_RADIUS_GAIN, coverage targets
+- CORRIDOR_EPS scaled 0.35 -> 0.0035 (absolute y-tolerance)
+- STAGE1_SKIP_VIOL scaled 0.5 -> 0.005
+- V5/Phase1/R1 thresholds scaled to named constants
 
-13 tests currently fail because their synthetic corridor helpers and
-assertions still reference the old 0..100 coordinate system. These are:
-- Synthetic fill-sweep tests (diamond, stripes): spans below scaled
-  SLIVER_SPAN; need wider synthetic columns.
-- Corridor containment / V6 tests: tolerance values not yet rescaled.
-- Degree assertion tests: baseline degrees unchanged but some assert
-  on old-scale geometric quantities.
+Measured: 50/52 letters pass. Remaining failures:
+- T: path 1 baseline infeasible at all degrees <= 24 with tightened CORRIDOR_EPS
+- m: same issue
 
-Fixing these requires converting test helper coordinates and hardcoded
-tolerance values from 0..100 to 0..1 scale - mechanical work, not a
-design issue.
+Both are vertical-stroke letters where one structural path has a very
+narrow corridor at the new scale. Likely fix: adapt CORRIDOR_EPS per
+corridor width rather than using a global constant.
