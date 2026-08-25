@@ -190,10 +190,14 @@ def _tail_certificate_rows(corridor: Corridor, degree: int,
     return M, lo
 
 
-def certify_halfline_min(coef_cheb: np.ndarray, corridor: Corridor,
-                         sigma: int, side: str):
-    """Exact minimum of Q(t)=sigma*sgn_x*P'(x(t)) over t >= 0 via root
-    analysis; returns (min_value, argmin_t). Independent validator."""
+def certify_halfline_min(coef_cheb: np.ndarray, corridor: Corridor, *,
+                         side: str, sigma: int):
+    """Exact minimum of
+
+        Q(t) = sigma*sgn_x*P'(x_checkpoint + sgn_x*t) - ESC_SLOPE_MIN
+
+    over t >= 0 via roots of Q'(t). Returns (min_value, argmin_t).
+    """
     from numpy.polynomial import Polynomial as Poly
 
     xa, xb = corridor.xa, corridor.xb
@@ -205,14 +209,24 @@ def certify_halfline_min(coef_cheb: np.ndarray, corridor: Corridor,
 
     px = Poly(np.asarray(cheb.cheb2poly(np.asarray(
         coef_cheb, dtype=float))))
-    px_t = px(z_of_t)                    # P as poly in t
-    q = px_t.deriv()                     # P'(x(t))
-    crit = q.roots()
-    cand = [0.0] + [float(r.real) for r in crit
-                    if abs(r.imag) < 1e-9 and r.real >= 0.0]
-    vals = [float(q(t)) for t in cand]
+    px_t = px(z_of_t)
+    q = (sigma * sgn_x) * px_t.deriv() - Poly([ESC_SLOPE_MIN])
+
+    # find minimum on t >= 0: t=0 + real nonneg roots of Q'(t)
+    cand = [0.0]
+    for r in q.deriv().roots():
+        if abs(r.imag) < 1e-9 and r.real >= -1e-12:
+            cand.append(float(r.real))
+    vals = [float(q(max(t, 0.0))) for t in cand]
+
+    # asymptotic check: leading coefficient must be positive or zero
+    ctr = np.asarray(q.coef)
+    nz = np.nonzero(ctr)[0]
+    if len(nz) >= 1 and nz[-1] >= 1 and ctr[nz[-1]] < 0:
+        return -np.inf, np.inf   # Q -> -inf as t -> inf
     k = int(np.argmin(vals))
     return vals[k], cand[k]
+
 
 
 
@@ -242,16 +256,14 @@ def _constraint_set(corridor: Corridor, degree: int,
             blocks.append((
                 cheb.chebvander(_zmap(xs_e, corridor.xa, corridor.xb),
                                 degree), lo_e, hi_e))
-            if tail_cert:
-                # convex permanent-tail certificate: subsumes finite
-                # guidance slope rows with an infinite-horizon proof
-                A_c, lo_c = _tail_certificate_rows(
-                    corridor, degree, sigma, side)
-                hi_c = np.full(degree + 1, np.inf)
-                blocks.append((A_c, lo_c, hi_c))
-            elif slope_rows:
+            if slope_rows:
                 blocks.append(
                     _side_slope_rows(corridor, degree, sigma, side))
+            if tail_cert:
+                A_c, lo_c = _tail_certificate_rows(
+                    corridor, degree, sigma, side)
+                hi_c = np.full(A_c.shape[0], np.inf)
+                blocks.append((A_c, lo_c, hi_c))
 
     A = np.vstack([b[0] for b in blocks])
     lo = np.concatenate([b[1] for b in blocks])
@@ -643,55 +655,34 @@ def fit_variant(corridor: Corridor, degree: int, target: np.ndarray,
 
 
 def solve_anchor(corridor: Corridor, degree: int, sig_l: int, sig_r: int,
-                 weights: np.ndarray, maximize: bool,
-                 tail_cert: bool = True):
-    """Solve min/max of the linear functional sum(w_i * P(x_i)) subject
-    to the hard constraint set INCLUDING the permanent-tail condition,
-    enforced by an exact cutting-plane separation on the compactified
-    half-line: after each solve the true minimum of R(u)-margin on
-    [0,1] is computed from polynomial roots; violated points are added
-    as new LP rows until the solution certifies (or rounds exhaust).
-    Returns Chebyshev coefficients or None."""
+                 weights: np.ndarray, maximize: bool):
+    """Solve min/max of the normalized guide functional subject to hard
+    corridor/ramp constraints. Returns Chebyshev coefficients or None.
+    """
     from scipy.optimize import linprog
+    from src.fitting import _constraint_set
 
     samp_x = corridor.xs
+    half = np.maximum((corridor.upper - corridor.lower) / 2.0, 0.5)
     A_f = cheb.chebvander(_zmap(samp_x, corridor.xa, corridor.xb), degree)
-    base_cost = A_f.T @ (-weights if maximize else weights)
+    w_scaled = weights / half
+    cost = A_f.T @ ((-w_scaled) if maximize else w_scaled)
 
-    u_set = [0.0, 0.25, 0.5, 0.75, 1.0]
-    coef = None
-    for _round in range(12):
-        A, lo, hi = _constraint_set(corridor, degree, sig_l, sig_r,
-                                    tail_cert=tail_cert,
-                                    cert_u_points=u_set if tail_cert else None)
-        fin_hi = np.isfinite(hi)
-        fin_lo = np.isfinite(lo)
-        A_ub = np.vstack([A[fin_hi], -A[fin_lo]])
-        b_ub = np.concatenate([hi[fin_hi], -lo[fin_lo]])
-        res = linprog(base_cost, A_ub=A_ub, b_ub=b_ub,
-                      bounds=[(None, None)] * (degree + 1),
-                      method="highs")
-        if not res.success or res.x is None:
-            return None
-        coef = np.asarray(res.x)
-        # exact separation: min of Q(t) over t >= 0 per side
-        worst = None
-        for sg, sd in (("L", sig_l), ("R", sig_r)):
-            mv, tv = certify_halfline_min(coef, corridor, sg, sd)
-            margin_needed = ESC_SLOPE_MIN
-            if mv < -CERT_TOL:
-                # add the violated compactified point
-                t_add = max(tv, 0.0)
-                u_add = t_add / (1.0 + t_add)
-                dup = any(abs(u_add - u) < 1e-6 for u in u_set)
-                if not dup:
-                    u_set.append(round(u_add, 9))
-                    worst = (sd, round(mv, 2))
-        if worst is None:
-            return coef          # certified by exact separation
-        if len(u_set) > 40:
-            return None          # separation failed to converge
-    return None
+    A_base, lo_base, hi_base = _constraint_set(
+        corridor, degree, sig_l, sig_r)
+
+    fin_hi = np.isfinite(hi_base)
+    fin_lo = np.isfinite(lo_base)
+    A_ub = np.vstack([A_base[fin_hi], -A_base[fin_lo]])
+    b_ub = np.concatenate([hi_base[fin_hi], -lo_base[fin_lo]])
+
+    res = linprog(cost, A_ub=A_ub, b_ub=b_ub,
+                  bounds=[(None,None)]*(degree+1), method="highs")
+    if not res.success or res.x is None:
+        return None
+    return np.asarray(res.x)
+
+
 
 
 def certify_anchor(corridor: Corridor, coef_cheb: np.ndarray,

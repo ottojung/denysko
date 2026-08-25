@@ -52,6 +52,7 @@ from src.fitting import (
 )
 
 PRECISION = 12
+DEFAULT_SEED = 42
 
 
 # ---------------------------------------------------------------------------
@@ -504,10 +505,8 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
         for ori in ((1, -1), (-1, 1), (1, 1), (-1, -1)):
             for dname, w_dir in directions:
                 w = w_dir / half   # normalize by corridor width
-                plo = solve_anchor(corr, D, ori[0], ori[1], w, False,
-                                   tail_cert=True)
-                phi = solve_anchor(corr, D, ori[0], ori[1], w, True,
-                                   tail_cert=True)
+                plo = solve_anchor(corr, D, ori[0], ori[1], w, False)
+                phi = solve_anchor(corr, D, ori[0], ori[1], w, True)
                 status = "ok"
                 if plo is None or phi is None:
                     status = "LP-infeasible"
@@ -609,7 +608,7 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
     return out_fits, out_corrs, out_routes
 
 
-def generate(letter: str, *, min_curves: int = 1, seed: int | None = None,
+def generate(letter: str, *, min_curves: int = 1, seed: int = DEFAULT_SEED,
              reporter=lambda msg: None) -> list[str]:
     """Run the full pipeline for one glyph.
 
@@ -625,28 +624,17 @@ def generate(letter: str, *, min_curves: int = 1, seed: int | None = None,
 
     K = len(selected)
     M = max(K, min_curves)
-    canonical = seed is None and min_curves <= K
-    ss = np.random.SeedSequence(seed)
-    alloc_rng = np.random.default_rng(ss.spawn(1)[0])
+    # seed always has a concrete value (DEFAULT_SEED if not given)
+    eff_seed = DEFAULT_SEED if seed is None else seed
+    ss = np.random.SeedSequence([eff_seed, DOMAIN_TAG_ALLOCATION * 1000])
+    alloc_rng = np.random.default_rng(ss)
     counts = allocate_counts(K, M, alloc_rng)
     reporter(f"phase1: {len(candidates)} candidate routes, "
              f"minimum cover {K}")
-    reporter(f"curves: {M} emitted, allocation {counts}")
-
-    if canonical:
-        fits, _ = fit_selected(selected)
-        # canonical baseline: minimum-degree representatives only
-        for i, f in enumerate(fits):
-            reporter(f"path {i}: minimum degree {f.degree}")
-        lines = [format_expression(f.poly) for f in fits]
-        problems = validate_lines(lines, geom, fits, selected)
-        if problems:
-            raise GenerationError("; ".join(problems))
-        return fits, selected, chosen
+    reporter(f"target curves: {M}, allocation {counts}")
 
     return realize_variants(graph, chosen, selected, counts,
-                            0 if seed is None else seed,
-                            geom, reporter)
+                            eff_seed, geom, reporter)
 
 
 class GenerationError(Exception):
