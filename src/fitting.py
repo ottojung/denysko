@@ -40,7 +40,7 @@ FIT_GRID = 128            # constraint samples across the whole window
 DENSE_GRID = 900          # validation samples (denser than fitting)
 POCS_SWEEPS = 240
 FEAS_TOL = 1e-6
-CERT_TOL = 2.0 * (100.0 / 512)   # certificate violation tolerance (~2 raster steps)
+CERT_TOL = 2.0 * (1.0 / 512)   # certificate violation tolerance (~2 raster steps)
 USE_LP = True   # unit tests may disable for speed (pure POCS)
 
 ORIENTATIONS = ((1, 1), (1, -1), (-1, 1), (-1, -1))  # stable order
@@ -75,7 +75,7 @@ def _escape_bound(sigma: int, offset: float, corridor: Corridor):
     return edge + sigma * (TAU + ESCAPE_RATE * offset)
 
 
-CORRIDOR_PAD = 30.0   # corridor window padding: ramp rows reach out here
+CORRIDOR_PAD = 0.30   # corridor window padding: ramp rows reach out here
 
 
 def _side_rows(corridor: Corridor, sigma: int, side: str,

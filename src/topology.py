@@ -27,9 +27,10 @@ from matplotlib.path import Path
 from matplotlib.textpath import TextPath
 
 GRID = 512
-SIZE = 100.0
+NORMALIZED_SIZE = 1.0
+SIZE = NORMALIZED_SIZE  # legacy alias
 
-TAU = 2.0
+TAU = 0.02
 MIN_COVERAGE = 0.95              # diagnostic boundary proximity gate
 DEFAULT_MAX_CURVES = 12
 
@@ -37,14 +38,14 @@ MIN_SLICE_ROWS = 2               # drop sub-2-row raster slivers
 PINCH_COLS = 2                   # bridge disappearances up to this many cols
 MAX_ROUTE_CANDIDATES = 4096      # enumeration guard
 MAX_ROUTES = MAX_ROUTE_CANDIDATES  # legacy alias
-SLIVER_SPAN = 1.0                # route edges shorter than this are slivers
+SLIVER_SPAN = 0.005   # ~2.5 raster steps                # route edges shorter than this are slivers
 
-CORRIDOR_MARGIN = 0.4            # interior safety margin (actually applied)
-MIN_CORRIDOR_WIDTH = 0.05        # never produce an inverted/empty interval
+CORRIDOR_MARGIN = 0.004            # interior safety margin (actually applied)
+MIN_CORRIDOR_WIDTH = 0.0005        # never produce an inverted/empty interval
 CORRIDOR_EPS = 0.35              # solver-numerics tolerance (see CHALLENGES)
 SELECT_COVERAGE_TARGET = 0.97    # route-edge coverage buffer
-ESCAPE_RATE = 2.5                # tail ramp: clearance growth per unit x
-ESC_OFFSETS = (3.0, 6.0, 10.0, 16.0)   # ramp checkpoints beyond ends
+ESCAPE_RATE = 0.025                # tail ramp: clearance growth per unit x
+ESC_OFFSETS = (0.03, 0.06, 0.10, 0.16)   # ramp checkpoints beyond ends
 ESC_SLOPE_MIN = 0.05             # min outward |dP/dx| along the ramp
 
 
@@ -1379,14 +1380,14 @@ def build_slice_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
 # Combined stroke/hole route graph (skeleton-derived)
 # ---------------------------------------------------------------------------
 
-STROKE_COVER_TOL = 10.0         # >= max corridor half-width (TAU +
+STROKE_COVER_TOL = 0.10         # >= max corridor half-width (TAU +
                                # STROKE_RADIUS_GAIN * max radius): a
                                # poly inside its corridor can miss the
                                # skeleton by at most this much
-VERTICAL_X_TOL = 1.0          # |dx_total| <= this => vertical atom
+VERTICAL_X_TOL = 0.01          # |dx_total| <= this => vertical atom
 STROKE_LANDMARKS = 120        # corridor landmark samples per route
 STROKE_RADIUS_GAIN = 1.6     # corridor half-width = gain * stroke radius
-STROKE_MIN_HALF = 0.8        # never narrower than this
+STROKE_MIN_HALF = 0.008        # never narrower than this
 
 
 def _monotone_pieces(pts: np.ndarray):

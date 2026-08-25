@@ -80,21 +80,19 @@ permanently (verified analytically for edge-exit ramps). Side-exit
 tails leave the drawn x-region immediately and carry no band rows this
 iteration.
 
-## Known failures / measured state
+## Known failures / current state
 
-All 52 letters pass end-to-end. Route counts: A=2 B=4 C=2 H=2 O=2.
-H --min-curves 10 and 20 work with correct allocation.
+NORMALIZED_SIZE = 1.0 landed (was 100.0). All geometric constants
+scaled proportionally. All 52 letters pass end-to-end.
 
-Seed semantics: DEFAULT_SEED=42; `denysko A` == `denysko A --seed 42`
-byte-for-byte (regression-tested).
+13 tests currently fail because their synthetic corridor helpers and
+assertions still reference the old 0..100 coordinate system. These are:
+- Synthetic fill-sweep tests (diamond, stripes): spans below scaled
+  SLIVER_SPAN; need wider synthetic columns.
+- Corridor containment / V6 tests: tolerance values not yet rescaled.
+- Degree assertion tests: baseline degrees unchanged but some assert
+  on old-scale geometric quantities.
 
-Performance: plain A/H take ~20-27s dominated by fit_route's
-exhaustive degree×orientation scan (25 degrees × 4 orientations ×
-_constraint_set construction). This is the primary optimization target:
-constraint-set caching per (corridor, degree, orientation) would cut
-~80% of _side_slope_rows/chebval calls.
-
-Open items (not started):
-- Constraint caching for fit_route degree scans
-- z/W/Z slope-regime splitting
-- Validator tolerance tightening to raster scale
+Fixing these requires converting test helper coordinates and hardcoded
+tolerance values from 0..100 to 0..1 scale - mechanical work, not a
+design issue.

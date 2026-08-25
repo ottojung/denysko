@@ -99,9 +99,9 @@ def _graph_from_columns(cols):
 def test_diamond_split_merge_two_routes():
     # one trunk splitting into two branches then merging (A / O shape)
     cols = (
-        [[(4, 6)]] * 24                 # left trunk
-        + [[(2, 4), (6, 8)]] * 24       # splits into two gapped branches
-        + [[(4, 6)]] * 24               # ...merging back into right trunk
+        [[(4, 6)]] * 120                # left trunk
+        + [[(2, 4), (6, 8)]] * 120      # splits into two gapped branches
+        + [[(4, 6)]] * 120              # ...merging back into right trunk
     )
     graph = build_route_graph(_graph_from_columns(cols))
     kinds = sorted(v.kind for v in graph.vertices)
@@ -119,7 +119,7 @@ def test_diamond_split_merge_two_routes():
 
 
 def test_single_stripe_one_route():
-    cols = [[(3, 5)] for _ in range(40)]
+    cols = [[(3, 5)] for _ in range(200)]
     graph = build_route_graph(_graph_from_columns(cols))
     routes = enumerate_complete_routes(graph)
     chosen = select_routes_min_cover(graph, routes)
@@ -135,7 +135,7 @@ def test_two_disjoint_stripes_two_routes():
 
 
 def test_route_corridor_matches_slice_intervals():
-    cols = [[(3, 7)] for _ in range(40)]
+    cols = [[(3, 7)] for _ in range(200)]
     geom = _graph_from_columns(cols)
     graph = build_route_graph(geom)
     routes = enumerate_complete_routes(graph)
@@ -255,7 +255,7 @@ def test_skeleton_e_has_multiple_arms():
 # ---------------------------------------------------------------------------
 
 
-def _corridor_from(xs, lower, upper, ylo=0.0, yhi=100.0):
+def _corridor_from(xs, lower, upper, ylo=0.0, yhi=1.0):
     from src.topology import BoundaryPath
 
     xs = np.asarray(xs, dtype=float)
