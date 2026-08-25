@@ -82,18 +82,15 @@ iteration.
 
 ## Known failures / measured state
 
-Normalization to NORMALIZED_SIZE=1.0 landed with dimensional audit:
-- LENGTH constants scaled by /100: TAU, CORRIDOR_MARGIN, MIN_CORRIDOR_WIDTH, SLIVER_SPAN, ESC_OFFSETS, VERTICAL_X_TOL, STROKE_MIN_HALF, CERT_TOL, CORRIDOR_PAD
-- SLOPE constants unchanged: ESCAPE_RATE=2.5, ESC_SLOPE_MIN=0.05
-- DIMENSIONLESS unchanged: STROKE_RADIUS_GAIN, coverage targets
-- CORRIDOR_EPS scaled 0.35 -> 0.0035 (absolute y-tolerance)
-- STAGE1_SKIP_VIOL scaled 0.5 -> 0.005
-- V5/Phase1/R1 thresholds scaled to named constants
+NORMALIZED_SIZE=1.0 landed with full dimensional audit. All geometric
+length constants scaled by /100; slope/dimensionless constants preserved.
+CORRIDOR_EPS scaled 0.35->0.0035. ESCAPE_RATE confirmed slope-invariant.
 
-Measured: 50/52 letters pass. Remaining failures:
-- T: path 1 baseline infeasible at all degrees <= 24 with tightened CORRIDOR_EPS
-- m: same issue
+Production: 50/52 letters pass end-to-end. T/m fail fitting because the
+tightened CORRIDOR_EPS=0.0035 makes their narrow corridors infeasible;
+needs per-corridor-width adaptation of the tolerance.
 
-Both are vertical-stroke letters where one structural path has a very
-narrow corridor at the new scale. Likely fix: adapt CORRIDOR_EPS per
-corridor width rather than using a global constant.
+Test suite: 44/55 pass. The 11 failing tests use synthetic corridors
+with old-scale coordinates (x in [10,60], ylo=0, yhi=100 etc.) that need
+mechanical conversion to normalized [0,1] coordinates. This is test-data
+work, not a design issue.
