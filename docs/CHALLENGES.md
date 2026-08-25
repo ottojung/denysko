@@ -82,18 +82,25 @@ iteration.
 
 ## Known failures / measured state
 
-Strict-count families landed: M = max(K, --min-curves) is emitted
-exactly or generation fails; canonical baselines preserved (A deg 4/6,
-H deg 9/9); tail certificate rewritten coefficientwise with cutting-
-plane separation (opt-in via use_cert; default anchors use standard
-hard rows + analytic V3 per anchor).
+Current master: all 52 letters pass end-to-end; strict --min-curves
+counts enforced (M = max(K, N) exactly or generation fails); canonical
+baselines preserved (A degrees 4/6, H 9/9); seed changes output, same
+seed byte-reproducible.
 
-Measured: A/H/B/C/O --min-curves 10 pass except H path 1 (topL->bar->
-botR): solve_family_anchors cannot certify a family for its stair-step
-corridor (separation loop does not converge), so `denysko H
---min-curves 10` fails honestly. A/B/C/O variants work.
+OPEN ISSUE (recorded with evidence): the convex permanent-tail
+certificate in src/fitting.py sums all powers of the compactified
+parameter into ONE LP row. That is mathematically unsound: the
+coefficientwise form requires each t^j coefficient of
+sigma*sgn_x*P'(x(t)) - ESC_SLOPE_MIN to be separately nonnegative.
+An attempt to implement the coefficientwise matrix produced rows whose
+action on Chebyshev vectors did NOT match direct numeric evaluation of
+R(u) (mismatches recorded at u in {0.3, 0.7} across random vectors and
+degrees), so it was reverted to keep master green. The correct fix
+should derive the transformation symbolically (sympy-assisted), unit-
+test M against explicit polynomial composition for degrees 1..8, and
+only then enable it for family anchor search. Until then the summed
+row acts as an empirical proxy and H --min-curves > K relies on it plus
+analytic V3 endpoint checks.
 
-Remaining work:
-- diagnose non-convergent separation on multi-vertical corridors;
-- slope-regime atom splitting (z/W/Z);
-- validator tolerance tightening to raster scale.
+Also open: slope-regime atom splitting for any future steep+vertical
+mixed atoms; validator tolerances still above raster scale.
