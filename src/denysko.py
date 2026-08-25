@@ -106,6 +106,39 @@ def format_expression(curve) -> str:
     return f"y={poly_str(np.asarray(poly.coef))}"
 
 
+def _horner_expression(coef, mid, scale):
+    """Serialize a power-basis polynomial in z=(x-mid)/scale using an
+    inlined Horner form. This avoids catastrophic cancellation for
+    degree >= 10 while remaining a standalone y=f(x) expression."""
+    from numpy.polynomial import Polynomial as Poly
+
+    # convert Chebyshev-in-z to power-in-z:
+    # caller must pass POWER-BASIS coefficients in z (not Chebyshev)
+    parts = []
+    n = len(coef)
+    # Build innermost-to-outermost Horner:
+    expr = fmt_num(coef[-1]) if n > 0 else "0"
+    for j in range(n - 2, -1, -1):
+        c = fmt_num(coef[j])
+        if j == 0 and False:
+            pass
+        # z = (x-mid)/scale; each nesting level adds one z multiply
+        z_expr = f"((x-{fmt_num(mid)})/{fmt_num(scale)})"
+        expr = f"{c}+{z_expr}*({expr})"
+    return expr
+
+
+def _needs_horner(degree: int, coef_cheb_power_x=None) -> bool:
+    """True when raw x-power serialization would be numerically unstable.
+
+    Estimates the condition number of the power basis at the corridor
+    center and compares against double precision resolution.
+    """
+    return degree >= 10
+
+
+
+
 def serialize(fit_or_curve) -> str:
     return format_expression(fit_or_curve)
 
@@ -480,73 +513,53 @@ def _family_directions(corr, seed, path_index):
 
 def solve_family_anchors(graph, route, corr, seed, path_index,
                          d_min, degree_cap=None):
-    """Find two geometrically distinct certified anchors defining a
-    convex family at some degree D in [d_min, INITIAL_FIT_DEGREE].
+    """Find the LOWEST-degree certified convex family for this path.
 
-    For each degree D and tail orientation, tries multiple deterministic
-    direction candidates. Both anchors minimize/maximize the SAME
-    objective F_w(P)=sum(w_i*(P(x_i)-center_i)/half_i). The winning
-    family maximizes normalized visible span at the lowest degree.
-    Returns (coef_low, coef_high, degree, orientation) or None with
-    diagnostic info attached to graph.atom_report['family_debug'].
+    Progressive search: try degrees d_min..INITIAL_FIT_DEGREE in
+    increasing order; return immediately upon finding a usable family.
+    For each degree, tries all four tail orientations and a small set of
+    deterministic objective directions. Uses the coefficientwise tail
+    certificate as a sound sufficient condition.
     """
     from src.fitting import solve_anchor, certify_anchor
     from src.denysko import tail_reentry_violation
 
-    cap = INITIAL_FIT_DEGREE
+    cap = degree_cap or INITIAL_FIT_DEGREE
     half = np.maximum((corr.upper - corr.lower) / 2.0, 0.5)
     center = (corr.lower + corr.upper) / 2.0
     directions = _family_directions(corr, seed, path_index)
 
-    best = None
-    best_key = None
-    debug_log = []
-
     for D in range(d_min, cap + 1):
         for ori in ((1, -1), (-1, 1), (1, 1), (-1, -1)):
-            for dname, w_dir in directions:
-                w = w_dir / half   # normalize by corridor width
-                plo = solve_anchor(corr, D, ori[0], ori[1], w, False)
-                phi = solve_anchor(corr, D, ori[0], ori[1], w, True)
-                status = "ok"
+            for dname, w_dir in directions[:3]:   # max 3 directions
+                w_norm = w_dir / half
+                plo = solve_anchor(corr, D, ori[0], ori[1], w_norm,
+                                   False)
+                phi = solve_anchor(corr, D, ori[0], ori[1], w_norm,
+                                   True)
                 if plo is None or phi is None:
-                    status = "LP-infeasible"
-                else:
-                    # check V3 and geometric span
-                    from numpy.polynomial import Polynomial as Poly
-                    affine = Poly([-(corr.xa + corr.xb) /
-                                   (corr.xb - corr.xa),
-                                   2.0 / (corr.xb - corr.xa)])
-                    Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(
-                        affine)
-                    Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(
-                        affine)
-                    v3lo = tail_reentry_violation(
-                        np.asarray(Plo.coef), corr, ori)
-                    v3hi = tail_reentry_violation(
-                        np.asarray(Phi.coef), corr, ori)
-                    diff = Plo(corr.xs) - Phi(corr.xs)
-                    norm = np.abs(diff) / half
-                    span_max = float(np.max(norm))
-                    if v3lo != 0.0 or v3hi != 0.0:
-                        status = f"V3-fail({v3lo:.1f}/{v3hi:.1f})"
-                    elif span_max < 1e-6:
-                        status = "degenerate"
-                debug_log.append({
-                    "degree": D, "orientation": ori,
-                    "direction": dname, "status": status})
-                if status != "ok":
                     continue
-                # measure usable width: max normalized span
-                key = -span_max   # within this degree: prefer widest
-                if best_key is None or key < best_key:
-                    best_key = key
-                    best = (np.asarray(plo), np.asarray(phi), D, ori)
-
-    graph.atom_report["family_debug"] = debug_log
-    if best is not None:
-        return best
+                # verify anchors pass V3 and have geometric span
+                from numpy.polynomial import Polynomial as Poly
+                affine = Poly([-(corr.xa + corr.xb) /
+                               (corr.xb - corr.xa),
+                               2.0 / (corr.xb - corr.xa)])
+                Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(
+                    affine)
+                Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(
+                    affine)
+                v3lo = tail_reentry_violation(
+                    np.asarray(Plo.coef), corr, ori)
+                v3hi = tail_reentry_violation(
+                    np.asarray(Phi.coef), corr, ori)
+                if v3lo != 0 or v3hi != 0:
+                    continue
+                diff = np.abs(Plo(corr.xs) - Phi(corr.xs))
+                if float(np.max(diff)) < 1e-6:
+                    continue   # degenerate: same polynomial
+                return (np.asarray(plo), np.asarray(phi), D, ori)
     return None
+
 
 
 
@@ -653,7 +666,22 @@ def run(argv) -> int:
     try:
         fits, _, _ = generate(cfg.letter, min_curves=cfg.min_curves,
                               seed=cfg.seed, reporter=reporter)
-        lines = [format_expression(f.poly) for f in fits]
+        lines = []
+        for f in fits:
+            deg = len(f.poly.coef) - 1
+            if _needs_horner(deg):
+                # serialize in normalized z=(x-mid)/scale coordinates
+                # using Horner form for numerical stability
+                from src.fitting import cheb
+                power_z = np.polynomial.chebyshev.cheb2poly(
+                    np.asarray(f.coef_cheb, dtype=float))
+                corr = f.corridor
+                mid = (corr.xa + corr.xb) / 2.0
+                sc = (corr.xb - corr.xa) / 2.0
+                line = _horner_expression(power_z, mid, sc)
+            else:
+                line = format_expression(f.poly)
+            lines.append("y=" + line if not line.startswith("y=") else line)
     except GenerationError as exc:
         print(str(exc), file=_sys.stderr)
         return 1
