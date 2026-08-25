@@ -40,6 +40,7 @@ FIT_GRID = 128            # constraint samples across the whole window
 DENSE_GRID = 900          # validation samples (denser than fitting)
 POCS_SWEEPS = 240
 FEAS_TOL = 1e-6
+FAMILY_HALF_WIDTH_FLOOR = 0.005   # ~2.5 raster steps at normalized scale
 CERT_TOL = 2.0 * (1.0 / 512)   # certificate violation tolerance (~2 raster steps)
 USE_LP = True   # unit tests may disable for speed (pure POCS)
 
@@ -592,7 +593,7 @@ def solve_anchor(corridor: Corridor, degree: int, sig_l: int, sig_r: int,
     from src.fitting import _constraint_set
 
     samp_x = corridor.xs
-    half = np.maximum((corridor.upper - corridor.lower) / 2.0, 0.5)
+    half = np.maximum((corridor.upper - corridor.lower) / 2.0, FAMILY_HALF_WIDTH_FLOOR)
     A_f = cheb.chebvander(_zmap(samp_x, corridor.xa, corridor.xb), degree)
     w_scaled = weights / half
     cost = A_f.T @ ((-w_scaled) if maximize else w_scaled)

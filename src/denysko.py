@@ -49,6 +49,7 @@ from src.fitting import (
     PathFit,
     fit_route,
     tail_reentry_violation,
+    FAMILY_HALF_WIDTH_FLOOR,
 )
 
 PRECISION = 12
@@ -529,7 +530,7 @@ def _family_directions(corr, seed, path_index):
     weight vector for the linear functional sum(w_i * P(x_i)/half_i).
     """
     n = len(corr.xs)
-    half = np.maximum((corr.upper - corr.lower) / 2.0, 0.005)
+    half = np.maximum((corr.upper - corr.lower) / 2.0, FAMILY_HALF_WIDTH_FLOOR)
     t = np.linspace(0, 1, n)
     sseq = np.random.SeedSequence(
         [int(seed) if seed is not None else 0,
@@ -557,7 +558,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     from src.denysko import tail_reentry_violation
 
     cap = degree_cap or INITIAL_FIT_DEGREE
-    half = np.maximum((corr.upper - corr.lower) / 2.0, 0.005)
+    half = np.maximum((corr.upper - corr.lower) / 2.0, FAMILY_HALF_WIDTH_FLOOR)
     center = (corr.lower + corr.upper) / 2.0
     directions = _family_directions(corr, seed, path_index)
 
