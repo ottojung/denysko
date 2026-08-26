@@ -39,6 +39,7 @@ PINCH_COLS = 2                   # bridge disappearances up to this many cols
 MAX_ROUTE_CANDIDATES = 4096      # enumeration guard
 MAX_ROUTES = MAX_ROUTE_CANDIDATES  # legacy alias
 SLIVER_SPAN = 0.01   # ~5 raster steps (512 * 0.01)   # route edges shorter than this are slivers
+MEAN_HEIGHT_MIN = 0.01 * NORMALIZED_SIZE   # old-world literal was 1.0
 
 CORRIDOR_MARGIN = 0.004            # interior safety margin (actually applied)
 MIN_CORRIDOR_WIDTH = 0.0005        # never produce an inverted/empty interval
@@ -409,7 +410,8 @@ def build_route_graph(geom: GlyphGeometry) -> RouteGraph:
 
     meaningful = frozenset(
         e.id for e in edges
-        if e.span >= SLIVER_SPAN and e.mean_height >= 1.0
+        if e.span >= SLIVER_SPAN
+        and e.mean_height >= MEAN_HEIGHT_MIN
     )
     return RouteGraph(vertices=vertices, edges=edges, meaningful=meaningful)
 

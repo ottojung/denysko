@@ -144,11 +144,13 @@ def test_route_corridor_matches_slice_intervals():
     from src.topology import CORRIDOR_MARGIN, build_slice_corridor
 
     corr = build_slice_corridor(graph, route_edge_ids(routes[0]), geom)
-    step = 100.0 / 512
+    # normalized world mapping: pixel * NORMALIZED_SIZE / GRID
+    from src.topology import GRID, NORMALIZED_SIZE
+    step = NORMALIZED_SIZE / GRID
     np.testing.assert_allclose(
-        corr.lower, 3 * SCALE * step + CORRIDOR_MARGIN, rtol=1e-9)
+        corr.lower, 300 * SCALE * step + CORRIDOR_MARGIN, rtol=1e-9)
     np.testing.assert_allclose(
-        corr.upper, (8 * SCALE + 1) * step - CORRIDOR_MARGIN, rtol=1e-9)
+        corr.upper, (701 * SCALE + 1) * step - CORRIDOR_MARGIN, rtol=1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +176,7 @@ def test_a_topology_is_diamond():
             if s_.edge_id in only0 or s_.edge_id in only1:
                 e = graph.edges[s_.edge_id]
                 ys.append(float(e.points[:, 1].mean()))
-    assert max(ys) - min(ys) > 20.0          # roof vs crossbar height
+    assert max(ys) - min(ys) > 0.20          # roof vs crossbar height
     assert route_coverage_fraction(graph, chosen) >= 0.999
 
 
@@ -315,10 +317,18 @@ def test_degree_minimization_verified_minimum():
 # ---------------------------------------------------------------------------
 
 
-def _slab_corridor(y_lo=49.0, y_hi=51.0):
-    xs = np.linspace(10.0, 60.0, 30)
+def _slab_corridor(y_lo=0.49, y_hi=0.51):
+    xs = np.linspace(0.10, 0.60, 30)
     return _corridor_from(xs, np.full(len(xs), y_lo),
                           np.full(len(xs), y_hi))
+
+
+def _to_norm(coef):
+    """Map an old-scale raw polynomial to the normalized world:
+    P_new(x) = P_old(100 x) / 100 (same graph, /100 coordinates)."""
+    from numpy.polynomial import Polynomial as Poly
+    return (Poly(np.asarray(coef, dtype=float))(
+        Poly([0.0, 100.0])) / 100.0).coef
 
 
 class _SlabGeom:
@@ -330,9 +340,9 @@ def test_constant_line_v2_passes_v3_fails():
     """P(x)=50 inside a slab corridor: perfect V2 adherence, but its
     tails stay horizontal forever - V3 must reject it."""
     corr = _slab_corridor()
-    coef = np.array([50.0])
+    coef = np.array([0.5])
     v2 = d.corridor_adherence_violation(coef, corr)
-    assert v2 <= 0.35
+    assert v2 <= _fitting.CORRIDOR_EPS + 1e-12
     for ori in ORIENTATIONS:
         assert d.tail_reentry_violation(coef, corr, ori) > 0
 
@@ -340,40 +350,46 @@ def test_constant_line_v2_passes_v3_fails():
         poly = np.polynomial.Polynomial(coef)
         orientation = (1, -1)
 
-    problems = d.validate_lines(["y=50"], _SlabGeom(), [_Fit()], [corr])
+    problems = d.validate_lines(["y=0.5"], _SlabGeom(), [_Fit()], [corr])
     assert any(p.startswith("V2") is False and p.startswith("V3")
                for p in problems)
 
 
 def test_escaping_tails_pass_v3():
     corr = _slab_corridor()
-    # left-down AND right-up in one stroke: steep S-line through the band
-    s_line = np.polynomial.Polynomial([-45.0, 3.0])
-    assert s_line(10.0) < 0.0 and s_line(60.0) > 100.0
+    # left-down AND right-up in one stroke: steep line through the band
+    s_line = np.polynomial.Polynomial([-0.5, 8.0])
+    assert s_line(-0.06) < 0.0 and s_line(0.76) > 1.0
     assert d.tail_reentry_violation(s_line.coef, corr, (-1, 1)) == 0.0
     # constant already below the band: permanently outside on both sides
-    sunk = np.polynomial.Polynomial([-5.0])
+    sunk = np.polynomial.Polynomial([-0.5])
     assert d.tail_reentry_violation(sunk.coef, corr, (-1, -1)) == 0.0
 
 
 def test_reentry_and_wrong_asymptote_fail_v3():
     corr = _slab_corridor()
-    u = np.polynomial.Polynomial([-60.0, 1.0])          # u = x - 60
-    # outside the band at the checkpoint (P(60)>100); its derivative has
-    # roots at u=6 (local max, stays out) and u=40 (local min dipping
-    # back under yhi=100):
-    k = 0.01
-    dip = 110.0 + k * (u ** 3 / 3.0 - 23.0 * u ** 2 + 240.0 * u)
-    assert dip(60.0) > 100.0
-    rts = [r + 60.0 for r in (6.0, 40.0)]
-    assert float(dip(rts[0])) > 100.0
-    assert float(dip(rts[1])) < 100.0
+    # old-scale construction mapped to the normalized world via
+    # P_new(x) = P_old(100 x)/100 (same geometry /100):
+    u100 = np.polynomial.Polynomial([-60.0, 100.0])   # u = 100x - 60
+    dip100 = 110.0 + 0.01 * (u100 ** 3 / 3.0 - 23.0 * u100 ** 2
+                             + 240.0 * u100)
+    dip = np.polynomial.Polynomial(dip100.coef) / 100.0
+    # outside the band at the checkpoint (P(0.6)>1); derivative roots at
+    # x=0.66 (local max, stays out) and x=1.00 (local min dipping back
+    # under yhi=1):
+    assert dip(0.6) > 1.0
+    rts = [r + 0.6 for r in (0.06, 0.40)]
+    assert float(dip(rts[0])) > 1.0
+    assert float(dip(rts[1])) < 1.0
     assert d.tail_reentry_violation(dip.coef, corr, (1, 1)) > 0
 
     # wrong asymptote: outside at both checkpoints, but the parabola
     # opens downward so it must fall back through the band eventually
-    wrong = 110.0 + 30 * u - u ** 2
-    assert wrong(60.0) > 100.0
+    uold = np.polynomial.Polynomial([-60.0, 1.0])    # u = x_old - 60
+    wrong100 = 110.0 + 30.0 * uold - uold ** 2
+    wrong = np.polynomial.Polynomial(wrong100.coef)(  # x_old = 100x
+        np.polynomial.Polynomial([0.0, 100.0])) / 100.0
+    assert wrong(0.6) > 1.0
     assert d.tail_reentry_violation(wrong.coef, corr, (1, 1)) > 0
 
 
@@ -541,18 +557,21 @@ def test_h_corridors_are_continuous_and_inside_glyph():
         assert d.route_continuity_violation(graph, r) < 1e-6
         # full-interval containment: worst poke-out budget (transition
         # zones included) — see CHALLENGES for measured maxima
-        assert d.corridor_glyph_violation(c, geom) <= 8.0
+        from src.topology import GRID as _GRID, NORMALIZED_SIZE as _NS
+        from src.topology import GLYPH_RUN_TOL
+        # old-world budget 1 + 8 = 9 units -> normalized .01 + .08
+        assert d.corridor_glyph_violation(c, geom) <= 0.09
         xs_probe = np.linspace(c.xs[0], c.xs[-1], 200)
         mids = 0.5 * (c.lower_at(xs_probe) + c.upper_at(xs_probe))
-        step = 100.0 / 512
+        step = _NS / _GRID
         cols = np.clip(np.round(xs_probe / step).astype(int), 0, 511)
         rows = np.clip(np.round(mids / step).astype(int), 0,
                        geom.fill.shape[0] - 1)
         assert geom.fill[rows, cols].mean() > 0.99
         # probe the previously-fake diagonal zone between stems/bar
-        xs_probe = np.linspace(20.0, 55.0, 40)
+        xs_probe = np.linspace(0.20, 0.55, 40)
         mids = 0.5 * (c.lower_at(xs_probe) + c.upper_at(xs_probe))
-        step = 100.0 / 512
+        step = _NS / _GRID
         cols = np.clip(np.round(xs_probe / step).astype(int), 0, 511)
         rows = np.clip(np.round(mids / step).astype(int), 0,
                        geom.fill.shape[0] - 1)
@@ -561,18 +580,18 @@ def test_h_corridors_are_continuous_and_inside_glyph():
 
 def test_tiny_leading_coefficient_sets_degree_for_v3():
     corr = _slab_corridor()
-    # P = 50 + 1e-16 x^4 : degree 4, +inf both sides -> right-up escapes,
+    # P = .5 + 1e-10 x^4 : degree 4, +inf both sides -> right-up escapes,
     # but at the checkpoints it is still inside the band -> V3 flags it.
-    coef = np.array([50.0, 0.0, 0.0, 0.0, 1e-16])
+    coef = _to_norm(np.array([50.0, 0.0, 0.0, 0.0, 1e-16]))
     for ori in ORIENTATIONS:
         assert d.tail_reentry_violation(coef, corr, ori) > 0
     # far outside already, tiny NEGATIVE leading term dominates: a
     # right-down orientation sees permanent outward behaviour only if
-    # the asymptote is downward: -50 - 1e-16 x^4 -> -inf on the right
-    coef_dn = np.array([-200.0, 0.0, 0.0, 0.0, -1e-16])
+    # the asymptote is downward: -.5 - eps x^4 -> -inf on the right
+    coef_dn = _to_norm(np.array([-200.0, 0.0, 0.0, 0.0, -1e-16]))
     assert d.tail_reentry_violation(coef_dn, corr, (-1, -1)) == 0.0
     # flipping the tiny sign flips the asymptotic verdict
-    coef_up = np.array([-200.0, 0.0, 0.0, 0.0, 1e-16])
+    coef_up = _to_norm(np.array([-200.0, 0.0, 0.0, 0.0, 1e-16]))
     assert d.tail_reentry_violation(coef_up, corr, (-1, -1)) > 0
 
 
@@ -690,26 +709,27 @@ def test_v6_partial_atom_coverage_fails(monkeypatch):
 
 def test_corridor_containment_checks_full_interval_not_midpoint():
     from src.topology import Corridor, corridor_glyph_violation
-    xs = np.linspace(10.0, 60.0, 20)
+    xs = np.linspace(0.10, 0.60, 20)
 
     class _Geom:
-        # horizontal slab: y in [150,350) raster rows -> glyph [29.3, 68.4]
+        # horizontal slab: rows [100,400) of 512 -> world y in
+        # [100/512, 400/512] ~= [0.195, 0.781]
         fill = np.zeros((512, 512), dtype=bool)
         fill[100:400, :] = True
 
-    good = Corridor(path=None, xa=8.0, xb=62.0, xs=xs,
-                    lower=np.full(len(xs), 30.0),
-                    upper=np.full(len(xs), 60.0),
-                    ylo=0.0, yhi=100.0)
+    good = Corridor(path=None, xa=0.08, xb=0.62, xs=xs,
+                    lower=np.full(len(xs), 0.30),
+                    upper=np.full(len(xs), 0.60),
+                    ylo=0.0, yhi=1.0)
     assert corridor_glyph_violation(good, _Geom()) == pytest.approx(
         0.0, abs=1e-9)
-    # midpoint (45) is inside the slab but upper (80) sticks out above:
+    # midpoint (.45) is inside the slab but upper (.90) sticks out above:
     # midpoint-only validation would pass this - full interval must fail
-    sneaky = Corridor(path=None, xa=8.0, xb=62.0, xs=xs,
-                      lower=np.full(len(xs), 30.0),
-                      upper=np.full(len(xs), 90.0),
-                      ylo=0.0, yhi=100.0)
-    assert corridor_glyph_violation(sneaky, _Geom()) > 2.5
+    sneaky = Corridor(path=None, xa=0.08, xb=0.62, xs=xs,
+                      lower=np.full(len(xs), 0.30),
+                      upper=np.full(len(xs), 0.90),
+                      ylo=0.0, yhi=1.0)
+    assert corridor_glyph_violation(sneaky, _Geom()) > 0.025
 
 
 def test_letter_route_count_regressions():
@@ -852,7 +872,7 @@ def test_dotted_i_dot_survives_realization():
                        float(emb["raw_y"].max())))
     spans = sorted(ys)
     assert len(spans) >= 2
-    assert any(spans[k + 1][0] - spans[k][1] > 5.0
+    assert any(spans[k + 1][0] - spans[k][1] > 0.05
                for k in range(len(spans) - 1))
 
 
