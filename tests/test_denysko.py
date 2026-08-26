@@ -4,6 +4,8 @@ import pytest
 from src import denysko as d
 from src.denysko import fit_selected
 from src import fitting as _fitting
+from src import topology as d_topology
+from src import topology as _topo
 from src.fitting import (
     ORIENTATIONS,
     Corridor,
@@ -1032,3 +1034,77 @@ def test_v3_scale_equivariance():
             verdicts.append(
                 tail_reentry_violation_cheb(cc, corr, (-1, 1)))
         assert verdicts[0] == verdicts[1], (deg, verdicts)
+
+
+# ---------------------------------------------------------------------------
+# Exact Phase-1 scale restoration (vs known-good b79ddd4 / 100)
+# ---------------------------------------------------------------------------
+
+
+def test_landmark_count_scale_equivariant():
+    from src.topology import _landmark_count, LANDMARK_SPACING
+    assert LANDMARK_SPACING == 0.01 * d_topology.NORMALIZED_SIZE
+    assert _landmark_count(0.03) == 8       # floor
+    assert _landmark_count(0.50) == 50      # ~1 per old unit
+    assert _landmark_count(0.95) == 95
+    assert _landmark_count(1.20) == 120     # cap
+    assert _landmark_count(2.00) == 120     # cap
+    # old formula at scale 100 == new formula at scale 1
+    old_count = lambda t: min(_topo.STROKE_LANDMARKS, max(8, int(t)))
+    assert _landmark_count(0.95) == old_count(95.0)
+    assert _landmark_count(0.50) == old_count(50.0)
+
+
+def test_corridor_z_pad_is_scaled_not_legacy():
+    from src.topology import CORRIDOR_Z_EXTRA_PAD, NORMALIZED_SIZE
+    assert ESC_OFFSETS[-1] == 0.16
+    assert CORRIDOR_Z_EXTRA_PAD == 0.01 * NORMALIZED_SIZE
+    # effective pad .17, never the legacy 1.16
+    assert ESC_OFFSETS[-1] + CORRIDOR_Z_EXTRA_PAD < 0.2
+
+
+def test_vertical_unfold_micro_lengths_normalized():
+    from src.topology import (
+        UNFOLD_CRAWL_STEP, UNFOLD_MIN_MARGIN, UNFOLD_EDGE_INSET,
+        UNFOLD_MONOTONE_PUSH, UNFOLD_NOISE_X, NORMALIZED_SIZE,
+    )
+    import pytest
+    s = NORMALIZED_SIZE / 100.0
+    assert UNFOLD_CRAWL_STEP == pytest.approx(1e-3 * s)
+    assert UNFOLD_MIN_MARGIN == pytest.approx(1e-3 * s)
+    assert UNFOLD_EDGE_INSET == pytest.approx(1e-3 * s)
+    assert UNFOLD_MONOTONE_PUSH == pytest.approx(1e-4 * s)
+    assert UNFOLD_NOISE_X == pytest.approx(0.05 * s)
+
+
+def test_glyph_run_tolerance_normalized():
+    from src.topology import GLYPH_RUN_TOL, NORMALIZED_SIZE
+    assert GLYPH_RUN_TOL == 0.01 * NORMALIZED_SIZE
+
+
+def test_phase1_matches_known_good_reference_facts():
+    """Frozen compact facts measured against b79ddd4/100 worktree:
+    same route signatures, same landmark counts, same xa/xb."""
+    ref = {
+        "T": [(0.2519, 0.9571), (-0.1134, 0.6556)],
+        "m": [(-0.1153, 1.1635), (-0.1153, 0.7219)],
+        "H": [(-0.1036, 0.9265), (-0.1036, 0.9265)],
+        "A": [(-0.0782, 1.0704), (-0.0782, 1.0704)],
+    }
+    for letter, want in ref.items():
+        geom = glyph_geometry(letter)
+        graph = build_stroke_route_graph(geom)
+        cands = enumerate_complete_routes(graph)
+        idx = select_routes_min_cover(graph, cands)
+        assert len(idx) == len(want)
+        for j, (xa, xb) in zip(idx, want):
+            c = build_route_corridor(graph, cands[j], geom)
+            assert abs(c.xa - xa) < 5e-4, (letter, c.xa, xa)
+            assert abs(c.xb - xb) < 5e-4, (letter, c.xb, xb)
+
+
+def test_t_and_m_generation_succeed():
+    lines = d.generate("T")
+    assert len(lines) >= 1
+    lines_m = d.generate("m")
+    assert len(lines_m) >= 1

@@ -1048,8 +1048,7 @@ def build_route_corridor(graph: RouteGraph, route: Route,
     seg = np.hypot(*np.diff(route_pts, axis=0).T)
     s_arc = np.concatenate([[0.0], np.cumsum(seg)])
     total = float(s_arc[-1])
-    n_lm = min(STROKE_LANDMARKS,
-                max(8, int(total / LANDMARK_SPACING)))
+    n_lm = _landmark_count(total)
     targets = np.linspace(0.0, total, n_lm)
     lam = np.column_stack([
         np.interp(targets, s_arc, route_pts[:, 0]),
@@ -1401,6 +1400,18 @@ STROKE_COVER_TOL = 0.10         # >= max corridor half-width (TAU +
                                # skeleton by at most this much
 VERTICAL_X_TOL = 0.01          # |dx_total| <= this => vertical atom
 STROKE_LANDMARKS = 120        # corridor landmark samples per route
+
+
+def _landmark_count(total_arc_length: float) -> int:
+    """Landmark count for a route of given arc length.
+
+    Scale-equivariant conversion of LENGTH to COUNT: approximately one
+    landmark per REFERENCE_UNIT (= NORMALIZED_SIZE / 100), floor 8,
+    cap STROKE_LANDMARKS. Mirrors the known-good 0..100 implementation,
+    where a plain int(total) happened to be correct.
+    """
+    return min(STROKE_LANDMARKS,
+               max(8, int(total_arc_length / LANDMARK_SPACING)))
 STROKE_RADIUS_GAIN = 1.6     # corridor half-width = gain * stroke radius
 STROKE_MIN_HALF = 0.008        # never narrower than this
 
