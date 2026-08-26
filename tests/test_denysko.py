@@ -1191,6 +1191,136 @@ def test_t_and_m_generation_succeed():
 
 
 # ---------------------------------------------------------------------------
+# Issue #7: staircase diagonals captured by vertical-unfold crawl (Z/z)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("letter", ["W", "Z", "z"])
+def test_wzz_generation_succeeds(letter):
+    """Real-glyph regression for issue #7: W, Z, z must generate."""
+    fits, _, _ = d.generate(letter)
+    assert len(fits) >= 1
+
+
+@pytest.mark.parametrize("letter", ["W", "Z", "z"])
+def test_wzz_all_corridors_contained(letter):
+    """Every selected route corridor of W/Z/z is a geometric subset of
+    the glyph fill (the failing Z route used to miss by ~0.40)."""
+    geom = glyph_geometry(letter)
+    graph = build_stroke_route_graph(geom)
+    cands = enumerate_complete_routes(graph)
+    sel = select_routes_min_cover(graph, cands)
+    assert sel
+    for j in sel:
+        c = build_route_corridor(graph, cands[j], geom)
+        assert d_topology.corridor_glyph_violation(c, geom) <= 0.09
+
+
+@pytest.mark.parametrize("letter", ["Z", "z"])
+def test_diagonal_atoms_keep_raw_x_progression(letter):
+    """Mechanism test: raster staircase noise on a diagonal must not be
+    vertically unfolded into a wide row run; the unfold-crawl frontier
+    may therefore never displace any realized landmark grossly beyond
+    the local stroke width (~0.06 normalized). Before the run-width
+    gate the crawl pinned up to ~0.52 of x on Z/z diagonals."""
+    geom = glyph_geometry(letter)
+    graph = build_stroke_route_graph(geom)
+    cands = enumerate_complete_routes(graph)
+    sel = select_routes_min_cover(graph, cands)
+    for j in sel:
+        c = build_route_corridor(graph, cands[j], geom)
+        for emb in c.realized.values():
+            shift = np.abs(np.asarray(emb["x"]) - np.asarray(emb["raw_x"]))
+            assert float(shift.max()) <= 0.1
+
+
+def _gate_regression_geometry():
+    """Synthetic glyph: narrow vertical stem (rows where ONLY the stem
+    is filled -> legitimate vertical unfold) joined to a WIDE horizontal
+    band (rows whose containing row run is many stroke widths wide ->
+    apparent-vertical staircase groups there are rejected by the
+    run-width gate)."""
+    step = 1.0 / 512
+    mask = np.zeros((512, 512), dtype=bool)
+    mask[200:321, 96:121] = True     # stem: cols 96..120 (25 px wide)
+    mask[320:431, 20:491] = True     # wide band: 471 px wide
+    return GlyphGeometry(
+        letter="synthetic-gate",
+        contours=[],
+        points=np.zeros((0, 2)),
+        fill=mask,
+        xmin=0.0, xmax=512 * step, ymin=0.0, ymax=512 * step,
+    )
+
+
+def test_rejected_apparent_vertical_group_honours_active_frontier():
+    """Regression for the review finding on PR #8: a width-gate-
+    rejected apparent-vertical group must NOT bypass the frontier /
+    catch-up logic. Sequence exercised: legitimate unfold on the stem
+    sets a synthetic frontier ahead of raw x -> the following staircase
+    diagonal inside the wide band is rejected by the gate -> its raw
+    points still crawl monotonically just above the active frontier
+    until raw x catches up -> exact raw x resumes."""
+    from src.topology import (OrientedRouteEdge, Route, RouteEdge,
+                              RouteGraph, build_route_corridor)
+
+    step = 1.0 / 512
+    geom = _gate_regression_geometry()
+
+    # single-edge polyline: genuine vertical rise inside the stem
+    # (dx = 0), then a raster staircase diagonal inside the wide band
+    # (dx = one raster step, dy >> dx per point => apparent-vertical).
+    x0 = 108.5 * step                       # stem centerline
+    pts = [[x0, y] for y in np.linspace(210 * step, 319 * step, 6)]
+    y = 322 * step
+    for _ in range(26):
+        pts.append([pts[-1][0] + step, y])
+        y += 0.008
+    seg = np.asarray(pts)
+
+    edges = [RouteEdge(0, 0, 1,
+                       xs=seg[:, 0].copy(),
+                       lower=np.zeros(len(seg)),
+                       upper=np.zeros(len(seg)),
+                       points=seg.copy())]
+    verts = [RouteVertex(0, float(seg[0, 0]), "terminal"),
+             RouteVertex(1, float(seg[-1, 0]), "terminal")]
+    verts[0].outgoing = (0,)
+    verts[1].incoming = (0,)
+    g = RouteGraph(vertices=verts, edges=edges, meaningful=frozenset({0}))
+    route = Route((OrientedRouteEdge(0, 0, 1),))
+
+    cor = build_route_corridor(g, route, geom)
+    assert len(cor.realized) == 1
+    emb = next(iter(cor.realized.values()))
+    x = np.asarray(emb["x"])
+    raw_x = np.asarray(emb["raw_x"])
+    deform = np.asarray(emb["deform"])
+
+    # all three phases actually exercised by the synthetic geometry
+    assert (deform == "vertical-unfold").any()
+    assert (deform == "unfold-exit-overlap").any()
+    assert (deform == "none").any()
+
+    # monotone realized x throughout unfold -> crawl -> resume
+    # (landmark samples may share a merged node; corridor nodes are
+    # strictly increasing)
+    assert np.all(np.diff(x) >= 0)
+    assert np.all(np.diff(np.asarray(cor.xs)) > 0)
+
+    # crawl stays just above the frontier: displaced forward but only
+    # by at most the stem stroke diameter beyond raw x (no gross drift)
+    ov = deform == "unfold-exit-overlap"
+    assert np.all(x[ov] >= raw_x[ov] - 1e-12)
+    assert float((x - raw_x)[ov].max()) <= 0.05
+
+    # after raw x catches up, exact raw x resumes ('none' samples sit on
+    # raw positions; node merging may absorb <= one raster step)
+    none = deform == "none"
+    assert float(np.abs(x - raw_x)[none].max()) <= 2.0 * step
+
+
+# ---------------------------------------------------------------------------
 # H multiplicity + balanced allocation (known-good reference coverage)
 # ---------------------------------------------------------------------------
 
