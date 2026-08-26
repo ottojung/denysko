@@ -70,10 +70,19 @@ class PathFit:
 def preferred_tail_orientation(corridor: Corridor) -> tuple[int, int]:
     """Choose tail directions from endpoint/glyph geometry before fitting.
 
-    Each endpoint escapes toward the nearer vertical exterior boundary.
-    Distances are measured from the endpoint corridor interval itself, not
-    from a fitted value. Exact ties deterministically prefer upward escape.
+    Issue #4: a component-level preference (set on ``corridor`` during
+    Phase 1 for disconnected glyph components) is applied FIRST and
+    overrides the per-endpoint rule - the fitter must never flip it merely
+    because another orientation is easier to fit.
+
+    Otherwise each endpoint escapes toward the nearer vertical exterior
+    boundary. Distances are measured from the endpoint corridor interval
+    itself, not from a fitted value. Exact ties deterministically prefer
+    upward escape.
     """
+    pref = getattr(corridor, "preferred_orientation", None)
+    if pref is not None:
+        return tuple(int(s) for s in pref)
     orientation = []
     for i in (0, -1):
         down_distance = float(corridor.lower[i] - corridor.ylo)
