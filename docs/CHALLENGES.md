@@ -86,11 +86,19 @@ NORMALIZED_SIZE=1.0 landed with full dimensional audit. All geometric
 length constants scaled by /100; slope/dimensionless constants preserved.
 CORRIDOR_EPS scaled 0.35->0.0035. ESCAPE_RATE confirmed slope-invariant.
 
-Production: 50/52 letters pass end-to-end. T/m fail fitting because the
-tightened CORRIDOR_EPS=0.0035 makes their narrow corridors infeasible;
-needs per-corridor-width adaptation of the tolerance.
+Production: 50/52 letters pass end-to-end. T/m fail at stage-1 LP
+FEASIBILITY, not tail proof: per-(route, degree, orientation)
+instrumentation (normalized-z V3 landed first) shows T route 1 has a
+stage-1 violation plateau ~0.046 for EVERY degree <= 24 and all four
+orientations. Its corridor (bar + unfolded stem descent) demands a
+y-dive of ~0.85 units within dx~0.055 - no polynomial of degree <= 24
+threads that regardless of tolerance representation. The former
+hypothesis "raw-x V3 causes T/m" is disproven; raw-x V3 removal was
+still required for scale-equivariance. Real fix direction: corridor
+centerline smoothing of unfolded vertical descents (documented future
+work), not CORRIDOR_EPS loosening.
 
-Test suite: 44/55 pass. The 11 failing tests use synthetic corridors
+Test suite: 44/55 pass. The 10 failing tests use synthetic corridors
 with old-scale coordinates (x in [10,60], ylo=0, yhi=100 etc.) that need
 mechanical conversion to normalized [0,1] coordinates. This is test-data
 work, not a design issue.

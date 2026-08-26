@@ -38,7 +38,7 @@ MIN_SLICE_ROWS = 2               # drop sub-2-row raster slivers
 PINCH_COLS = 2                   # bridge disappearances up to this many cols
 MAX_ROUTE_CANDIDATES = 4096      # enumeration guard
 MAX_ROUTES = MAX_ROUTE_CANDIDATES  # legacy alias
-SLIVER_SPAN = 0.01   # ~2.5 raster steps                # route edges shorter than this are slivers
+SLIVER_SPAN = 0.01   # ~5 raster steps (512 * 0.01)   # route edges shorter than this are slivers
 
 CORRIDOR_MARGIN = 0.004            # interior safety margin (actually applied)
 MIN_CORRIDOR_WIDTH = 0.0005        # never produce an inverted/empty interval
