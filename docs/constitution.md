@@ -9,19 +9,34 @@ It deliberately does **not** duplicate Lubko's orchestration, scheduling, recove
 
 Target repository: <https://github.com/ottojung/denysko>
 
+## Maintenance scope freeze
+
+<u><strong>Scheduled maintenance must not add new features to Denysko.</strong></u>
+
+The scheduled orchestrator may only:
+
+- fix reproducible bugs; and
+- solve work that was already represented by an existing Denysko GitHub issue before the orchestrator selected it.
+
+The scheduled orchestrator must **not** invent new product features, broaden the product scope on its own, or open new issues for enhancements, feature ideas, speculative refactors, or other non-bug work.
+
+If scheduled work discovers a new reproducible bug and no issue already tracks it, the orchestrator may create a focused bug issue containing the reproduction and observed incorrect behavior. **New issues created by scheduled maintenance must be bug reports.**
+
+An existing issue remains valid scheduled work even when resolving it changes behavior or adds capability: the human-created issue is the authorization boundary. The orchestrator itself does not create that new product scope.
+
 ## Mission
 
-Continuously improve Denysko by working through its GitHub issues and by fixing reproducible correctness, geometry, rendering, numerical-stability, text-layout, and usability bugs discovered while doing that work.
+Maintain and improve Denysko by working through its existing GitHub issues and by fixing reproducible correctness, geometry, rendering, numerical-stability, text-layout, and usability bugs discovered while doing that work, subject to the maintenance scope freeze above.
 
 The orchestrator should make real progress, not merely triage or report. Select actionable work according to the Lubko scheduled-orchestrator guide, delegate implementation through Lubko, review the resulting PR itself, verify it independently, and iterate until the issue is actually solved.
 
-If a reproducible Denysko bug is discovered and no issue describes it, create a focused GitHub issue with the reproduction and observed behavior before losing the discovery. If it blocks the current task, fix it as part of the current work or as an explicit prerequisite; otherwise leave it as actionable follow-up work.
+If a reproducible Denysko bug is discovered and no issue describes it, create a focused GitHub bug issue with the reproduction and observed behavior before losing the discovery. If it blocks the current task, fix it as part of the current work or as an explicit prerequisite; otherwise leave it as actionable follow-up work. Do not create follow-up issues for features, enhancements, speculative improvements, or non-bug refactors.
 
-Current known regressions such as generation failures for `W`, `Z`, or `z` should not be normalized as expected behavior. If still reproducible and not already tracked, they are bugs to investigate and fix generically.
+Current known regressions must not be normalized as expected behavior. If still reproducible and not already tracked, they are bugs to investigate and fix generically.
 
 ## Denysko-specific engineering rules
 
-Preserve the program's central architecture unless an issue explicitly establishes that it must change:
+Preserve the program's central architecture unless an existing issue explicitly establishes that it must change:
 
 - topology and geometry are decided before polynomial optimization;
 - the optimizer must not discover or silently repair topology;
@@ -36,7 +51,7 @@ Before changing behavior that is already documented by an open issue, read the i
 
 ## Work scope
 
-Open GitHub issues are the primary backlog. The orchestrator may also fix bugs discovered through tests, the required visual smoke test below, code review, or manual investigation.
+Open GitHub issues are the primary backlog. The orchestrator may also fix bugs discovered through tests, the required visual smoke test below, code review, or manual investigation. The orchestrator may open a new issue only for a reproducible bug; all non-bug work must already have an issue created outside scheduled maintenance.
 
 Prefer work that improves user-visible correctness or removes blockers to the main contract. In particular, failures to generate supported ASCII letters, obviously wrong stroke routing, wrong escape direction, broken relative glyph sizing, malformed text composition, or numerically incorrect emitted equations are correctness bugs rather than cosmetic cleanup.
 
@@ -138,7 +153,7 @@ A task is complete only when:
 - the public CLI behavior has been exercised;
 - the PR diff has been independently reviewed by the orchestrator;
 - the fresh `Hello, World!` Matplotlib-from-emitted-curves image has been posted under the PR and visually inspected;
-- discovered regressions are fixed or durably tracked as GitHub issues;
+- discovered regressions are fixed or durably tracked as GitHub bug issues;
 - documentation is updated when the project contract changed.
 
 Use Lubko's linked operating and scheduled-orchestrator documents for all orchestration mechanics. This constitution defines only what successful Denysko maintenance must accomplish.
