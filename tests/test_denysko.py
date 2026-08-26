@@ -1152,11 +1152,12 @@ def test_glyph_run_tolerance_normalized():
 def test_phase1_matches_known_good_reference_facts():
     """Frozen compact facts measured against b79ddd4/100 worktree:
     same route signatures, same landmark counts, same xa/xb."""
-    # xa/xb re-frozen after the stacked-landmark merge fix (W/Z/z
-    # corridor repair); signatures and landmark semantics unchanged.
+    # xa/xb re-frozen after issue #1 (shared font-wide scale mapping
+    # the 'H' cap height to 1.0): capital-letter facts are unchanged;
+    # lowercase 'm' corridors moved with its font-relative size.
     ref = {
         "T": [(0.2519, 0.9571), (-0.1134, 0.6543)],
-        "m": [(-0.1153, 1.1635), (-0.1153, 0.7219)],
+        "m": [(-0.1095, 1.2571), (-0.1095, 0.7745)],
         "H": [(-0.1036, 0.9265), (-0.1036, 0.9265)],
         "A": [(-0.0782, 1.0704), (-0.0782, 1.0704)],
     }
@@ -1362,8 +1363,12 @@ def test_validate_text_is_structural_only():
 def test_glyph_visible_width_real():
     widths = {ch: d.glyph_visible_width(ch) for ch in "AIWim"}
     for w in widths.values():
-        assert 0 < w <= 1.0 + 1e-9
+        assert 0 < w
     assert widths["I"] != widths["W"]
+    # font-relative scale (issue #1): wide glyphs may legitimately
+    # exceed the cap-height unit, but narrow capitals stay well inside
+    assert widths["I"] < 1.0
+    assert widths["i"] < d.glyph_visible_width("H")
 
 
 def test_aa_placement_offsets():

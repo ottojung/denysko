@@ -666,13 +666,33 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
         pts = se.points * np.array([step, step])   # pixel -> glyph coords
         if (len(pts) > 50
                 and float(np.hypot(*(pts[0] - pts[-1]))) <= 2.0 * step):
-            # closed ring: rotate to the global x-minimum and split into
-            # two arcs between a fresh terminal vertex pair
-            i0 = int(np.argmin(pts[:, 0]))
-            pts = np.roll(pts, -i0, axis=0)
-            mid = len(pts) // 2
+            # closed ring: split into two arcs between a fresh terminal
+            # vertex pair. Cut points are the MIDDLES of the leftmost
+            # and rightmost extremum plateaus: cutting anywhere else
+            # leaves a raster plateau fragment straddling an extremum,
+            # which atomizes into a spurious sub-stroke vertical stub.
+            def _plateau_mid(idx):
+                x = pts[idx, 0]
+                a = idx
+                while a > 0 and pts[a - 1, 0] == x:
+                    a -= 1
+                b = idx
+                while b + 1 < len(pts) and pts[b + 1, 0] == x:
+                    b += 1
+                return (a + b) // 2
+
+            i_left = _plateau_mid(int(np.argmin(pts[:, 0])))
+            pts = np.roll(pts, -i_left, axis=0)
+            i_right = _plateau_mid(int(np.argmax(pts[:, 0])))
+            n_pts = len(pts)
+            halves = []
+            if 1 <= i_right <= n_pts - 1:
+                halves.append(pts[:i_right + 1])
+                halves.append(np.vstack([pts[i_right:], pts[:1]]))
+            else:
+                halves.append(np.vstack([pts, pts[:1]]))
             vid = new_vertex(float(pts[0, 0]), "terminal")
-            for half in (pts[:mid + 1], pts[mid:]):
+            for half in halves:
                 for j0, j1 in _monotone_pieces(half):
                     seg = half[j0:j1 + 1]
                     a_vid = (vid if j0 == 0
@@ -1615,10 +1635,16 @@ def _monotone_pieces(pts: np.ndarray):
         if last_sign == 0:
             last_sign = sgn
         elif sgn != last_sign:
-            # the extremum POINT is index i (dx flips on the edge
-            # i->i+1); both pieces share it deterministically, which
-            # also places plateau extrema at the first plateau point
-            cuts.append(i)
+            # the extremum POINT is shared by both pieces. Raster
+            # skeletons flatten smooth extrema into multi-point
+            # plateaus; cutting at the first plateau point orphans the
+            # plateau remainder as a pure-vertical sub-stroke fragment.
+            # Cut at the MIDDLE of the zero-dx plateau instead so both
+            # pieces leave the extremum symmetrically.
+            j = i
+            while j > 0 and dx[j - 1] == 0:
+                j -= 1
+            cuts.append((j + i) // 2)
             last_sign = sgn
     if cuts[-1] != n - 1:
         cuts.append(n - 1)
