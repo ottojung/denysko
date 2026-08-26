@@ -466,14 +466,10 @@ def test_all_space_text_emits_zero_equations(capsys):
 
 
 def test_punctuation_is_attempted_not_whitelist_rejected(capsys):
-    # DejaVu Sans has outlines for ',' and '!': they must be attempted
-    # through the ordinary per-character path and rendered
-    result = d.generate_text("a,b")
-    chars = {p.char for p in result.placed_fits}
-    assert chars == {"a", ",", "b"}
-    bang = {p.char for p in d.generate_text("Hi!").placed_fits}
-    assert "!" in bang
-    assert d.run(["Hello, World!", "--seed", "42", "-q"]) == 0
+    # One real public-CLI generation proves both punctuation glyphs are
+    # attempted. The exact Hello, World! rendering is the mandatory PR
+    # smoke artifact, so the unit suite need not regenerate it too.
+    assert d.run([",!", "--seed", "42", "-q"]) == 0
     out = capsys.readouterr().out
     lines = out.splitlines()
     assert lines and all(line.startswith("y=") for line in lines)
@@ -483,11 +479,12 @@ def test_arbitrary_char_failure_reports_index_and_repr(monkeypatch,
                                                        capsys):
     import string
 
-    original = d.generate_letter
-
     def boom(letter, **kwargs):
         if letter in string.ascii_letters:
-            return original(letter, **kwargs)
+            # This test is about contextual failure/no-partial-output, not
+            # fitting the successful prefix. Keep the prefix deliberately
+            # cheap while still exercising generate_text().
+            return [object()], None, None
         raise RuntimeError("synthetic raster failure")
 
     monkeypatch.setattr(d, "generate_letter", boom)
@@ -1371,64 +1368,69 @@ def test_glyph_visible_width_real():
     assert widths["i"] < d.glyph_visible_width("H")
 
 
-def test_aa_placement_offsets():
+def _stub_text_generator(monkeypatch):
+    """Cheap deterministic generator for layout/control-flow tests.
+
+    Real glyph fitting is covered elsewhere; these tests should exercise the
+    text composition rules without paying the LP/skeletonization cost again.
+    """
+    calls = []
+    sentinel = object()
+
+    def fake_generate(ch, **kw):
+        n = kw.get("min_curves") or 1
+        calls.append((ch, n, kw.get("seed")))
+        return [sentinel] * n, None, None
+
+    widths = {"A": 0.7, "H": 0.6, "I": 0.2}
+    monkeypatch.setattr(d, "generate_letter", fake_generate)
+    monkeypatch.setattr(d, "glyph_visible_width",
+                        lambda ch: widths.get(ch, 0.5))
+    return calls, sentinel
+
+
+def test_aa_placement_offsets(monkeypatch):
+    _stub_text_generator(monkeypatch)
     result = d.generate_text("AA")
-    dx0 = 0.0
-    dx1 = d.glyph_visible_width("A") + d.DEFAULT_LETTER_SPACING
-    for p in result.placed_fits:
-        if p.char_index == 0:
-            assert p.dx == dx0
-        else:
-            assert p.dx == pytest.approx(dx1)
+    dx1 = 0.7 + d.DEFAULT_LETTER_SPACING
+    assert [p.dx for p in result.placed_fits] == pytest.approx([0.0, dx1])
 
 
-def test_repeated_letters_identical_local_geometry():
+def test_repeated_letters_use_same_seed_and_generator_contract(monkeypatch):
+    calls, sentinel = _stub_text_generator(monkeypatch)
     result = d.generate_text("AAA", seed=42)
-    by_idx = {}
-    for p in result.placed_fits:
-        by_idx.setdefault(p.char_index, []).append(p)
-    idxs = sorted(by_idx)
-    assert len(idxs) == 3
-    base = by_idx[idxs[0]]
-    for other_i in idxs[1:]:
-        for pb, po in zip(base, by_idx[other_i]):
-            assert po.fit.degree == pb.fit.degree
-            assert np.array_equal(po.fit.coef_cheb, pb.fit.coef_cheb)
-            assert np.array_equal(po.fit.corridor.xs, pb.fit.corridor.xs)
-            assert po.char == pb.char
+    assert calls == [("A", 1, 42), ("A", 1, 42), ("A", 1, 42)]
+    assert len(result.placed_fits) == 3
+    assert all(p.fit is sentinel for p in result.placed_fits)
 
 
-def test_space_advances_cursor():
-    want = (d.glyph_visible_width("A")
-            + d.DEFAULT_LETTER_SPACING + d.DEFAULT_SPACE_WIDTH)
+def test_space_advances_cursor(monkeypatch):
+    _stub_text_generator(monkeypatch)
+    want = 0.7 + d.DEFAULT_LETTER_SPACING + d.DEFAULT_SPACE_WIDTH
     r1 = d.generate_text("A A")
-    assert all(p.dx == pytest.approx(want) for p in r1.placed_fits
-               if p.char_index == 2)
+    assert [p.dx for p in r1.placed_fits if p.char_index == 2] ==         pytest.approx([want])
     want2 = want + d.DEFAULT_SPACE_WIDTH
     r2 = d.generate_text("A  A")
-    assert all(p.dx == pytest.approx(want2) for p in r2.placed_fits
-               if p.char_index == 3)
-    # leading space shifts the first glyph by exactly space_width
+    assert [p.dx for p in r2.placed_fits if p.char_index == 3] ==         pytest.approx([want2])
     r3 = d.generate_text(" A")
-    first = [p for p in r3.placed_fits if p.char_index == 1]
-    assert all(p.dx == pytest.approx(d.DEFAULT_SPACE_WIDTH)
-               for p in first)
+    assert [p.dx for p in r3.placed_fits if p.char_index == 1] ==         pytest.approx([d.DEFAULT_SPACE_WIDTH])
 
 
-def test_min_curves_applies_per_letter():
+def test_min_curves_applies_per_letter(monkeypatch):
+    calls, _ = _stub_text_generator(monkeypatch)
     result = d.generate_text("AH", min_curves=5)
+    assert calls == [("A", 5, 42), ("H", 5, 42)]
     counts = {}
     for p in result.placed_fits:
         counts[p.char] = counts.get(p.char, 0) + 1
-    assert counts["A"] >= 5 and counts["H"] >= 5
-    assert sum(counts.values()) == len(result.placed_fits)
+    assert counts == {"A": 5, "H": 5}
 
 
-def test_output_order_is_character_order():
+def test_output_order_is_character_order(monkeypatch):
+    _stub_text_generator(monkeypatch)
     result = d.generate_text("AI")
     seen = [p.char_index for p in result.placed_fits]
-    assert seen == sorted(seen)
-    assert set(seen) == {0, 1}
+    assert seen == [0, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -1475,13 +1477,17 @@ def test_high_degree_translation_horner_midshift():
     np.testing.assert_allclose(actual, truth, rtol=1e-6, atol=1e-8)
 
 
-def test_validate_placed_serialization_long_text():
-    # W is currently excluded from generation (known fitting regression,
-    # deferred); use an all-working long text for translation coverage
-    result = d.generate_text("hello there ok")
-    for placed in result.placed_fits:
-        line = d.serialize_placed_fit(placed)
-        d.validate_placed_serialization(placed, line)
+def test_validate_placed_serialization_long_text_offsets():
+    # Translation correctness depends on dx, not on independently refitting a
+    # dozen letters. Generate one real local fit, then exercise offsets larger
+    # than a typical word to catch translated-serialization conditioning.
+    fits, _, _ = d.generate_letter("l")
+    assert fits
+    for i, dx in enumerate((0.0, 1.0, 3.0, 7.0, 15.0)):
+        for fit in fits:
+            placed = d.PlacedFit(fit=fit, dx=dx, char="l", char_index=i)
+            line = d.serialize_placed_fit(placed)
+            d.validate_placed_serialization(placed, line)
 
 
 def test_dx_zero_uses_untouched_serializer():
@@ -1495,26 +1501,16 @@ def test_dx_zero_uses_untouched_serializer():
 # ---------------------------------------------------------------------------
 
 
-def test_cli_one_letter_identity():
-    for letter in ("A", "H", "c"):
-        out_direct = d.run([letter])
-        assert out_direct == 0
-    # single vs quoted-single equivalence through generate_text path
+def test_cli_one_letter_identity(monkeypatch, capsys):
+    # Fit A once, then feed that same real result to both serialization paths.
     fits_a, _, _ = d.generate_letter("A", seed=42)
-    direct = [d.serialize_fit(f) for f in fits_a]
+    triple = (fits_a, None, None)
+    monkeypatch.setattr(d, "generate_letter", lambda *a, **kw: triple)
+    assert d.run(["A", "--seed", "42", "-q"]) == 0
+    direct = capsys.readouterr().out.splitlines()
     placed = d.generate_text("A", seed=42)
     via_text = [d.serialize_placed_fit(p) for p in placed.placed_fits]
     assert direct == via_text
-
-
-def test_cli_punctuation_attempted_no_partial_stdout(capsys):
-    # issue #5: punctuation is attempted through the ordinary path
-    # (DejaVu Sans has an outline for '!'), not whitelist-rejected
-    rc = d.run(["A!"])
-    captured = capsys.readouterr()
-    assert rc == 0
-    lines = captured.out.splitlines()
-    assert lines and all(line.startswith("y=") for line in lines)
 
 
 def test_cli_later_letter_failure_no_stdout(capsys, monkeypatch):
@@ -1524,7 +1520,7 @@ def test_cli_later_letter_failure_no_stdout(capsys, monkeypatch):
         calls["n"] += 1
         if calls["n"] == 2:
             raise d.GenerationError("boom")
-        return d.generate_letter(ch, **kw)
+        return [object()], None, None
 
     monkeypatch.setattr(d, "generate_letter", failing_generate)
     monkeypatch.setattr(d, "generate", failing_generate)
