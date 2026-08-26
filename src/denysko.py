@@ -703,7 +703,7 @@ def run(argv) -> int:
             seed=cfg.seed, reporter=reporter)
         lines = []
         for f in fits:
-            deg = len(f.poly.coef) - 1
+            deg = f.degree
             if _needs_horner(deg):
                 power_z = np.polynomial.chebyshev.cheb2poly(
                     np.asarray(f.coef_cheb, dtype=float))

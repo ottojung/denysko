@@ -1104,7 +1104,30 @@ def test_phase1_matches_known_good_reference_facts():
 
 
 def test_t_and_m_generation_succeed():
-    lines = d.generate("T")
-    assert len(lines) >= 1
-    lines_m = d.generate("m")
-    assert len(lines_m) >= 1
+    fits_t, _, _ = d.generate("T")
+    assert len(fits_t) >= 1
+    fits_m, _, _ = d.generate("m")
+    assert len(fits_m) >= 1
+
+
+# ---------------------------------------------------------------------------
+# H multiplicity + balanced allocation (known-good reference coverage)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("m", [10, 15, 20])
+def test_h_min_curves_exact_counts(m):
+    fits, _, _ = d.generate("H", min_curves=m)
+    assert len(fits) == m
+
+
+def test_h15_allocation_balanced():
+    rng = np.random.default_rng(42)
+    counts = d.allocate_counts(K=2, M=15, rng=rng)
+    assert sorted(counts) == [7, 8]
+    assert sorted(d.allocate_counts(K=2, M=20, rng=rng)) == [10, 10]
+
+
+def test_a15_exact_count():
+    fits, _, _ = d.generate("A", min_curves=15)
+    assert len(fits) == 15
