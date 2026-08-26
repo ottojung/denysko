@@ -7,11 +7,13 @@ from src import fitting as _fitting
 from src import topology as d_topology
 from src import topology as _topo
 from src.fitting import (
+    INITIAL_FIT_DEGREE,
     ORIENTATIONS,
     Corridor,
     PathFit,
     fit_degree,
     fit_route,
+    preferred_tail_orientation,
 )
 from src.topology import (
     ESC_OFFSETS,
@@ -301,15 +303,14 @@ def test_impossible_low_degree_corridor_fails():
 
 
 def test_degree_minimization_verified_minimum():
-    """fit_route must return the LOWEST verified feasible degree: every
-    lower degree is infeasible for every tail orientation."""
+    """fit_route returns the lowest feasible degree for required geometry."""
     c = _linear_corridor()
     fit = fit_route(c, hi=24)
     assert fit is not None
+    ori = preferred_tail_orientation(c)
+    assert fit.orientation == ori
     for dd in range(fit.degree):
-        assert all(
-            fit_degree(c, dd, *ori) is None for ori in ORIENTATIONS
-        )
+        assert fit_degree(c, dd, *ori) is None
 
 
 # ---------------------------------------------------------------------------
@@ -393,15 +394,57 @@ def test_reentry_and_wrong_asymptote_fail_v3():
     assert d.tail_reentry_violation(wrong.coef, corr, (1, 1)) > 0
 
 
-def test_orientation_choice_prefers_feasible_low_degree():
-    # a corridor hugging the top of the band: only an UP-right tail can
-    # escape quickly; fit_route must find some feasible orientation.
+def test_orientation_choice_follows_endpoint_geometry():
+    # A corridor hugging the top of the band must choose upward escape
+    # from geometry before fitting rather than because it is numerically easy.
     xs = np.linspace(10.0, 60.0, 40)
     c = _corridor_from(xs, np.full(len(xs), 92.0), np.full(len(xs), 98.0))
     fit = fit_route(c, hi=20)
     assert fit is not None
     sig_l, sig_r = fit.orientation
     assert sig_r == 1   # downward from y~97 would fight the ramp rows
+
+
+def test_issue2_real_glyph_tail_orientation_is_geometry_driven():
+    """Issue #2: tail escape direction is a geometric decision made before
+    fitting and must be inspected directly via PathFit.orientation (not
+    inferred from the serialized equations).
+
+    For every selected route the emitted orientation must equal the
+    endpoint-geometry-derived orientation; fit_route must never silently
+    flip to the opposite direction merely because another orientation is
+    easier to fit. The documented acceptance cases are locked in:
+
+      C: upper end up, lower end down;
+      A: the relevant leg-route ends both escape down;
+      r: the hat route escapes up on both sides;
+      e: the lower route escapes down; the two upper routes escape up.
+    """
+    expected = {
+        "C": [(-1, -1), (-1, 1)],
+        "A": [(-1, -1), (-1, -1)],
+        "r": [(-1, 1), (1, 1)],
+        "e": [(-1, -1), (-1, 1), (1, 1)],
+    }
+    for letter, want in expected.items():
+        geom, graph, candidates, chosen, sigs, selected = \
+            d.build_phase1(letter)
+        got = []
+        for corr in selected:
+            fit = fit_route(corr, hi=INITIAL_FIT_DEGREE)
+            assert fit is not None, f"{letter}: route infeasible"
+            # core contract: fit uses the geometry-derived orientation,
+            # never a flipped one chosen for fit ease.
+            assert fit.orientation == preferred_tail_orientation(corr), (
+                f"{letter}: fit orientation {fit.orientation} != "
+                f"geometry-derived "
+                f"{preferred_tail_orientation(corr)}")
+            got.append(fit.orientation)
+        # order-independent: route enumeration is deterministic but we key
+        # on the geometric end directions, not on internal edge ids.
+        assert sorted(got) == sorted(want), (
+            f"{letter}: orientations {sorted(got)} != documented "
+            f"{sorted(want)}")
 
 
 def test_emitted_poly_leaving_corridor_rejected():
@@ -940,10 +983,15 @@ def test_a_default_baseline_degrees():
 
 
 def test_h_default_baseline_degrees():
+    # Issue #2 fixes each route's tail orientation from endpoint geometry
+    # before fitting, which can change the minimal feasible degree (the old
+    # min-coefficient rule picked a numerically easier orientation at a lower
+    # degree). V3 permanent-escape validation is unchanged, so the curve is
+    # still correct - only the geometry-mandated degree differs.
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
     fits, _ = fit_selected(selected)
     assert len(fits) == 2
-    assert all(f.degree == 9 for f in fits)
+    assert sorted(f.degree for f in fits) == [9, 12]
 
 
 def test_family_members_have_real_orientation():
