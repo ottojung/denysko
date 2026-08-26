@@ -48,6 +48,17 @@ ESCAPE_RATE = 2.5                # tail ramp: clearance growth per unit x
 ESC_OFFSETS = (0.03, 0.06, 0.10, 0.16)   # ramp checkpoints beyond ends
 ESC_SLOPE_MIN = 0.05             # min outward |dP/dx| along the ramp
 
+# Normalized-world equivalents of the known-good 0..100 implementation's
+# absolute length literals (scale factor NORMALIZED_SIZE/100):
+LANDMARK_SPACING = NORMALIZED_SIZE / 100.0   # one landmark per old unit
+CORRIDOR_Z_EXTRA_PAD = NORMALIZED_SIZE / 100.0   # old +1.0 window pad
+GLYPH_RUN_TOL = 0.01 * NORMALIZED_SIZE       # old raster_tol 1.0
+UNFOLD_CRAWL_STEP = 1e-5 * NORMALIZED_SIZE   # old EPS_X 1e-3
+UNFOLD_MIN_MARGIN = 1e-5 * NORMALIZED_SIZE   # old margin floor 1e-3
+UNFOLD_EDGE_INSET = 1e-5 * NORMALIZED_SIZE   # old run-edge inset 1e-3
+UNFOLD_MONOTONE_PUSH = 1e-6 * NORMALIZED_SIZE  # old monotone push 1e-4
+UNFOLD_NOISE_X = 5e-4 * NORMALIZED_SIZE      # old NOISE_X 0.05
+
 
 def _font_path() -> str:
     return os.path.join(
@@ -458,7 +469,7 @@ def select_routes_min_cover(graph: RouteGraph, candidates: list):
 
 def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,
                              grid: int = 200,
-                             raster_tol: float = 1.0) -> float:
+                             raster_tol: float = GLYPH_RUN_TOL) -> float:
     """Worst violation of 'corridor interval subset-of glyph fill' over
     dense route-domain samples. For each sampled x the ENTIRE vertical
     interval [lower, upper] must lie inside one filled column run
@@ -497,7 +508,7 @@ def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,
 
 def poly_glyph_violation(coef, corridor: Corridor, geom: GlyphGeometry,
                          grid: int = 300,
-                         raster_tol: float = 1.0) -> float:
+                         raster_tol: float = GLYPH_RUN_TOL) -> float:
     """V5: worst distance (glyph units) by which the emitted polynomial
     leaves the filled stroke at the same x over dense route-domain
     samples. Zero means every sample is inside the glyph."""
@@ -1037,7 +1048,8 @@ def build_route_corridor(graph: RouteGraph, route: Route,
     seg = np.hypot(*np.diff(route_pts, axis=0).T)
     s_arc = np.concatenate([[0.0], np.cumsum(seg)])
     total = float(s_arc[-1])
-    n_lm = min(STROKE_LANDMARKS, max(8, int(total)))
+    n_lm = min(STROKE_LANDMARKS,
+                max(8, int(total / LANDMARK_SPACING)))
     targets = np.linspace(0.0, total, n_lm)
     lam = np.column_stack([
         np.interp(targets, s_arc, route_pts[:, 0]),
@@ -1112,8 +1124,8 @@ def build_route_corridor(graph: RouteGraph, route: Route,
     # resulting overlap with following real geometry decays: landmarks
     # crawl just above the synthetic frontier until raw x catches up,
     # then EXACT raw x resumes. No persistent downstream translation.
-    VERT = 0.25          # |dx| < VERT*dy => locally vertical
-    EPS_X = 1e-3
+    VERT = 0.25          # |dx| < VERT*dy => locally vertical (ratio)
+    EPS_X = UNFOLD_CRAWL_STEP
     p = np.array(lam[:, 0], dtype=float)
     deform = np.array(["none"] * len(p), dtype=object)
     frontier = None      # synthetic frontier after an unfold
@@ -1145,15 +1157,17 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                         lam[k, 0] + STROKE_MIN_HALF)
                     for k in range(i, j + 1)]
             lo_r, hi_r = min(wins, key=lambda w: w[1] - w[0])
-            margin = min(CORRIDOR_MARGIN, max((hi_r - lo_r) * 0.15, 1e-3))
+            margin = min(CORRIDOR_MARGIN, max((hi_r - lo_r) * 0.15,
+                                         UNFOLD_MIN_MARGIN))
             win_lo = max(lo_r + margin, p[i - 1])
             win_hi = max(hi_r - margin, win_lo + STROKE_MIN_HALF)
             n_v = j - i + 2
             for k in range(i, j + 1):
                 frac = (k - i + 1) / n_v
                 cand = win_lo + frac * (win_hi - win_lo)
-                cand = min(max(cand, lo_r + 1e-3), hi_r - 1e-3)
-                p[k] = max(cand, p[k - 1] + 1e-4)
+                cand = min(max(cand, lo_r + UNFOLD_EDGE_INSET),
+                           hi_r - UNFOLD_EDGE_INSET)
+                p[k] = max(cand, p[k - 1] + UNFOLD_MONOTONE_PUSH)
                 deform[k] = "vertical-unfold"
             unfold_windows.append((round(win_lo, 3), round(win_hi, 3)))
             frontier = p[j]
@@ -1163,13 +1177,14 @@ def build_route_corridor(graph: RouteGraph, route: Route,
             raw = lam[i, 0]
             # epsilon-pushed joins make consecutive atom starts differ by
             # <= ~1e-4; anything under NOISE_X is equal-x raster noise
-            NOISE_X = 0.05   # covers multi-step crawl overshoot;
+            NOISE_X = UNFOLD_NOISE_X   # covers multi-step crawl overshoot;
                              # genuine reversals are stroke-width scale
             if frontier is not None and raw <= frontier:
                 # overlap-exit crawl: microscopic increasing steps just
                 # above the frontier until raw x catches up
                 eps_n += 1
-                p[i] = max(frontier + eps_n * EPS_X, p[i - 1] + 1e-4)
+                p[i] = max(frontier + eps_n * EPS_X,
+                       p[i - 1] + UNFOLD_MONOTONE_PUSH)
                 deform[i] = "unfold-exit-overlap"
             else:
                 if frontier is not None:
@@ -1181,7 +1196,7 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                         "Phase 1 bug: genuine backwards x on a "
                         f"nonvertical section ({raw:.3f} after "
                         f"{p[i - 1]:.3f})")
-                p[i] = max(raw, p[i - 1] + 1e-4)
+                p[i] = max(raw, p[i - 1] + UNFOLD_MONOTONE_PUSH)
             i += 1
 
 
@@ -1296,7 +1311,7 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                 for k, v4 in realized.items()}
 
 
-    pad = ESC_OFFSETS[-1] + 1.0
+    pad = ESC_OFFSETS[-1] + CORRIDOR_Z_EXTRA_PAD
     return Corridor(
         path=path,
         xa=float(p[0] - pad),
@@ -1361,7 +1376,7 @@ def build_slice_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
     path = BoundaryPath(points=np.column_stack([xs, center]),
                         contour_id=-1)
 
-    pad = ESC_OFFSETS[-1] + 1.0   # window covers all escape checkpoints
+    pad = ESC_OFFSETS[-1] + CORRIDOR_Z_EXTRA_PAD   # window covers all escape checkpoints
     return Corridor(
         path=path,
         xa=float(xs[0] - pad),
