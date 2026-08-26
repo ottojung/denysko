@@ -27,6 +27,7 @@ from numpy.polynomial import chebyshev as cheb
 
 from src.topology import (
     Corridor,
+    NORMALIZED_SIZE,
     TAU,
     ESC_OFFSETS,
     ESCAPE_RATE,
@@ -41,6 +42,10 @@ DENSE_GRID = 900          # validation samples (denser than fitting)
 POCS_SWEEPS = 240
 FEAS_TOL = 1e-6
 FAMILY_HALF_WIDTH_FLOOR = 0.005   # ~2.5 raster steps at normalized scale
+# Strict coordinate-equivalent of the old 1e-6 y-length degeneracy
+# threshold (0..100 world): two anchors closer than this are the same
+# polynomial geometrically.
+FAMILY_MIN_SPAN = 1e-6 * NORMALIZED_SIZE / 100.0
 HORNER_MIN_DEGREE = 10             # degree >= this uses Horner serialization
 CERT_TOL = 2.0 * (1.0 / 512)   # certificate violation tolerance (~2 raster steps)
 USE_LP = True   # unit tests may disable for speed (pure POCS)
@@ -121,52 +126,10 @@ def _side_slope_rows(corridor: Corridor, degree: int,
 
 
 
-def certify_halfline_min(coef_cheb: np.ndarray, corridor: Corridor, *,
-                         side: str, sigma: int):
-    """Exact minimum of
-
-        Q(t) = sigma*sgn_x*P'(x_checkpoint + sgn_x*t) - ESC_SLOPE_MIN
-
-    over t >= 0 via roots of Q'(t). Returns (min_value, argmin_t).
-    """
-    from numpy.polynomial import Polynomial as Poly
-
-    xa, xb = corridor.xa, corridor.xb
-    scale = (xb - xa) / 2.0
-    mid = (xa + xb) / 2.0
-    x_end = float(corridor.xs[0] if side == "L" else corridor.xs[-1])
-    sgn_x = -1.0 if side == "L" else 1.0
-    z_of_t = Poly([(x_end - mid) / scale, sgn_x / scale])
-
-    px = Poly(np.asarray(cheb.cheb2poly(np.asarray(
-        coef_cheb, dtype=float))))
-    px_t = px(z_of_t)
-    q = (sigma * sgn_x) * px_t.deriv() - Poly([ESC_SLOPE_MIN])
-
-    # find minimum on t >= 0: t=0 + real nonneg roots of Q'(t)
-    cand = [0.0]
-    for r in q.deriv().roots():
-        if abs(r.imag) < 1e-9 and r.real >= -1e-12:
-            cand.append(float(r.real))
-    vals = [float(q(max(t, 0.0))) for t in cand]
-
-    # asymptotic check: leading coefficient must be positive or zero
-    ctr = np.asarray(q.coef)
-    nz = np.nonzero(ctr)[0]
-    if len(nz) >= 1 and nz[-1] >= 1 and ctr[nz[-1]] < 0:
-        return -np.inf, np.inf   # Q -> -inf as t -> inf
-    k = int(np.argmin(vals))
-    return vals[k], cand[k]
-
-
-
-
 def _constraint_set(corridor: Corridor, degree: int,
                     sig_l: int, sig_r: int,
                     n_int: int = FIT_GRID, n_esc: int = 40,
-                    slope_rows: bool = True,
-                    tail_cert: bool = False,
-                    cert_u_points=None):
+                    slope_rows: bool = True):
     """Build the deterministic constraint system (A, lo, hi).
 
     Interior rows are two-sided interval constraints across the path
@@ -190,11 +153,6 @@ def _constraint_set(corridor: Corridor, degree: int,
             if slope_rows:
                 blocks.append(
                     _side_slope_rows(corridor, degree, sigma, side))
-            if tail_cert:
-                A_c, lo_c = _tail_certificate_rows(
-                    corridor, degree, sigma, side)
-                hi_c = np.full(A_c.shape[0], np.inf)
-                blocks.append((A_c, lo_c, hi_c))
 
     A = np.vstack([b[0] for b in blocks])
     lo = np.concatenate([b[1] for b in blocks])
@@ -686,8 +644,14 @@ def solve_anchor(corridor: Corridor, degree: int, sig_l: int, sig_r: int,
     w_scaled = weights / half
     cost = A_f.T @ ((-w_scaled) if maximize else w_scaled)
 
+    # Solve directly on the DENSE constraint grid: the coarse fitting
+    # grid rings between samples on wide corridors, and re-projecting
+    # afterwards collapses distinct objective optima onto the same
+    # point (killing family span). The dense-LP optimum is distinct
+    # per guide direction AND dense-feasible by construction.
     A_base, lo_base, hi_base = _constraint_set(
-        corridor, degree, sig_l, sig_r)
+        corridor, degree, sig_l, sig_r,
+        n_int=DENSE_GRID, n_esc=600)
 
     fin_hi = np.isfinite(hi_base)
     fin_lo = np.isfinite(lo_base)
@@ -698,19 +662,23 @@ def solve_anchor(corridor: Corridor, degree: int, sig_l: int, sig_r: int,
                   bounds=[(None,None)]*(degree+1), method="highs")
     if not res.success or res.x is None:
         return None
-    return np.asarray(res.x)
+    coef = np.asarray(res.x)
+    dv = _dense_violation(corridor, coef, sig_l, sig_r)
+    if not np.isfinite(dv) or dv > CORRIDOR_EPS:
+        return None
+    return coef
 
 
 
 
 def certify_anchor(corridor: Corridor, coef_cheb: np.ndarray,
                    sig_l: int, sig_r: int) -> float:
-    """Dense POWER-domain worst violation (validation-domain check)."""
-    power_z = cheb.cheb2poly(coef_cheb)
-    affine = np.polynomial.Polynomial(
-        [-(corridor.xa + corridor.xb) / (corridor.xb - corridor.xa),
-         2.0 / (corridor.xb - corridor.xa)])
-    poly = np.polynomial.Polynomial(power_z)(affine)
+    """Dense corridor/ramp certification in CANONICAL coordinates.
+
+    Evaluates purely through chebval on the corridor z map - no raw-x
+    expansion is constructed for any degree. Acceptance contract:
+    returned violation must be <= CORRIDOR_EPS (the allowance lives in
+    the caller's comparison only, never twice).
+    """
     return _dense_violation(corridor, coef_cheb, sig_l, sig_r,
-                            power_coef=np.asarray(poly.coef),
-                            allow=CORRIDOR_EPS)
+                            allow=0.0)

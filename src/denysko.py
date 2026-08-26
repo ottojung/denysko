@@ -51,6 +51,7 @@ from src.fitting import (
     tail_reentry_violation,
     tail_reentry_violation_cheb,
     FAMILY_HALF_WIDTH_FLOOR,
+    FAMILY_MIN_SPAN,
 )
 
 PRECISION = 12
@@ -561,13 +562,11 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     normalized z coordinates (scale-equivariant V3); anchor separation
     is measured via chebval, never raw-x expansion.
     """
-    from src.fitting import solve_anchor, certify_anchor
+    from src.fitting import solve_anchor, certify_anchor, CORRIDOR_EPS
     from src.fitting import tail_reentry_violation_cheb, _zmap
     from numpy.polynomial import chebyshev as cheb
 
     cap = degree_cap or INITIAL_FIT_DEGREE
-    half = np.maximum((corr.upper - corr.lower) / 2.0, FAMILY_HALF_WIDTH_FLOOR)
-    center = (corr.lower + corr.upper) / 2.0
     directions = _family_directions(corr, seed, path_index)
 
     for D in range(d_min, cap + 1):
@@ -580,7 +579,17 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
                                    True)
                 if plo is None or phi is None:
                     continue
-                # verify anchors pass normalized-z V3 and have span
+                # acceptance contract: dense corridor/ramp certification
+                # (canonical Chebyshev evaluation), normalized-z V3 on
+                # both anchors, and nondegenerate geometric span.
+                # With all pointwise side inequalities satisfied by the
+                # two anchors, convex interpolation P_t=(1-t)P0+tP1
+                # satisfies them everywhere in between.
+                if (certify_anchor(corr, np.asarray(plo), ori[0],
+                                   ori[1]) > CORRIDOR_EPS
+                        or certify_anchor(corr, np.asarray(phi), ori[0],
+                                          ori[1]) > CORRIDOR_EPS):
+                    continue
                 if (tail_reentry_violation_cheb(
                         np.asarray(plo), corr, ori) != 0
                         or tail_reentry_violation_cheb(
@@ -589,7 +598,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
                 z = _zmap(corr.xs, corr.xa, corr.xb)
                 diff = np.abs(cheb.chebval(z, plo)
                               - cheb.chebval(z, phi))
-                if float(np.max(diff)) < 1e-6:
+                if float(np.max(diff)) < FAMILY_MIN_SPAN:
                     continue   # degenerate: same polynomial
                 return (np.asarray(plo), np.asarray(phi), D, ori)
     return None
