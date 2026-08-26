@@ -667,8 +667,9 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
     return out_fits, out_corrs, out_routes
 
 
-def generate(letter: str, *, min_curves: int = 1, seed: int = DEFAULT_SEED,
-             reporter=lambda msg: None) -> list[str]:
+def generate_letter(letter: str, *, min_curves: int = 1,
+                    seed: int = DEFAULT_SEED,
+                    reporter=lambda msg: None):
     """Run the full pipeline for one glyph.
 
     M = max(K, min_curves) curves are emitted where K is the proven
@@ -695,6 +696,111 @@ def generate(letter: str, *, min_curves: int = 1, seed: int = DEFAULT_SEED,
 
 class GenerationError(Exception):
     """Valid request, but generation/validation could not succeed."""
+
+
+DEFAULT_LETTER_SPACING = 0.15
+DEFAULT_SPACE_WIDTH = 0.50
+
+
+@dataclass(frozen=True)
+class PlacedFit:
+    """One local PathFit rigidly translated to text-space x by `dx`."""
+    fit: PathFit
+    dx: float
+    char: str
+    char_index: int
+
+
+@dataclass(frozen=True)
+class TextGeneration:
+    placed_fits: tuple
+
+
+def validate_text(text: str) -> None:
+    """Reject anything but A-Z/a-z/space before any generation starts."""
+    if not text:
+        raise GenerationError("text must not be empty")
+    for i, ch in enumerate(text):
+        if ch == " ":
+            continue
+        if ("A" <= ch <= "Z") or ("a" <= ch <= "z"):
+            continue
+        raise GenerationError(
+            f"unsupported character at index {i}: {ch!r}"
+        )
+    if all(ch == " " for ch in text):
+        raise GenerationError("text must contain at least one letter")
+
+
+def glyph_visible_width(letter: str) -> float:
+    """Canonical normalized visible width of one glyph's fill."""
+    from src.topology import glyph_geometry
+    geom = glyph_geometry(letter)
+    return float(geom.xmax - geom.xmin)
+
+
+def make_occurrence_reporter(reporter, index, ch, text_len):
+    """Prefix diagnostics per occurrence (multi-letter text only)."""
+    if text_len == 1:
+        return reporter
+
+    def wrapped(msg):
+        reporter(f"[{index} {ch!r}] {msg}")
+
+    return wrapped
+
+
+def generate_text(text: str, *, min_curves=None, seed: int = DEFAULT_SEED,
+                  letter_spacing: float = DEFAULT_LETTER_SPACING,
+                  space_width: float = DEFAULT_SPACE_WIDTH,
+                  reporter=lambda msg: None) -> TextGeneration:
+    """Lay out independent per-letter generations with x-translation only.
+
+    Each non-space occurrence runs the existing single-letter generator
+    independently with the SAME seed; placement advances by visible
+    glyph width plus letter spacing; spaces advance by space_width.
+    """
+    validate_text(text)
+
+    if letter_spacing < 0:
+        raise GenerationError("--letter-spacing must be non-negative")
+    if space_width < 0:
+        raise GenerationError("--space-width must be non-negative")
+
+    mc = 1 if min_curves is None else min_curves
+    cursor = 0.0
+    placed = []
+
+    for index, ch in enumerate(text):
+        if ch == " ":
+            cursor += space_width
+            continue
+
+        try:
+            fits, _, _ = generate_letter(
+                ch,
+                min_curves=mc,
+                seed=seed,
+                reporter=make_occurrence_reporter(
+                    reporter, index, ch, len(text)),
+            )
+        except GenerationError as exc:
+            raise GenerationError(
+                f"generation failed at character {index} {ch!r}: {exc}"
+            ) from exc
+
+        for fit in fits:
+            placed.append(PlacedFit(fit=fit, dx=cursor, char=ch,
+                                    char_index=index))
+
+        width = glyph_visible_width(ch)
+        cursor += width + letter_spacing
+
+    return TextGeneration(tuple(placed))
+
+
+# Backwards-compatible single-letter entry point
+generate = generate_letter
 
 
 def run(argv) -> int:

@@ -1154,3 +1154,83 @@ def test_h15_allocation_balanced():
 def test_a15_exact_count():
     fits, _, _ = d.generate("A", min_curves=15)
     assert len(fits) == 15
+
+
+# ---------------------------------------------------------------------------
+# Text generation: layout
+# ---------------------------------------------------------------------------
+
+
+def test_validate_text_accepts_and_rejects():
+    d.validate_text("A")
+    d.validate_text("Hello world")
+    for bad in ("", "123", "A!", "A\tB", "A\nB", "Привіт", "   "):
+        with pytest.raises(d.GenerationError):
+            d.validate_text(bad)
+
+
+def test_glyph_visible_width_real():
+    widths = {ch: d.glyph_visible_width(ch) for ch in "AIWim"}
+    for w in widths.values():
+        assert 0 < w <= 1.0 + 1e-9
+    assert widths["I"] != widths["W"]
+
+
+def test_aa_placement_offsets():
+    result = d.generate_text("AA")
+    dx0 = 0.0
+    dx1 = d.glyph_visible_width("A") + d.DEFAULT_LETTER_SPACING
+    for p in result.placed_fits:
+        if p.char_index == 0:
+            assert p.dx == dx0
+        else:
+            assert p.dx == pytest.approx(dx1)
+
+
+def test_repeated_letters_identical_local_geometry():
+    result = d.generate_text("AAA", seed=42)
+    by_idx = {}
+    for p in result.placed_fits:
+        by_idx.setdefault(p.char_index, []).append(p)
+    idxs = sorted(by_idx)
+    assert len(idxs) == 3
+    base = by_idx[idxs[0]]
+    for other_i in idxs[1:]:
+        for pb, po in zip(base, by_idx[other_i]):
+            assert po.fit.degree == pb.fit.degree
+            assert np.array_equal(po.fit.coef_cheb, pb.fit.coef_cheb)
+            assert np.array_equal(po.fit.corridor.xs, pb.fit.corridor.xs)
+            assert po.char == pb.char
+
+
+def test_space_advances_cursor():
+    want = (d.glyph_visible_width("A")
+            + d.DEFAULT_LETTER_SPACING + d.DEFAULT_SPACE_WIDTH)
+    r1 = d.generate_text("A A")
+    assert all(p.dx == pytest.approx(want) for p in r1.placed_fits
+               if p.char_index == 2)
+    want2 = want + d.DEFAULT_SPACE_WIDTH
+    r2 = d.generate_text("A  A")
+    assert all(p.dx == pytest.approx(want2) for p in r2.placed_fits
+               if p.char_index == 3)
+    # leading space shifts the first glyph by exactly space_width
+    r3 = d.generate_text(" A")
+    first = [p for p in r3.placed_fits if p.char_index == 1]
+    assert all(p.dx == pytest.approx(d.DEFAULT_SPACE_WIDTH)
+               for p in first)
+
+
+def test_min_curves_applies_per_letter():
+    result = d.generate_text("AH", min_curves=5)
+    counts = {}
+    for p in result.placed_fits:
+        counts[p.char] = counts.get(p.char, 0) + 1
+    assert counts["A"] >= 5 and counts["H"] >= 5
+    assert sum(counts.values()) == len(result.placed_fits)
+
+
+def test_output_order_is_character_order():
+    result = d.generate_text("AI")
+    seen = [p.char_index for p in result.placed_fits]
+    assert seen == sorted(seen)
+    assert set(seen) == {0, 1}
