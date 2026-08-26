@@ -67,12 +67,41 @@ def _font_path() -> str:
     )
 
 
+_CAP_HEIGHT_LETTER = "H"
+_font_scale_cache: dict = {}
+
+
+def _font_normalization_scale() -> float:
+    """One deterministic font-wide normalization scale.
+
+    The visible height of the capital-height reference glyph ('H')
+    at the canonical source size maps exactly to SIZE (= 1.0). Every
+    glyph shares this single uniform x/y scale, preserving the font's
+    own relative metrics (x-height, ascenders, descenders, widths).
+    """
+    key = (_font_path(), SIZE)
+    if key not in _font_scale_cache:
+        ref = TextPath((0, 0), _CAP_HEIGHT_LETTER, size=100,
+                       prop=FontProperties(fname=_font_path()))
+        pts = np.vstack([np.asarray(p, dtype=float)
+                         for p in ref.to_polygons()])
+        height = float(pts[:, 1].max() - pts[:, 1].min())
+        _font_scale_cache[key] = SIZE / max(height, 1e-12)
+    return _font_scale_cache[key]
+
+
 def _normalized_polygons(letter: str) -> list[np.ndarray]:
     """Flattened glyph outlines normalized like the canonical raster:
-    bundled DejaVuSans at size 100, aspect preserved, filled-bbox
-    lower-left mapped to (0, 0), max dimension 100, y-up."""
-    tp = TextPath((0, 0), letter, size=100,
-                  prop=FontProperties(fname=_font_path()))
+    bundled DejaVuSans at size 100, one shared font-wide uniform scale
+    mapping the capital-height reference ('H' visible height) to SIZE,
+    filled-bbox lower-left mapped to (0, 0), y-up. Glyphs are never
+    independently resized."""
+    try:
+        tp = TextPath((0, 0), letter, size=100,
+                      prop=FontProperties(fname=_font_path()))
+    except Exception as exc:
+        raise ValueError(
+            f"font has no usable outline for {letter!r}") from exc
     polys = [np.asarray(p, dtype=float).copy() for p in tp.to_polygons()]
     polys = [p for p in polys if len(p) >= 3]
     if not polys:
@@ -80,7 +109,7 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
     pts = np.vstack(polys)
     mn = pts.min(axis=0)
     mx = pts.max(axis=0)
-    scale = SIZE / max(mx[0] - mn[0], mx[1] - mn[1], 1e-12)
+    scale = _font_normalization_scale()
     out = []
     for poly in polys:
         t = np.empty_like(poly)
@@ -91,17 +120,25 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
 
 
 def _canonical_fill(polys_norm: list[np.ndarray]):
-    """Even-odd rasterization of normalized outlines on the canonical
-    GRID x GRID sample grid. Rows increase with y (row r centers at
-    y = (r + 0.5) * step)."""
+    """Even-odd rasterization of normalized outlines at the canonical
+    resolution (step = SIZE / GRID). The canvas is sized from the
+    glyph's actual normalized extent: with the shared font-wide scale a
+    glyph may legitimately exceed SIZE (round-letter overshoot,
+    ascenders/descenders), so cell counts are derived from the outline
+    bbox instead of being hard-capped at GRID. Rows increase with y
+    (row r centers at y = (r + 0.5) * step)."""
     step = SIZE / GRID
-    axis = (np.arange(GRID) + 0.5) * step
-    gx, gy = np.meshgrid(axis, axis)
+    pts = np.vstack(polys_norm)
+    nx = max(GRID, int(np.ceil(pts[:, 0].max() / step)))
+    ny = max(GRID, int(np.ceil(pts[:, 1].max() / step)))
+    ax = (np.arange(nx) + 0.5) * step
+    ay = (np.arange(ny) + 0.5) * step
+    gx, gy = np.meshgrid(ax, ay)
     grid = np.column_stack([gx.ravel(), gy.ravel()])
     inside = np.zeros(len(grid), dtype=bool)
     for ring in polys_norm:
         inside ^= Path(ring).contains_points(grid)
-    return inside.reshape(GRID, GRID), step
+    return inside.reshape(ny, nx), step
 
 
 def _mask_boundary_cloud(fill: np.ndarray, step: float) -> np.ndarray:
@@ -135,6 +172,9 @@ def glyph_geometry(letter: str) -> GlyphGeometry:
     fill, _step = _canonical_fill(contours)
     points = _mask_boundary_cloud(fill, _step)
     ys, xs_ = np.nonzero(fill)
+    if not contours or len(ys) == 0:
+        raise ValueError(
+            f"font has no usable outline for {letter!r}")
     step = SIZE / GRID
     return GlyphGeometry(
         letter=letter,
@@ -559,6 +599,7 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
         vertices.append(v)
         return v.id
 
+
     node_vert = {n.id: new_vertex(n.xy[0] * step,
                                   "terminal" if n.kind == "end"
                                   else "junction")
@@ -625,13 +666,33 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
         pts = se.points * np.array([step, step])   # pixel -> glyph coords
         if (len(pts) > 50
                 and float(np.hypot(*(pts[0] - pts[-1]))) <= 2.0 * step):
-            # closed ring: rotate to the global x-minimum and split into
-            # two arcs between a fresh terminal vertex pair
-            i0 = int(np.argmin(pts[:, 0]))
-            pts = np.roll(pts, -i0, axis=0)
-            mid = len(pts) // 2
+            # closed ring: split into two arcs between a fresh terminal
+            # vertex pair. Cut points are the MIDDLES of the leftmost
+            # and rightmost extremum plateaus: cutting anywhere else
+            # leaves a raster plateau fragment straddling an extremum,
+            # which atomizes into a spurious sub-stroke vertical stub.
+            def _plateau_mid(idx):
+                x = pts[idx, 0]
+                a = idx
+                while a > 0 and pts[a - 1, 0] == x:
+                    a -= 1
+                b = idx
+                while b + 1 < len(pts) and pts[b + 1, 0] == x:
+                    b += 1
+                return (a + b) // 2
+
+            i_left = _plateau_mid(int(np.argmin(pts[:, 0])))
+            pts = np.roll(pts, -i_left, axis=0)
+            i_right = _plateau_mid(int(np.argmax(pts[:, 0])))
+            n_pts = len(pts)
+            halves = []
+            if 1 <= i_right <= n_pts - 1:
+                halves.append(pts[:i_right + 1])
+                halves.append(np.vstack([pts[i_right:], pts[:1]]))
+            else:
+                halves.append(np.vstack([pts, pts[:1]]))
             vid = new_vertex(float(pts[0, 0]), "terminal")
-            for half in (pts[:mid + 1], pts[mid:]):
+            for half in halves:
                 for j0, j1 in _monotone_pieces(half):
                     seg = half[j0:j1 + 1]
                     a_vid = (vid if j0 == 0
@@ -1126,12 +1187,52 @@ def build_route_corridor(graph: RouteGraph, route: Route,
     # crawl just above the synthetic frontier until raw x catches up,
     # then EXACT raw x resumes. No persistent downstream translation.
     VERT = 0.25          # |dx| < VERT*dy => locally vertical (ratio)
+    # A GENUINE vertical regime cuts its containing row run at about the
+    # local stroke width. A raster staircase diagonal that merely touches
+    # a wider horizontal structure (bar/diagonal junctions in Z-like
+    # glyphs) cuts the row run at a multiple of the stroke width;
+    # unfolding there displaces landmarks grossly beyond the stroke and
+    # the crawl frontier captures the rest of the diagonal. Measured:
+    # real vertical/near-vertical strokes cut at <= ~1.1x stroke
+    # diameter; Z/z staircase artifacts at >= ~1.4x.
+    UNFOLD_RUN_WIDTH_GAIN = 1.25
     EPS_X = UNFOLD_CRAWL_STEP
     p = np.array(lam[:, 0], dtype=float)
     deform = np.array(["none"] * len(p), dtype=object)
     frontier = None      # synthetic frontier after an unfold
     eps_n = 0            # crawl step counter inside overlap
     unfold_windows = []  # audit: (win_lo, win_hi) per vertical group
+
+    # One raw-point placement path shared by ordinary nonvertical
+    # landmarks AND by width-gate-rejected apparent-vertical groups:
+    # after a prior legitimate unfold the active synthetic frontier
+    # still applies (overlap-exit crawl until raw x catches up, then
+    # exact raw x resumes), and genuine backwards x remains an error.
+    NOISE_X = UNFOLD_NOISE_X   # covers multi-step crawl overshoot;
+                     # genuine reversals are stroke-width scale
+
+    def _place_raw_point(idx):
+        nonlocal frontier, eps_n
+        raw = lam[idx, 0]
+        if frontier is not None and raw <= frontier:
+            # overlap-exit crawl: microscopic increasing steps just
+            # above the frontier until raw x catches up
+            eps_n += 1
+            p[idx] = max(frontier + eps_n * EPS_X,
+                         p[idx - 1] + UNFOLD_MONOTONE_PUSH)
+            deform[idx] = "unfold-exit-overlap"
+        else:
+            if frontier is not None:
+                pass     # raw x caught up: resume exact raw x
+            frontier = None
+            eps_n = 0
+            if raw < p[idx - 1] - NOISE_X:
+                raise RuntimeError(
+                    "Phase 1 bug: genuine backwards x on a "
+                    f"nonvertical section ({raw:.3f} after "
+                    f"{p[idx - 1]:.3f})")
+            p[idx] = max(raw, p[idx - 1] + UNFOLD_MONOTONE_PUSH)
+
     i = 1
     while i < len(p):
         dx = lam[i, 0] - lam[i - 1, 0]
@@ -1158,6 +1259,29 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                         lam[k, 0] + STROKE_MIN_HALF)
                     for k in range(i, j + 1)]
             lo_r, hi_r = min(wins, key=lambda w: w[1] - w[0])
+            # vertical-regime gate: the containing row run must be
+            # commensurate with the local stroke width; otherwise this
+            # is raster staircase noise inside a wider structure and
+            # raw x progression is preserved (no unfold, no frontier).
+            r_local = 0.0
+            for k in range(i, j + 1):
+                rr_ = int(min(max(round(lam[k, 1] / step), 0),
+                              geom.fill.shape[0] - 1))
+                cc_ = int(min(max(round(lam[k, 0] / step), 0),
+                              geom.fill.shape[1] - 1))
+                r_local = max(r_local, float(radius[rr_, cc_]) * step)
+            if hi_r - lo_r > \
+                    UNFOLD_RUN_WIDTH_GAIN * 2.0 * max(r_local,
+                                                      STROKE_MIN_HALF):
+                # rejected: raster staircase noise inside a wider
+                # structure. Keep raw arc x, but still run every point
+                # of the group through the normal frontier/catch-up
+                # placement so a prior legitimate unfold's active
+                # frontier is honoured (crawl until raw catches up).
+                for k in range(i, j + 1):
+                    _place_raw_point(k)
+                i = j + 1
+                continue
             margin = min(CORRIDOR_MARGIN, max((hi_r - lo_r) * 0.15,
                                          UNFOLD_MIN_MARGIN))
             win_lo = max(lo_r + margin, p[i - 1])
@@ -1175,29 +1299,7 @@ def build_route_corridor(graph: RouteGraph, route: Route,
             eps_n = 0
             i = j + 1
         else:
-            raw = lam[i, 0]
-            # epsilon-pushed joins make consecutive atom starts differ by
-            # <= ~1e-4; anything under NOISE_X is equal-x raster noise
-            NOISE_X = UNFOLD_NOISE_X   # covers multi-step crawl overshoot;
-                             # genuine reversals are stroke-width scale
-            if frontier is not None and raw <= frontier:
-                # overlap-exit crawl: microscopic increasing steps just
-                # above the frontier until raw x catches up
-                eps_n += 1
-                p[i] = max(frontier + eps_n * EPS_X,
-                       p[i - 1] + UNFOLD_MONOTONE_PUSH)
-                deform[i] = "unfold-exit-overlap"
-            else:
-                if frontier is not None:
-                    pass     # raw x caught up: resume exact raw x
-                frontier = None
-                eps_n = 0
-                if raw < p[i - 1] - NOISE_X:
-                    raise RuntimeError(
-                        "Phase 1 bug: genuine backwards x on a "
-                        f"nonvertical section ({raw:.3f} after "
-                        f"{p[i - 1]:.3f})")
-                p[i] = max(raw, p[i - 1] + UNFOLD_MONOTONE_PUSH)
+            _place_raw_point(i)
             i += 1
 
 
@@ -1533,10 +1635,16 @@ def _monotone_pieces(pts: np.ndarray):
         if last_sign == 0:
             last_sign = sgn
         elif sgn != last_sign:
-            # the extremum POINT is index i (dx flips on the edge
-            # i->i+1); both pieces share it deterministically, which
-            # also places plateau extrema at the first plateau point
-            cuts.append(i)
+            # the extremum POINT is shared by both pieces. Raster
+            # skeletons flatten smooth extrema into multi-point
+            # plateaus; cutting at the first plateau point orphans the
+            # plateau remainder as a pure-vertical sub-stroke fragment.
+            # Cut at the MIDDLE of the zero-dx plateau instead so both
+            # pieces leave the extremum symmetrically.
+            j = i
+            while j > 0 and dx[j - 1] == 0:
+                j -= 1
+            cuts.append((j + i) // 2)
             last_sign = sgn
     if cuts[-1] != n - 1:
         cuts.append(n - 1)

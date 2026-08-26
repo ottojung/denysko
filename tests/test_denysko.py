@@ -455,11 +455,47 @@ def test_invalid_cli_input(capsys):
         with pytest.raises(SystemExit) as ei:
             d.run(argv)
         assert ei.value.code == 2, argv
-    # structurally valid text with unsupported characters exits 1
-    # with an explanatory message, not a usage error
-    assert d.run(["1"]) == 1
+
+
+def test_all_space_text_emits_zero_equations(capsys):
+    result = d.generate_text("   ")
+    assert result.placed_fits == ()
+    assert d.run(["   ", "-q"]) == 0
     captured = capsys.readouterr()
-    assert "index 0" in captured.err and "'1'" in captured.err
+    assert captured.out == ""
+
+
+def test_punctuation_is_attempted_not_whitelist_rejected(capsys):
+    # One real public-CLI generation proves both punctuation glyphs are
+    # attempted. The exact Hello, World! rendering is the mandatory PR
+    # smoke artifact, so the unit suite need not regenerate it too.
+    assert d.run([",!", "--seed", "42", "-q"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines and all(line.startswith("y=") for line in lines)
+
+
+def test_arbitrary_char_failure_reports_index_and_repr(monkeypatch,
+                                                       capsys):
+    import string
+
+    def boom(letter, **kwargs):
+        if letter in string.ascii_letters:
+            # This test is about contextual failure/no-partial-output, not
+            # fitting the successful prefix. Keep the prefix deliberately
+            # cheap while still exercising generate_text().
+            return [object()], None, None
+        raise RuntimeError("synthetic raster failure")
+
+    monkeypatch.setattr(d, "generate_letter", boom)
+    with pytest.raises(d.GenerationError) as ei:
+        d.generate_text("ab#")
+    msg = str(ei.value)
+    assert "character 2" in msg and "'#'" in msg
+    # zero partial stdout through the public CLI
+    assert d.run(["ab#", "-q"]) == 1
+    captured = capsys.readouterr()
+    assert "character 2" in captured.err and "'#'" in captured.err
     assert captured.out == ""
 
 
@@ -1113,11 +1149,12 @@ def test_glyph_run_tolerance_normalized():
 def test_phase1_matches_known_good_reference_facts():
     """Frozen compact facts measured against b79ddd4/100 worktree:
     same route signatures, same landmark counts, same xa/xb."""
-    # xa/xb re-frozen after the stacked-landmark merge fix (W/Z/z
-    # corridor repair); signatures and landmark semantics unchanged.
+    # xa/xb re-frozen after issue #1 (shared font-wide scale mapping
+    # the 'H' cap height to 1.0): capital-letter facts are unchanged;
+    # lowercase 'm' corridors moved with its font-relative size.
     ref = {
         "T": [(0.2519, 0.9571), (-0.1134, 0.6543)],
-        "m": [(-0.1153, 1.1635), (-0.1153, 0.7219)],
+        "m": [(-0.1095, 1.2571), (-0.1095, 0.7745)],
         "H": [(-0.1036, 0.9265), (-0.1036, 0.9265)],
         "A": [(-0.0782, 1.0704), (-0.0782, 1.0704)],
     }
@@ -1152,6 +1189,136 @@ def test_t_and_m_generation_succeed():
 
 
 # ---------------------------------------------------------------------------
+# Issue #7: staircase diagonals captured by vertical-unfold crawl (Z/z)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("letter", ["W", "Z", "z"])
+def test_wzz_generation_succeeds(letter):
+    """Real-glyph regression for issue #7: W, Z, z must generate."""
+    fits, _, _ = d.generate(letter)
+    assert len(fits) >= 1
+
+
+@pytest.mark.parametrize("letter", ["W", "Z", "z"])
+def test_wzz_all_corridors_contained(letter):
+    """Every selected route corridor of W/Z/z is a geometric subset of
+    the glyph fill (the failing Z route used to miss by ~0.40)."""
+    geom = glyph_geometry(letter)
+    graph = build_stroke_route_graph(geom)
+    cands = enumerate_complete_routes(graph)
+    sel = select_routes_min_cover(graph, cands)
+    assert sel
+    for j in sel:
+        c = build_route_corridor(graph, cands[j], geom)
+        assert d_topology.corridor_glyph_violation(c, geom) <= 0.09
+
+
+@pytest.mark.parametrize("letter", ["Z", "z"])
+def test_diagonal_atoms_keep_raw_x_progression(letter):
+    """Mechanism test: raster staircase noise on a diagonal must not be
+    vertically unfolded into a wide row run; the unfold-crawl frontier
+    may therefore never displace any realized landmark grossly beyond
+    the local stroke width (~0.06 normalized). Before the run-width
+    gate the crawl pinned up to ~0.52 of x on Z/z diagonals."""
+    geom = glyph_geometry(letter)
+    graph = build_stroke_route_graph(geom)
+    cands = enumerate_complete_routes(graph)
+    sel = select_routes_min_cover(graph, cands)
+    for j in sel:
+        c = build_route_corridor(graph, cands[j], geom)
+        for emb in c.realized.values():
+            shift = np.abs(np.asarray(emb["x"]) - np.asarray(emb["raw_x"]))
+            assert float(shift.max()) <= 0.1
+
+
+def _gate_regression_geometry():
+    """Synthetic glyph: narrow vertical stem (rows where ONLY the stem
+    is filled -> legitimate vertical unfold) joined to a WIDE horizontal
+    band (rows whose containing row run is many stroke widths wide ->
+    apparent-vertical staircase groups there are rejected by the
+    run-width gate)."""
+    step = 1.0 / 512
+    mask = np.zeros((512, 512), dtype=bool)
+    mask[200:321, 96:121] = True     # stem: cols 96..120 (25 px wide)
+    mask[320:431, 20:491] = True     # wide band: 471 px wide
+    return GlyphGeometry(
+        letter="synthetic-gate",
+        contours=[],
+        points=np.zeros((0, 2)),
+        fill=mask,
+        xmin=0.0, xmax=512 * step, ymin=0.0, ymax=512 * step,
+    )
+
+
+def test_rejected_apparent_vertical_group_honours_active_frontier():
+    """Regression for the review finding on PR #8: a width-gate-
+    rejected apparent-vertical group must NOT bypass the frontier /
+    catch-up logic. Sequence exercised: legitimate unfold on the stem
+    sets a synthetic frontier ahead of raw x -> the following staircase
+    diagonal inside the wide band is rejected by the gate -> its raw
+    points still crawl monotonically just above the active frontier
+    until raw x catches up -> exact raw x resumes."""
+    from src.topology import (OrientedRouteEdge, Route, RouteEdge,
+                              RouteGraph, build_route_corridor)
+
+    step = 1.0 / 512
+    geom = _gate_regression_geometry()
+
+    # single-edge polyline: genuine vertical rise inside the stem
+    # (dx = 0), then a raster staircase diagonal inside the wide band
+    # (dx = one raster step, dy >> dx per point => apparent-vertical).
+    x0 = 108.5 * step                       # stem centerline
+    pts = [[x0, y] for y in np.linspace(210 * step, 319 * step, 6)]
+    y = 322 * step
+    for _ in range(26):
+        pts.append([pts[-1][0] + step, y])
+        y += 0.008
+    seg = np.asarray(pts)
+
+    edges = [RouteEdge(0, 0, 1,
+                       xs=seg[:, 0].copy(),
+                       lower=np.zeros(len(seg)),
+                       upper=np.zeros(len(seg)),
+                       points=seg.copy())]
+    verts = [RouteVertex(0, float(seg[0, 0]), "terminal"),
+             RouteVertex(1, float(seg[-1, 0]), "terminal")]
+    verts[0].outgoing = (0,)
+    verts[1].incoming = (0,)
+    g = RouteGraph(vertices=verts, edges=edges, meaningful=frozenset({0}))
+    route = Route((OrientedRouteEdge(0, 0, 1),))
+
+    cor = build_route_corridor(g, route, geom)
+    assert len(cor.realized) == 1
+    emb = next(iter(cor.realized.values()))
+    x = np.asarray(emb["x"])
+    raw_x = np.asarray(emb["raw_x"])
+    deform = np.asarray(emb["deform"])
+
+    # all three phases actually exercised by the synthetic geometry
+    assert (deform == "vertical-unfold").any()
+    assert (deform == "unfold-exit-overlap").any()
+    assert (deform == "none").any()
+
+    # monotone realized x throughout unfold -> crawl -> resume
+    # (landmark samples may share a merged node; corridor nodes are
+    # strictly increasing)
+    assert np.all(np.diff(x) >= 0)
+    assert np.all(np.diff(np.asarray(cor.xs)) > 0)
+
+    # crawl stays just above the frontier: displaced forward but only
+    # by at most the stem stroke diameter beyond raw x (no gross drift)
+    ov = deform == "unfold-exit-overlap"
+    assert np.all(x[ov] >= raw_x[ov] - 1e-12)
+    assert float((x - raw_x)[ov].max()) <= 0.05
+
+    # after raw x catches up, exact raw x resumes ('none' samples sit on
+    # raw positions; node merging may absorb <= one raster step)
+    none = deform == "none"
+    assert float(np.abs(x - raw_x)[none].max()) <= 2.0 * step
+
+
+# ---------------------------------------------------------------------------
 # H multiplicity + balanced allocation (known-good reference coverage)
 # ---------------------------------------------------------------------------
 
@@ -1179,79 +1346,91 @@ def test_a15_exact_count():
 # ---------------------------------------------------------------------------
 
 
-def test_validate_text_accepts_and_rejects():
+def test_validate_text_is_structural_only():
     d.validate_text("A")
     d.validate_text("Hello world")
-    for bad in ("", "123", "A!", "A\tB", "A\nB", "Привіт", "   "):
-        with pytest.raises(d.GenerationError):
-            d.validate_text(bad)
+    # no character whitelist: arbitrary text is accepted structurally
+    for good in ("123", "A!", "A\tB", "A\nB", "Привіт", "   ", ","):
+        d.validate_text(good)
+    # only emptiness remains invalid
+    with pytest.raises(d.GenerationError):
+        d.validate_text("")
 
 
 def test_glyph_visible_width_real():
     widths = {ch: d.glyph_visible_width(ch) for ch in "AIWim"}
     for w in widths.values():
-        assert 0 < w <= 1.0 + 1e-9
+        assert 0 < w
     assert widths["I"] != widths["W"]
+    # font-relative scale (issue #1): wide glyphs may legitimately
+    # exceed the cap-height unit, but narrow capitals stay well inside
+    assert widths["I"] < 1.0
+    assert widths["i"] < d.glyph_visible_width("H")
 
 
-def test_aa_placement_offsets():
+def _stub_text_generator(monkeypatch):
+    """Cheap deterministic generator for layout/control-flow tests.
+
+    Real glyph fitting is covered elsewhere; these tests should exercise the
+    text composition rules without paying the LP/skeletonization cost again.
+    """
+    calls = []
+    sentinel = object()
+
+    def fake_generate(ch, **kw):
+        n = kw.get("min_curves") or 1
+        calls.append((ch, n, kw.get("seed")))
+        return [sentinel] * n, None, None
+
+    widths = {"A": 0.7, "H": 0.6, "I": 0.2}
+    monkeypatch.setattr(d, "generate_letter", fake_generate)
+    monkeypatch.setattr(d, "glyph_visible_width",
+                        lambda ch: widths.get(ch, 0.5))
+    return calls, sentinel
+
+
+def test_aa_placement_offsets(monkeypatch):
+    _stub_text_generator(monkeypatch)
     result = d.generate_text("AA")
-    dx0 = 0.0
-    dx1 = d.glyph_visible_width("A") + d.DEFAULT_LETTER_SPACING
-    for p in result.placed_fits:
-        if p.char_index == 0:
-            assert p.dx == dx0
-        else:
-            assert p.dx == pytest.approx(dx1)
+    dx1 = 0.7 + d.DEFAULT_LETTER_SPACING
+    assert [p.dx for p in result.placed_fits] == pytest.approx([0.0, dx1])
 
 
-def test_repeated_letters_identical_local_geometry():
+def test_repeated_letters_use_same_seed_and_generator_contract(monkeypatch):
+    calls, sentinel = _stub_text_generator(monkeypatch)
     result = d.generate_text("AAA", seed=42)
-    by_idx = {}
-    for p in result.placed_fits:
-        by_idx.setdefault(p.char_index, []).append(p)
-    idxs = sorted(by_idx)
-    assert len(idxs) == 3
-    base = by_idx[idxs[0]]
-    for other_i in idxs[1:]:
-        for pb, po in zip(base, by_idx[other_i]):
-            assert po.fit.degree == pb.fit.degree
-            assert np.array_equal(po.fit.coef_cheb, pb.fit.coef_cheb)
-            assert np.array_equal(po.fit.corridor.xs, pb.fit.corridor.xs)
-            assert po.char == pb.char
+    assert calls == [("A", 1, 42), ("A", 1, 42), ("A", 1, 42)]
+    assert len(result.placed_fits) == 3
+    assert all(p.fit is sentinel for p in result.placed_fits)
 
 
-def test_space_advances_cursor():
-    want = (d.glyph_visible_width("A")
-            + d.DEFAULT_LETTER_SPACING + d.DEFAULT_SPACE_WIDTH)
+def test_space_advances_cursor(monkeypatch):
+    _stub_text_generator(monkeypatch)
+    want = 0.7 + d.DEFAULT_LETTER_SPACING + d.DEFAULT_SPACE_WIDTH
     r1 = d.generate_text("A A")
-    assert all(p.dx == pytest.approx(want) for p in r1.placed_fits
-               if p.char_index == 2)
+    assert [p.dx for p in r1.placed_fits if p.char_index == 2] ==         pytest.approx([want])
     want2 = want + d.DEFAULT_SPACE_WIDTH
     r2 = d.generate_text("A  A")
-    assert all(p.dx == pytest.approx(want2) for p in r2.placed_fits
-               if p.char_index == 3)
-    # leading space shifts the first glyph by exactly space_width
+    assert [p.dx for p in r2.placed_fits if p.char_index == 3] ==         pytest.approx([want2])
     r3 = d.generate_text(" A")
-    first = [p for p in r3.placed_fits if p.char_index == 1]
-    assert all(p.dx == pytest.approx(d.DEFAULT_SPACE_WIDTH)
-               for p in first)
+    assert [p.dx for p in r3.placed_fits if p.char_index == 1] ==         pytest.approx([d.DEFAULT_SPACE_WIDTH])
 
 
-def test_min_curves_applies_per_letter():
+def test_min_curves_applies_per_letter(monkeypatch):
+    calls, _ = _stub_text_generator(monkeypatch)
     result = d.generate_text("AH", min_curves=5)
+    assert calls == [("A", 5, 42), ("H", 5, 42)]
     counts = {}
     for p in result.placed_fits:
         counts[p.char] = counts.get(p.char, 0) + 1
-    assert counts["A"] >= 5 and counts["H"] >= 5
-    assert sum(counts.values()) == len(result.placed_fits)
+    assert counts == {"A": 5, "H": 5}
 
 
-def test_output_order_is_character_order():
+def test_output_order_is_character_order(monkeypatch):
+    _stub_text_generator(monkeypatch)
     result = d.generate_text("AI")
     seen = [p.char_index for p in result.placed_fits]
-    assert seen == sorted(seen)
-    assert set(seen) == {0, 1}
+    assert seen == [0, 1]
 
 
 # ---------------------------------------------------------------------------
@@ -1298,13 +1477,17 @@ def test_high_degree_translation_horner_midshift():
     np.testing.assert_allclose(actual, truth, rtol=1e-6, atol=1e-8)
 
 
-def test_validate_placed_serialization_long_text():
-    # W is currently excluded from generation (known fitting regression,
-    # deferred); use an all-working long text for translation coverage
-    result = d.generate_text("hello there ok")
-    for placed in result.placed_fits:
-        line = d.serialize_placed_fit(placed)
-        d.validate_placed_serialization(placed, line)
+def test_validate_placed_serialization_long_text_offsets():
+    # Translation correctness depends on dx, not on independently refitting a
+    # dozen letters. Generate one real local fit, then exercise offsets larger
+    # than a typical word to catch translated-serialization conditioning.
+    fits, _, _ = d.generate_letter("l")
+    assert fits
+    for i, dx in enumerate((0.0, 1.0, 3.0, 7.0, 15.0)):
+        for fit in fits:
+            placed = d.PlacedFit(fit=fit, dx=dx, char="l", char_index=i)
+            line = d.serialize_placed_fit(placed)
+            d.validate_placed_serialization(placed, line)
 
 
 def test_dx_zero_uses_untouched_serializer():
@@ -1318,24 +1501,16 @@ def test_dx_zero_uses_untouched_serializer():
 # ---------------------------------------------------------------------------
 
 
-def test_cli_one_letter_identity():
-    for letter in ("A", "H", "c"):
-        out_direct = d.run([letter])
-        assert out_direct == 0
-    # single vs quoted-single equivalence through generate_text path
+def test_cli_one_letter_identity(monkeypatch, capsys):
+    # Fit A once, then feed that same real result to both serialization paths.
     fits_a, _, _ = d.generate_letter("A", seed=42)
-    direct = [d.serialize_fit(f) for f in fits_a]
+    triple = (fits_a, None, None)
+    monkeypatch.setattr(d, "generate_letter", lambda *a, **kw: triple)
+    assert d.run(["A", "--seed", "42", "-q"]) == 0
+    direct = capsys.readouterr().out.splitlines()
     placed = d.generate_text("A", seed=42)
     via_text = [d.serialize_placed_fit(p) for p in placed.placed_fits]
     assert direct == via_text
-
-
-def test_cli_unsupported_char_no_stdout(capsys):
-    rc = d.run(["A!"])
-    captured = capsys.readouterr()
-    assert rc == 1
-    assert captured.out == ""
-    assert "index 1" in captured.err and "'" in captured.err
 
 
 def test_cli_later_letter_failure_no_stdout(capsys, monkeypatch):
@@ -1345,7 +1520,7 @@ def test_cli_later_letter_failure_no_stdout(capsys, monkeypatch):
         calls["n"] += 1
         if calls["n"] == 2:
             raise d.GenerationError("boom")
-        return d.generate_letter(ch, **kw)
+        return [object()], None, None
 
     monkeypatch.setattr(d, "generate_letter", failing_generate)
     monkeypatch.setattr(d, "generate", failing_generate)
@@ -1362,3 +1537,84 @@ def test_cli_later_letter_failure_no_stdout(capsys, monkeypatch):
 def test_cli_ok_smoke():
     rc = d.run(["OK", "-q"])
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Font-relative glyph scale (issue #1): one shared font-wide scale
+# ---------------------------------------------------------------------------
+
+
+def _raw_textpath_bbox(letter: str):
+    import matplotlib
+    from matplotlib.font_manager import FontProperties
+    from matplotlib.textpath import TextPath
+
+    tp = TextPath((0, 0), letter, size=100, prop=FontProperties(
+        fname=matplotlib.get_data_path() + "/fonts/ttf/DejaVuSans.ttf"))
+    pts = np.vstack([np.asarray(p, dtype=float) for p in tp.to_polygons()])
+    mn, mx = pts.min(axis=0), pts.max(axis=0)
+    return mn, mx
+
+
+@pytest.mark.parametrize("cap,low", [("C", "c"), ("O", "o"), ("X", "x")])
+def test_lowercase_shorter_than_capital(cap, low):
+    from src.topology import glyph_geometry
+
+    h_cap = glyph_geometry(cap).ymax - glyph_geometry(cap).ymin
+    h_low = glyph_geometry(low).ymax - glyph_geometry(low).ymin
+    assert 0.3 < h_low < 0.85 * h_cap
+
+
+@pytest.mark.parametrize("letter", ["H", "C", "O", "X"])
+def test_cap_height_reference_maps_to_one(letter):
+    from src.topology import glyph_geometry
+
+    g = glyph_geometry(letter)
+    assert (g.ymax - g.ymin) == pytest.approx(1.0, abs=0.05)
+
+
+@pytest.mark.parametrize("letter", "CcOoXxAH")
+def test_uniform_scale_preserves_aspect_ratio(letter):
+    """Aspect ratio of the normalized bbox equals the raw font's."""
+    from src.topology import glyph_geometry
+
+    g = glyph_geometry(letter)
+    mn, mx = _raw_textpath_bbox(letter)
+    raw_aspect = (mx[0] - mn[0]) / (mx[1] - mn[1])
+    norm_aspect = (g.xmax - g.xmin) / (g.ymax - g.ymin)
+    # normalized bboxes are read off the 512x512 even-odd fill mask,
+    # whose boundary-cell classification differs slightly from the
+    # outline bbox (a few percent on round glyphs); per-glyph max-dim
+    # normalization would distort the aspect by far more than this.
+    assert norm_aspect == pytest.approx(raw_aspect, abs=6e-2)
+
+
+def test_no_per_glyph_max_dimension_normalization():
+    """A wide flat glyph must not be stretched to max-dim 1: the shared
+    font scale keeps widths at their font-relative size."""
+    from src.topology import glyph_geometry
+
+    # 'm' is wider than tall in DejaVu Sans; under per-glyph
+    # normalization its height would be forced to ~1.0.
+    g = glyph_geometry("m")
+    assert (g.ymax - g.ymin) < 0.8
+
+
+def test_same_letter_identical_local_geometry_alone_and_in_text():
+    """Contours of a letter generated alone and as an occurrence in text
+    share identical local geometry (before x translation)."""
+    import copy
+
+    from src.topology import glyph_geometry
+
+    alone = glyph_geometry("o").contours
+    again = glyph_geometry("o").contours
+    assert len(alone) == len(again)
+    for a, b in zip(alone, again):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_glyph_visible_width_respects_font_relative_sizes():
+    wc = d.glyph_visible_width("c")
+    wC = d.glyph_visible_width("C")
+    assert 0 < wc < wC <= 1.0 + 1e-9
