@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import sys
+from string import ascii_letters
 
 import numpy as np
 
@@ -339,10 +340,20 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
 # ---------------------------------------------------------------------------
 
 
+def _glyph_geometry_or_error(letter: str):
+    """glyph_geometry with a clean GenerationError for missing glyphs."""
+    from src.topology import glyph_geometry
+    try:
+        return glyph_geometry(letter)
+    except ValueError as exc:
+        raise GenerationError(
+            f"character {letter!r} cannot be generated: {exc}") from exc
+
+
 def build_phase1(letter: str):
     """Phases 1-2: stroke-skeleton routing graph, complete routes,
     exact minimum selection."""
-    geom = glyph_geometry(letter)
+    geom = _glyph_geometry_or_error(letter)
     graph = build_stroke_route_graph(geom)
     candidates = enumerate_complete_routes(graph)
     chosen_idx = select_routes_min_cover(graph, candidates)
@@ -467,7 +478,8 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument("text", type=str, metavar="TEXT",
-                        help="text to render: ASCII letters and spaces")
+                        help="text to render (best effort outside "
+                             "A-Z/a-z); ASCII space is layout-only")
     parser.add_argument("--min-curves", dest="min_curves",
                         type=min_curves_type, metavar="N", default=1,
                         help="request at least N output curves; "
@@ -731,25 +743,20 @@ class TextGeneration:
 
 
 def validate_text(text: str) -> None:
-    """Reject anything but A-Z/a-z/space before any generation starts."""
+    """Structural validation only: text must be non-empty.
+
+    There is deliberately no character whitelist: every non-space
+    code point is attempted through the ordinary independent
+    per-character glyph-generation path (best effort outside the
+    A-Z/a-z/space support contract). ASCII space is layout-only.
+    """
     if not text:
         raise GenerationError("text must not be empty")
-    for i, ch in enumerate(text):
-        if ch == " ":
-            continue
-        if ("A" <= ch <= "Z") or ("a" <= ch <= "z"):
-            continue
-        raise GenerationError(
-            f"unsupported character at index {i}: {ch!r}"
-        )
-    if all(ch == " " for ch in text):
-        raise GenerationError("text must contain at least one letter")
 
 
 def glyph_visible_width(letter: str) -> float:
     """Canonical normalized visible width of one glyph's fill."""
-    from src.topology import glyph_geometry
-    geom = glyph_geometry(letter)
+    geom = _glyph_geometry_or_error(letter)
     return float(geom.xmax - geom.xmin)
 
 
@@ -784,6 +791,7 @@ def generate_text(text: str, *, min_curves=None, seed: int = DEFAULT_SEED,
     mc = 1 if min_curves is None else min_curves
     cursor = 0.0
     placed = []
+    contract_letters = ascii_letters
 
     for index, ch in enumerate(text):
         if ch == " ":
@@ -798,16 +806,24 @@ def generate_text(text: str, *, min_curves=None, seed: int = DEFAULT_SEED,
                 reporter=make_occurrence_reporter(
                     reporter, index, ch, len(text)),
             )
+            for fit in fits:
+                placed.append(PlacedFit(fit=fit, dx=cursor, char=ch,
+                                        char_index=index))
+            width = glyph_visible_width(ch)
         except GenerationError as exc:
             raise GenerationError(
                 f"generation failed at character {index} {ch!r}: {exc}"
             ) from exc
+        except Exception as exc:
+            if ch in contract_letters:
+                # supported-letter regressions must stay loud
+                raise
+            # best-effort arbitrary characters fail cleanly with
+            # character context instead of leaking internal errors
+            raise GenerationError(
+                f"generation failed at character {index} {ch!r}: {exc}"
+            ) from exc
 
-        for fit in fits:
-            placed.append(PlacedFit(fit=fit, dx=cursor, char=ch,
-                                    char_index=index))
-
-        width = glyph_visible_width(ch)
         cursor += width + letter_spacing
 
     return TextGeneration(tuple(placed))
@@ -925,6 +941,7 @@ def serialize_text(result: TextGeneration) -> list:
 
 def run(argv) -> int:
     import sys as _sys
+    from string import ascii_letters
 
     cfg = parse_cli(argv)   # argparse errors SystemExit(2) naturally
 
@@ -934,9 +951,10 @@ def run(argv) -> int:
 
     try:
         text = cfg.text
-        if len(text) == 1 and text != " ":
+        if len(text) == 1 and text in ascii_letters:
             # single-letter compatibility path: byte-identical to the
-            # historical one-letter CLI (no translation wrappers)
+            # historical one-letter CLI (no translation wrappers);
+            # reserved for supported ASCII letters
             try:
                 validate_text(text)
             except GenerationError as exc:

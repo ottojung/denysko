@@ -71,8 +71,12 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
     """Flattened glyph outlines normalized like the canonical raster:
     bundled DejaVuSans at size 100, aspect preserved, filled-bbox
     lower-left mapped to (0, 0), max dimension 100, y-up."""
-    tp = TextPath((0, 0), letter, size=100,
-                  prop=FontProperties(fname=_font_path()))
+    try:
+        tp = TextPath((0, 0), letter, size=100,
+                      prop=FontProperties(fname=_font_path()))
+    except Exception as exc:
+        raise ValueError(
+            f"font has no usable outline for {letter!r}") from exc
     polys = [np.asarray(p, dtype=float).copy() for p in tp.to_polygons()]
     polys = [p for p in polys if len(p) >= 3]
     if not polys:
@@ -135,6 +139,9 @@ def glyph_geometry(letter: str) -> GlyphGeometry:
     fill, _step = _canonical_fill(contours)
     points = _mask_boundary_cloud(fill, _step)
     ys, xs_ = np.nonzero(fill)
+    if not contours or len(ys) == 0:
+        raise ValueError(
+            f"font has no usable outline for {letter!r}")
     step = SIZE / GRID
     return GlyphGeometry(
         letter=letter,
