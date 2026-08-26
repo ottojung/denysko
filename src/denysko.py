@@ -84,7 +84,11 @@ def poly_str(coef: np.ndarray) -> str:
     rendered = [fmt_num(float(c)) for c in coef]
     parts = []
     first = True
-    for k in range(len(coef) - 1, 0, -1):
+    # constant term first (unless it's zero and there are other terms):
+    if rendered[0] != "0" or all(s == "0" for s in rendered[1:]):
+        parts.append(rendered[0])
+        first = False
+    for k in range(1, len(coef)):
         s = rendered[k]
         if s == "0":
             continue
@@ -95,12 +99,8 @@ def poly_str(coef: np.ndarray) -> str:
         sign = "-" if neg else ("" if first else "+")
         parts.append(sign + prefix + body)
         first = False
-    if rendered[0] != "0" or not parts:
-        s = rendered[0]
-        neg = s.startswith("-")
-        mag = s[1:] if neg else s
-        sign = "-" if neg else ("" if first else "+")
-        parts.append(sign + mag)
+    if not parts:
+        parts.append(rendered[0])
     out = "".join(parts)
     return out if out else "0"
 
