@@ -67,10 +67,35 @@ def _font_path() -> str:
     )
 
 
+_CAP_HEIGHT_LETTER = "H"
+_font_scale_cache: dict = {}
+
+
+def _font_normalization_scale() -> float:
+    """One deterministic font-wide normalization scale.
+
+    The visible height of the capital-height reference glyph ('H')
+    at the canonical source size maps exactly to SIZE (= 1.0). Every
+    glyph shares this single uniform x/y scale, preserving the font's
+    own relative metrics (x-height, ascenders, descenders, widths).
+    """
+    key = (_font_path(), SIZE)
+    if key not in _font_scale_cache:
+        ref = TextPath((0, 0), _CAP_HEIGHT_LETTER, size=100,
+                       prop=FontProperties(fname=_font_path()))
+        pts = np.vstack([np.asarray(p, dtype=float)
+                         for p in ref.to_polygons()])
+        height = float(pts[:, 1].max() - pts[:, 1].min())
+        _font_scale_cache[key] = SIZE / max(height, 1e-12)
+    return _font_scale_cache[key]
+
+
 def _normalized_polygons(letter: str) -> list[np.ndarray]:
     """Flattened glyph outlines normalized like the canonical raster:
-    bundled DejaVuSans at size 100, aspect preserved, filled-bbox
-    lower-left mapped to (0, 0), max dimension 100, y-up."""
+    bundled DejaVuSans at size 100, one shared font-wide uniform scale
+    mapping the capital-height reference ('H' visible height) to SIZE,
+    filled-bbox lower-left mapped to (0, 0), y-up. Glyphs are never
+    independently resized."""
     try:
         tp = TextPath((0, 0), letter, size=100,
                       prop=FontProperties(fname=_font_path()))
@@ -84,7 +109,7 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
     pts = np.vstack(polys)
     mn = pts.min(axis=0)
     mx = pts.max(axis=0)
-    scale = SIZE / max(mx[0] - mn[0], mx[1] - mn[1], 1e-12)
+    scale = _font_normalization_scale()
     out = []
     for poly in polys:
         t = np.empty_like(poly)
@@ -95,17 +120,25 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
 
 
 def _canonical_fill(polys_norm: list[np.ndarray]):
-    """Even-odd rasterization of normalized outlines on the canonical
-    GRID x GRID sample grid. Rows increase with y (row r centers at
-    y = (r + 0.5) * step)."""
+    """Even-odd rasterization of normalized outlines at the canonical
+    resolution (step = SIZE / GRID). The canvas is sized from the
+    glyph's actual normalized extent: with the shared font-wide scale a
+    glyph may legitimately exceed SIZE (round-letter overshoot,
+    ascenders/descenders), so cell counts are derived from the outline
+    bbox instead of being hard-capped at GRID. Rows increase with y
+    (row r centers at y = (r + 0.5) * step)."""
     step = SIZE / GRID
-    axis = (np.arange(GRID) + 0.5) * step
-    gx, gy = np.meshgrid(axis, axis)
+    pts = np.vstack(polys_norm)
+    nx = max(GRID, int(np.ceil(pts[:, 0].max() / step)))
+    ny = max(GRID, int(np.ceil(pts[:, 1].max() / step)))
+    ax = (np.arange(nx) + 0.5) * step
+    ay = (np.arange(ny) + 0.5) * step
+    gx, gy = np.meshgrid(ax, ay)
     grid = np.column_stack([gx.ravel(), gy.ravel()])
     inside = np.zeros(len(grid), dtype=bool)
     for ring in polys_norm:
         inside ^= Path(ring).contains_points(grid)
-    return inside.reshape(GRID, GRID), step
+    return inside.reshape(ny, nx), step
 
 
 def _mask_boundary_cloud(fill: np.ndarray, step: float) -> np.ndarray:
@@ -565,6 +598,7 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
         v = RouteVertex(len(vertices), x, kind)
         vertices.append(v)
         return v.id
+
 
     node_vert = {n.id: new_vertex(n.xy[0] * step,
                                   "terminal" if n.kind == "end"

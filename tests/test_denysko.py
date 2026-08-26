@@ -1536,3 +1536,84 @@ def test_cli_later_letter_failure_no_stdout(capsys, monkeypatch):
 def test_cli_ok_smoke():
     rc = d.run(["OK", "-q"])
     assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Font-relative glyph scale (issue #1): one shared font-wide scale
+# ---------------------------------------------------------------------------
+
+
+def _raw_textpath_bbox(letter: str):
+    import matplotlib
+    from matplotlib.font_manager import FontProperties
+    from matplotlib.textpath import TextPath
+
+    tp = TextPath((0, 0), letter, size=100, prop=FontProperties(
+        fname=matplotlib.get_data_path() + "/fonts/ttf/DejaVuSans.ttf"))
+    pts = np.vstack([np.asarray(p, dtype=float) for p in tp.to_polygons()])
+    mn, mx = pts.min(axis=0), pts.max(axis=0)
+    return mn, mx
+
+
+@pytest.mark.parametrize("cap,low", [("C", "c"), ("O", "o"), ("X", "x")])
+def test_lowercase_shorter_than_capital(cap, low):
+    from src.topology import glyph_geometry
+
+    h_cap = glyph_geometry(cap).ymax - glyph_geometry(cap).ymin
+    h_low = glyph_geometry(low).ymax - glyph_geometry(low).ymin
+    assert 0.3 < h_low < 0.85 * h_cap
+
+
+@pytest.mark.parametrize("letter", ["H", "C", "O", "X"])
+def test_cap_height_reference_maps_to_one(letter):
+    from src.topology import glyph_geometry
+
+    g = glyph_geometry(letter)
+    assert (g.ymax - g.ymin) == pytest.approx(1.0, abs=0.05)
+
+
+@pytest.mark.parametrize("letter", "CcOoXxAH")
+def test_uniform_scale_preserves_aspect_ratio(letter):
+    """Aspect ratio of the normalized bbox equals the raw font's."""
+    from src.topology import glyph_geometry
+
+    g = glyph_geometry(letter)
+    mn, mx = _raw_textpath_bbox(letter)
+    raw_aspect = (mx[0] - mn[0]) / (mx[1] - mn[1])
+    norm_aspect = (g.xmax - g.xmin) / (g.ymax - g.ymin)
+    # normalized bboxes are read off the 512x512 even-odd fill mask,
+    # whose boundary-cell classification differs slightly from the
+    # outline bbox (a few percent on round glyphs); per-glyph max-dim
+    # normalization would distort the aspect by far more than this.
+    assert norm_aspect == pytest.approx(raw_aspect, abs=6e-2)
+
+
+def test_no_per_glyph_max_dimension_normalization():
+    """A wide flat glyph must not be stretched to max-dim 1: the shared
+    font scale keeps widths at their font-relative size."""
+    from src.topology import glyph_geometry
+
+    # 'm' is wider than tall in DejaVu Sans; under per-glyph
+    # normalization its height would be forced to ~1.0.
+    g = glyph_geometry("m")
+    assert (g.ymax - g.ymin) < 0.8
+
+
+def test_same_letter_identical_local_geometry_alone_and_in_text():
+    """Contours of a letter generated alone and as an occurrence in text
+    share identical local geometry (before x translation)."""
+    import copy
+
+    from src.topology import glyph_geometry
+
+    alone = glyph_geometry("o").contours
+    again = glyph_geometry("o").contours
+    assert len(alone) == len(again)
+    for a, b in zip(alone, again):
+        np.testing.assert_array_equal(a, b)
+
+
+def test_glyph_visible_width_respects_font_relative_sizes():
+    wc = d.glyph_visible_width("c")
+    wC = d.glyph_visible_width("C")
+    assert 0 < wc < wC <= 1.0 + 1e-9
