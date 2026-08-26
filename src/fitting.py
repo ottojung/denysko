@@ -406,9 +406,8 @@ def fit_route(corridor: Corridor, hi: int = INITIAL_FIT_DEGREE) -> PathFit | Non
             fit = fit_degree(corridor, d, ori[0], ori[1])
             if fit is None:
                 continue
-            if tail_reentry_violation(
-                    np.asarray(fit.poly.coef, dtype=float),
-                    corridor, ori) != 0.0:
+            if tail_reentry_violation_cheb(
+                    fit.coef_cheb, corridor, ori) != 0.0:
                 continue   # ramps satisfied but not permanently outward
             key = (float(np.max(np.abs(fit.coef_cheb))),
                    ORIENTATIONS.index(ori))
@@ -495,6 +494,90 @@ def tail_reentry_violation(poly_coef, corridor, orientation):
             even = (len(c) - 1) % 2 == 0
             # P -> +infinity on the right iff lead > 0; on the left iff
             # lead > 0 for even degree, lead < 0 for odd degree.
+            up_right = lead
+            up_left = lead if even else not lead
+            limit_outward = (
+                (up_right if right else up_left) == (sigma == 1)
+            )
+            if not limit_outward:
+                viol = max(viol, 4.0)
+    return viol
+
+
+def _real_roots_z(coefs):
+    """Real roots in z-space with exact-degree semantics.
+
+    Trailing coefficients are stripped ONLY when exactly zero - a
+    1e-16 leading coefficient still dominates at infinity and must be
+    honoured. Coefficients are then rescaled by their max magnitude
+    purely for np.roots conditioning; this changes no zero of the
+    polynomial.
+    """
+    c = np.asarray(coefs, dtype=float)
+    nz = np.nonzero(c != 0.0)[0]
+    if len(nz) == 0:
+        return None            # identically zero
+    c = c[: nz[-1] + 1]        # true degree: exact zeros only
+    if len(c) < 2:
+        return np.array([])    # nonzero constant: no roots
+    c = c / float(np.max(np.abs(c)))
+    r = np.roots(c[::-1])
+    return np.sort(r[np.abs(r.imag) < 1e-7].real)
+
+
+def tail_reentry_violation_cheb(coef_cheb, corridor, orientation):
+    """Canonical V3 tail proof on Chebyshev coefficients in z.
+
+    Same three conditions as `tail_reentry_violation`, but every
+    evaluation happens through `chebval` on the normalized z map and
+    root finding happens on power coefficients in z (converted via
+    cheb2poly), never on expanded raw powers of x. This is
+    scale-equivariant under x -> x/100 because the z map is canonical.
+    """
+    viol = 0.0
+    cc = np.asarray(coef_cheb, dtype=float)
+    xa, xb = corridor.xa, corridor.xb
+
+    def peval(xq):
+        return cheb.chebval(_zmap(xq, xa, xb), cc)
+
+    # derivative roots in z (exact-degree preserved)
+    droots_all = _real_roots_z(cheb.cheb2poly(cheb.chebder(cc)))
+    # asymptotic direction from power form in z
+    pcoef_pow = cheb.cheb2poly(cc)
+
+    sig_l, sig_r = int(orientation[0]), int(orientation[1])
+    for sigma, side in ((sig_l, "L"), (sig_r, "R")):
+        sgn = -1.0 if side == "L" else 1.0
+        x_c = float(corridor.xs[0] if side == "L" else corridor.xs[-1])
+        x_c += sgn * ESC_OFFSETS[-1]
+        edge = corridor.yhi if sigma == 1 else corridor.ylo
+        right = side == "R"
+        z_c = float(_zmap(x_c, xa, xb))
+
+        p_c = float(peval(x_c))
+        if sigma * (p_c - edge) <= 0:
+            viol = max(viol, 3.0)
+            continue
+
+        def outward(zs):
+            zs = np.atleast_1d(np.asarray(zs, dtype=float))
+            return zs[zs > z_c] if right else zs[zs < z_c]
+
+        if droots_all is not None:
+            for r in outward(droots_all):
+                if sigma * (float(cheb.chebval(float(r), cc)) - edge) <= 0:
+                    viol = max(
+                        viol, 2.0 + min(abs(float(r) - z_c), 1.0))
+                    break
+
+        c = pcoef_pow
+        nz = np.nonzero(c != 0.0)[0]
+        if len(nz) > 0:
+            c = c[: nz[-1] + 1]
+        if len(c) >= 2:
+            lead = c[-1] > 0
+            even = (len(c) - 1) % 2 == 0
             up_right = lead
             up_left = lead if even else not lead
             limit_outward = (

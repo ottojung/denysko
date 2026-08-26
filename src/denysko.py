@@ -49,6 +49,7 @@ from src.fitting import (
     PathFit,
     fit_route,
     tail_reentry_violation,
+    tail_reentry_violation_cheb,
     FAMILY_HALF_WIDTH_FLOOR,
 )
 
@@ -287,8 +288,13 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
         v2 = corridor_adherence_violation(coef, corr)
         if v2 > CORRIDOR_EPS:
             problems.append(f"V2 curve {i}: corridor violation {v2:.3f}")
-        ori = getattr(fit, "orientation", (1, -1))
-        v3 = tail_reentry_violation(coef, corr, ori)
+            ori = getattr(fit, "orientation", (1, -1))
+            coef_cheb = getattr(fit, "coef_cheb", None)
+            if coef_cheb is not None:
+                v3 = tail_reentry_violation_cheb(coef_cheb, corr, ori)
+            else:
+                # synthetic/low-degree fits carry only raw coefficients
+                v3 = tail_reentry_violation(coef, corr, ori)
         if v3:
             problems.append(f"V3 curve {i}: tail re-entry {v3:.3f}")
         v5 = poly_glyph_violation(coef, corr, geom)
@@ -550,12 +556,14 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
 
     Progressive search: try degrees d_min..INITIAL_FIT_DEGREE in
     increasing order; return immediately upon finding a usable family.
-    For each degree, tries all four tail orientations and a small set of
-    deterministic objective directions. Uses the coefficientwise tail
-    certificate as a sound sufficient condition.
+    For each degree, tries all four tail orientations and a small set
+    of deterministic objective directions. Anchor tails are proved in
+    normalized z coordinates (scale-equivariant V3); anchor separation
+    is measured via chebval, never raw-x expansion.
     """
     from src.fitting import solve_anchor, certify_anchor
-    from src.denysko import tail_reentry_violation
+    from src.fitting import tail_reentry_violation_cheb, _zmap
+    from numpy.polynomial import chebyshev as cheb
 
     cap = degree_cap or INITIAL_FIT_DEGREE
     half = np.maximum((corr.upper - corr.lower) / 2.0, FAMILY_HALF_WIDTH_FLOOR)
@@ -572,22 +580,15 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
                                    True)
                 if plo is None or phi is None:
                     continue
-                # verify anchors pass V3 and have geometric span
-                from numpy.polynomial import Polynomial as Poly
-                affine = Poly([-(corr.xa + corr.xb) /
-                               (corr.xb - corr.xa),
-                               2.0 / (corr.xb - corr.xa)])
-                Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(
-                    affine)
-                Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(
-                    affine)
-                v3lo = tail_reentry_violation(
-                    np.asarray(Plo.coef), corr, ori)
-                v3hi = tail_reentry_violation(
-                    np.asarray(Phi.coef), corr, ori)
-                if v3lo != 0 or v3hi != 0:
+                # verify anchors pass normalized-z V3 and have span
+                if (tail_reentry_violation_cheb(
+                        np.asarray(plo), corr, ori) != 0
+                        or tail_reentry_violation_cheb(
+                            np.asarray(phi), corr, ori) != 0):
                     continue
-                diff = np.abs(Plo(corr.xs) - Phi(corr.xs))
+                z = _zmap(corr.xs, corr.xa, corr.xb)
+                diff = np.abs(cheb.chebval(z, plo)
+                              - cheb.chebval(z, phi))
                 if float(np.max(diff)) < 1e-6:
                     continue   # degenerate: same polynomial
                 return (np.asarray(plo), np.asarray(phi), D, ori)
