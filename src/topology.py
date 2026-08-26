@@ -1141,6 +1141,37 @@ def build_route_corridor(graph: RouteGraph, route: Route,
     frontier = None      # synthetic frontier after an unfold
     eps_n = 0            # crawl step counter inside overlap
     unfold_windows = []  # audit: (win_lo, win_hi) per vertical group
+
+    # One raw-point placement path shared by ordinary nonvertical
+    # landmarks AND by width-gate-rejected apparent-vertical groups:
+    # after a prior legitimate unfold the active synthetic frontier
+    # still applies (overlap-exit crawl until raw x catches up, then
+    # exact raw x resumes), and genuine backwards x remains an error.
+    NOISE_X = UNFOLD_NOISE_X   # covers multi-step crawl overshoot;
+                     # genuine reversals are stroke-width scale
+
+    def _place_raw_point(idx):
+        nonlocal frontier, eps_n
+        raw = lam[idx, 0]
+        if frontier is not None and raw <= frontier:
+            # overlap-exit crawl: microscopic increasing steps just
+            # above the frontier until raw x catches up
+            eps_n += 1
+            p[idx] = max(frontier + eps_n * EPS_X,
+                         p[idx - 1] + UNFOLD_MONOTONE_PUSH)
+            deform[idx] = "unfold-exit-overlap"
+        else:
+            if frontier is not None:
+                pass     # raw x caught up: resume exact raw x
+            frontier = None
+            eps_n = 0
+            if raw < p[idx - 1] - NOISE_X:
+                raise RuntimeError(
+                    "Phase 1 bug: genuine backwards x on a "
+                    f"nonvertical section ({raw:.3f} after "
+                    f"{p[idx - 1]:.3f})")
+            p[idx] = max(raw, p[idx - 1] + UNFOLD_MONOTONE_PUSH)
+
     i = 1
     while i < len(p):
         dx = lam[i, 0] - lam[i - 1, 0]
@@ -1181,6 +1212,13 @@ def build_route_corridor(graph: RouteGraph, route: Route,
             if hi_r - lo_r > \
                     UNFOLD_RUN_WIDTH_GAIN * 2.0 * max(r_local,
                                                       STROKE_MIN_HALF):
+                # rejected: raster staircase noise inside a wider
+                # structure. Keep raw arc x, but still run every point
+                # of the group through the normal frontier/catch-up
+                # placement so a prior legitimate unfold's active
+                # frontier is honoured (crawl until raw catches up).
+                for k in range(i, j + 1):
+                    _place_raw_point(k)
                 i = j + 1
                 continue
             margin = min(CORRIDOR_MARGIN, max((hi_r - lo_r) * 0.15,
@@ -1200,29 +1238,7 @@ def build_route_corridor(graph: RouteGraph, route: Route,
             eps_n = 0
             i = j + 1
         else:
-            raw = lam[i, 0]
-            # epsilon-pushed joins make consecutive atom starts differ by
-            # <= ~1e-4; anything under NOISE_X is equal-x raster noise
-            NOISE_X = UNFOLD_NOISE_X   # covers multi-step crawl overshoot;
-                             # genuine reversals are stroke-width scale
-            if frontier is not None and raw <= frontier:
-                # overlap-exit crawl: microscopic increasing steps just
-                # above the frontier until raw x catches up
-                eps_n += 1
-                p[i] = max(frontier + eps_n * EPS_X,
-                       p[i - 1] + UNFOLD_MONOTONE_PUSH)
-                deform[i] = "unfold-exit-overlap"
-            else:
-                if frontier is not None:
-                    pass     # raw x caught up: resume exact raw x
-                frontier = None
-                eps_n = 0
-                if raw < p[i - 1] - NOISE_X:
-                    raise RuntimeError(
-                        "Phase 1 bug: genuine backwards x on a "
-                        f"nonvertical section ({raw:.3f} after "
-                        f"{p[i - 1]:.3f})")
-                p[i] = max(raw, p[i - 1] + UNFOLD_MONOTONE_PUSH)
+            _place_raw_point(i)
             i += 1
 
 

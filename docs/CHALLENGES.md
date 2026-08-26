@@ -119,17 +119,15 @@ column's actual fill run, then re-sample chords whose interpolation
 crosses unfilled space by inserting fill-clipped nodes. T/m/H/A xa/xb
 shift <=0.0013 (T xb .6556->.6543); reference-facts test re-frozen.
 
-Z/z remain FAILING: their routes traverse long diagonals whose landmarks
-are almost entirely parked at the crawl frontier, so even after merging,
-the surviving chord cuts across empty space and the repair pass cannot
-fully reconstruct the diagonal band sequence (containment miss ~0.4 at
-the bar-diagonal junction). Real fix direction: stop the unfold crawl
-from capturing non-vertical strokes (per-step VERT classification noise
-on staircase diagonals), or re-derive landmarks from raw arc positions
-when crawl displacement greatly exceeds the stroke width.
+Z/z were traced to a second, distinct mechanism (their routes traverse
+long diagonals whose landmarks end up almost entirely parked at the
+crawl frontier, so even after merging the surviving chord cuts across
+empty space - containment miss ~0.4 at the bar-diagonal junction).
+That mechanism is analyzed and fixed in the next section.
 
 ## Z/z fixed: unfold run-width gate (measured, issue #7)
 
+Second, distinct mechanism (completing the W fix described above).
 Instrumentation over the selected Z/z routes (`build_route_corridor`
 landmark loop) shows the exact capture mechanism. The per-landmark
 verticality test `|dx| < 0.25*dy` fires on raster staircase noise:
@@ -163,3 +161,12 @@ to <= 0.002 (one raster step); `denysko Z`, `denysko z`, `denysko W`
 all emit valid equations and exit 0. Full A-Z/a-z CLI sweep: 52/52
 pass. W keeps its legitimate unfolds (69 vertical-unfold landmarks,
 worst shift 0.046 < stroke width) and its merged-wall fix untouched.
+
+Review hardening (PR #8): a width-gate-rejected apparent-vertical group
+no longer bypasses placement entirely. All its raw points now flow
+through the same frontier/catch-up path as ordinary nonvertical
+landmarks (shared `_place_raw_point` helper), so after a prior
+legitimate unfold an active synthetic frontier still yields strict
+monotone overlap-exit crawl until raw x catches up, then exact raw x
+resumes. Covered by a focused synthetic regression (stem unfold ->
+wide-band rejected staircase -> crawl -> exact resume).
