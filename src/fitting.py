@@ -483,7 +483,8 @@ def _real_roots_z(coefs):
     return np.sort(r[np.abs(r.imag) < 1e-7].real)
 
 
-def tail_reentry_violation_cheb(coef_cheb, corridor, orientation):
+def tail_reentry_violation_cheb(coef_cheb, corridor, orientation,
+                                esc_offset: float = None):
     """Canonical V3 tail proof on Chebyshev coefficients in z.
 
     Same three conditions as `tail_reentry_violation`, but every
@@ -493,6 +494,8 @@ def tail_reentry_violation_cheb(coef_cheb, corridor, orientation):
     scale-equivariant under x -> x/100 because the z map is canonical.
     """
     viol = 0.0
+    if esc_offset is None:
+        esc_offset = ESC_OFFSETS[-1]
     cc = np.asarray(coef_cheb, dtype=float)
     xa, xb = corridor.xa, corridor.xb
 
@@ -508,7 +511,7 @@ def tail_reentry_violation_cheb(coef_cheb, corridor, orientation):
     for sigma, side in ((sig_l, "L"), (sig_r, "R")):
         sgn = -1.0 if side == "L" else 1.0
         x_c = float(corridor.xs[0] if side == "L" else corridor.xs[-1])
-        x_c += sgn * ESC_OFFSETS[-1]
+        x_c += sgn * esc_offset
         edge = corridor.yhi if sigma == 1 else corridor.ylo
         right = side == "R"
         z_c = float(_zmap(x_c, xa, xb))

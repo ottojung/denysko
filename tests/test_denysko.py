@@ -994,15 +994,15 @@ def test_raw_vs_cheb_v3_agree_low_degree():
         (np.array([2.0, 0.0, 1.0]), (1, 1)),      # opening quad
         (np.array([2.0, 0.0, -1.0]), (-1, -1)),   # closing quad
     ]
+    from numpy.polynomial import Polynomial as Poly
+    mid = (corr.xa + corr.xb) / 2.0
+    scale = (corr.xb - corr.xa) / 2.0
     for coef, ori in cases:
         raw = d.tail_reentry_violation(coef, corr, ori)
-        z = _fitting._zmap(np.linspace(corr.xa, corr.xb, 400),
-                           corr.xa, corr.xb)
-        # fit cheb coefs by least squares on the z grid
-        zz = _fitting._zmap(xs, corr.xa, corr.xb)
-        cc = np.polynomial.polynomial.polyfit(
-            zz, np.polynomial.polynomial.polyval(zz, coef), len(coef) - 1)
-        cc = cheb.poly2cheb(cc)
+        # EXACT same polynomial: Q(z) = P(mid + scale*z) by composition,
+        # then cheb conversion - no fitting approximation.
+        Q = Poly(np.asarray(coef, dtype=float))(Poly([mid, scale]))
+        cc = cheb.poly2cheb(Q.coef)
         chb = tail_reentry_violation_cheb(cc, corr, ori)
         assert (raw == 0.0) == (chb == 0.0), (coef, ori, raw, chb)
 
@@ -1013,6 +1013,8 @@ def test_v3_scale_equivariance():
     from numpy.polynomial import chebyshev as cheb
 
     def make(scale):
+        # ENTIRE geometry scales: xs, y bounds, xa/xb pad, glyph band,
+        # polynomial values, and the final escape checkpoint.
         xs = np.linspace(0.3, 0.7, 30) * scale
         lo = np.full(30, -0.05) * scale
         hi = np.full(30, 0.05) * scale
@@ -1022,17 +1024,18 @@ def test_v3_scale_equivariance():
         def P(x):   # fixed shape: escapes up-right, down-left
             t = x / scale
             return scale * (((t - 0.5) ** 3 + 0.125 * t - 0.2))
-        return corr, P
+        return corr, P, ESC_OFFSETS[-1] * scale
 
     for deg in (3, 5, 7, 9):
         verdicts = []
         for scale in (100.0, 1.0):
-            corr, P = make(scale)
+            corr, P, esc = make(scale)
             xg = np.linspace(corr.xa, corr.xb, 400)
             zg = _fitting._zmap(xg, corr.xa, corr.xb)
             cc = cheb.chebfit(zg, P(xg), deg)
             verdicts.append(
-                tail_reentry_violation_cheb(cc, corr, (-1, 1)))
+                tail_reentry_violation_cheb(cc, corr, (-1, 1),
+                                            esc_offset=esc))
         assert verdicts[0] == verdicts[1], (deg, verdicts)
 
 
