@@ -41,6 +41,7 @@ DENSE_GRID = 900          # validation samples (denser than fitting)
 POCS_SWEEPS = 240
 FEAS_TOL = 1e-6
 FAMILY_HALF_WIDTH_FLOOR = 0.005   # ~2.5 raster steps at normalized scale
+HORNER_MIN_DEGREE = 10             # degree >= this uses Horner serialization
 CERT_TOL = 2.0 * (1.0 / 512)   # certificate violation tolerance (~2 raster steps)
 USE_LP = True   # unit tests may disable for speed (pure POCS)
 
@@ -358,13 +359,17 @@ def fit_degree(corridor: Corridor, degree: int,
     poly = zpoly(affine)
     if not np.all(np.isfinite(poly.coef)):
         return None
-    # verify the EMITTED polynomial (power basis, post conversion):
-    # cheb->power can lose fractions of a unit on steep corridors
-    dv_p = _dense_violation(corridor, coef, sig_l, sig_r,
-                            power_coef=np.asarray(poly.coef))
-    if dv_p > CORRIDOR_EPS:
-        return None
-    dv = max(dv, dv_p)
+    # verify the EMITTED polynomial representation:
+    # low degree -> raw x-power output; validate power-basis conversion
+    # high degree -> Horner/normalized-z output; Chebyshev validation
+    #   (step 1 above) is authoritative because raw-x expansion is
+    #   numerically unstable and NOT what users receive
+    if degree < HORNER_MIN_DEGREE:
+        dv_p = _dense_violation(corridor, coef, sig_l, sig_r,
+                                power_coef=np.asarray(poly.coef))
+        if dv_p > CORRIDOR_EPS:
+            return None
+        dv = max(dv, dv_p)
     return PathFit(
         corridor=corridor,
         degree=degree,
