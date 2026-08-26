@@ -29,6 +29,9 @@ from src.topology import (
     build_route_graph,
     enumerate_complete_routes,
     glyph_geometry,
+    glyph_connected_components,
+    route_component_label,
+    component_preferred_orientation,
     route_coverage_fraction,
     select_routes_min_cover,
 )
@@ -445,6 +448,74 @@ def test_issue2_real_glyph_tail_orientation_is_geometry_driven():
         assert sorted(got) == sorted(want), (
             f"{letter}: orientations {sorted(got)} != documented "
             f"{sorted(want)}")
+
+
+def test_issue4_component_preference_bottom_top_middle():
+    """Issue #4 mechanism (letter-independent): a bottom-most component
+    sends both tails down, a top-most component sends both tails up, a
+    single component defers to the ordinary nearest-boundary rule, and a
+    side-by-side (overlapping-y) pair has no clear outward side so it too
+    defers."""
+    info = {
+        1: {"ymin": 0.0, "ymax": 0.3, "cy": 0.15},   # bottom
+        2: {"ymin": 0.7, "ymax": 1.0, "cy": 0.85},   # top
+    }
+    present = {1, 2}
+    assert component_preferred_orientation(1, info, present) == (-1, -1)
+    assert component_preferred_orientation(2, info, present) == (1, 1)
+    # single component present -> fall back (no disconnected partner)
+    assert component_preferred_orientation(1, info, {1}) is None
+    # side-by-side (overlapping y, no clear vertical outward side) -> None
+    side = {3: {"ymin": 0.0, "ymax": 0.5, "cy": 0.25},
+            4: {"ymin": 0.0, "ymax": 0.5, "cy": 0.25}}
+    assert component_preferred_orientation(3, side, {3, 4}) is None
+
+
+def test_issue4_i_disconnected_components_escape_away():
+    """Issue #4 acceptance: `i` has two disconnected glyph components
+    (stem + dot) identified purely from glyph geometry. The bottom
+    component (stem) escapes down/down and the top component (dot) escapes
+    up/up; each selected route's emitted orientation must equal its
+    component-level preference and the fitter must not flip it to a
+    geometry-easier orientation."""
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("i")
+    labels, n_comp, comp_info = glyph_connected_components(geom)
+    assert n_comp >= 2
+    route_comps = [route_component_label(graph, r, labels)
+                   for r in chosen]
+    present = {c for c in route_comps if c is not None}
+    assert len(present) == 2
+    prefs = [component_preferred_orientation(c, comp_info, present)
+             for c in route_comps]
+    # exactly one bottom (down/down) and one top (up/up)
+    assert sorted(prefs) == [(-1, -1), (1, 1)]
+    for r, corr in zip(chosen, selected):
+        fit = fit_route(corr, hi=INITIAL_FIT_DEGREE)
+        assert fit is not None
+        assert fit.orientation == corr.preferred_orientation, (
+            f"i: fit orientation {fit.orientation} overrode the "
+            f"component-level preference {corr.preferred_orientation}")
+        assert fit.orientation in prefs
+
+
+def test_issue4_j_inspect_disconnected_components():
+    """Issue #4: inspect `j` where the same stem/dot disconnected
+    structure applies. The dot (top component) escapes up/up and the
+    stem+descender (bottom component) escapes down/down; the fitter must
+    not override either to a geometry-easier orientation. The two
+    selected routes map to two distinct connected components."""
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("j")
+    labels, n_comp, comp_info = glyph_connected_components(geom)
+    assert n_comp >= 2
+    route_comps = [route_component_label(graph, r, labels)
+                   for r in chosen]
+    assert len({c for c in route_comps if c is not None}) == 2
+    for r, corr in zip(chosen, selected):
+        fit = fit_route(corr, hi=INITIAL_FIT_DEGREE)
+        assert fit is not None
+        assert fit.orientation == corr.preferred_orientation, (
+            f"j: fit orientation {fit.orientation} overrode the "
+            f"component-level preference {corr.preferred_orientation}")
 
 
 def test_emitted_poly_leaving_corridor_rejected():
