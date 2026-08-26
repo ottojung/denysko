@@ -960,3 +960,75 @@ def test_low_degree_uses_raw_power_serializer():
     line = d.format_expression(np.polynomial.Polynomial(coef))
     assert "^" in line or "x^" in line or "**" in line or (
         "x" in line and len(line) < 100)
+
+
+# ---------------------------------------------------------------------------
+# Normalized-z V3: raw-vs-cheb equivalence and scale equivariance
+# ---------------------------------------------------------------------------
+
+
+def _norm_corridor(xs, lo, hi, ylo=0.0, yhi=1.0):
+    from src.topology import BoundaryPath
+
+    xs = np.asarray(xs, dtype=float)
+    mid = 0.5 * (np.asarray(lo) + np.asarray(hi))
+    pad = ESC_OFFSETS[-1] + 1.0
+    return Corridor(
+        path=BoundaryPath(points=np.column_stack([xs, mid]), contour_id=-1),
+        xa=float(xs[0] - pad), xb=float(xs[-1] + pad),
+        xs=xs, lower=np.asarray(lo, dtype=float),
+        upper=np.asarray(hi, dtype=float), ylo=ylo, yhi=yhi)
+
+
+def test_raw_vs_cheb_v3_agree_low_degree():
+    """Well-conditioned low-degree polys: both V3 forms agree."""
+    from src.fitting import tail_reentry_violation_cheb
+    from numpy.polynomial import chebyshev as cheb
+    xs = np.linspace(0.3, 0.7, 20)
+    corr = _norm_corridor(xs, np.full(20, 0.4), np.full(20, 0.6))
+    cases = [
+        (np.array([0.0, 1.0]), (-1, 1)),          # rising line
+        (np.array([0.5, -1.0]), (1, -1)),         # falling line
+        (np.array([2.0, 0.0, 1.0]), (1, 1)),      # opening quad
+        (np.array([2.0, 0.0, -1.0]), (-1, -1)),   # closing quad
+    ]
+    for coef, ori in cases:
+        raw = d.tail_reentry_violation(coef, corr, ori)
+        z = _fitting._zmap(np.linspace(corr.xa, corr.xb, 400),
+                           corr.xa, corr.xb)
+        # fit cheb coefs by least squares on the z grid
+        zz = _fitting._zmap(xs, corr.xa, corr.xb)
+        cc = np.polynomial.polynomial.polyfit(
+            zz, np.polynomial.polynomial.polyval(zz, coef), len(coef) - 1)
+        cc = cheb.poly2cheb(cc)
+        chb = tail_reentry_violation_cheb(cc, corr, ori)
+        assert (raw == 0.0) == (chb == 0.0), (coef, ori, raw, chb)
+
+
+def test_v3_scale_equivariance():
+    """V3 verdict must be invariant under x->x/100, y->y/100."""
+    from src.fitting import tail_reentry_violation_cheb
+    from numpy.polynomial import chebyshev as cheb
+
+    def make(scale):
+        xs = np.linspace(0.3, 0.7, 30) * scale
+        lo = np.full(30, -0.05) * scale
+        hi = np.full(30, 0.05) * scale
+        corr = _norm_corridor(xs, lo, hi, ylo=-1.0 * scale,
+                              yhi=1.0 * scale)
+
+        def P(x):   # fixed shape: escapes up-right, down-left
+            t = x / scale
+            return scale * (((t - 0.5) ** 3 + 0.125 * t - 0.2))
+        return corr, P
+
+    for deg in (3, 5, 7, 9):
+        verdicts = []
+        for scale in (100.0, 1.0):
+            corr, P = make(scale)
+            xg = np.linspace(corr.xa, corr.xb, 400)
+            zg = _fitting._zmap(xg, corr.xa, corr.xb)
+            cc = cheb.chebfit(zg, P(xg), deg)
+            verdicts.append(
+                tail_reentry_violation_cheb(cc, corr, (-1, 1)))
+        assert verdicts[0] == verdicts[1], (deg, verdicts)

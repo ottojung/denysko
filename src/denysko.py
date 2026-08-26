@@ -288,13 +288,13 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
         v2 = corridor_adherence_violation(coef, corr)
         if v2 > CORRIDOR_EPS:
             problems.append(f"V2 curve {i}: corridor violation {v2:.3f}")
-            ori = getattr(fit, "orientation", (1, -1))
-            coef_cheb = getattr(fit, "coef_cheb", None)
-            if coef_cheb is not None:
-                v3 = tail_reentry_violation_cheb(coef_cheb, corr, ori)
-            else:
-                # synthetic/low-degree fits carry only raw coefficients
-                v3 = tail_reentry_violation(coef, corr, ori)
+        ori = getattr(fit, "orientation", (1, -1))
+        coef_cheb = getattr(fit, "coef_cheb", None)
+        if coef_cheb is not None:
+            v3 = tail_reentry_violation_cheb(coef_cheb, corr, ori)
+        else:
+            # synthetic/low-degree fits carry only raw coefficients
+            v3 = tail_reentry_violation(coef, corr, ori)
         if v3:
             problems.append(f"V3 curve {i}: tail re-entry {v3:.3f}")
         v5 = poly_glyph_violation(coef, corr, geom)
