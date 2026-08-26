@@ -102,3 +102,28 @@ Test suite: 44/55 pass. The 10 failing tests use synthetic corridors
 with old-scale coordinates (x in [10,60], ylo=0, yhi=100 etc.) that need
 mechanical conversion to normalized [0,1] coordinates. This is test-data
 work, not a design issue.
+
+## Stacked-landmark walls: W fixed; Z/z still open (measured)
+
+Root cause (proven by instrumentation, affects old b79ddd4 identically):
+the vertical-unfold crawl parks ~100 consecutive landmarks at a single
+frontier column, producing multi-valued corridor bounds at one x - a
+"vertical wall" no single-valued polynomial can thread. The known-good
+reference fails the SAME letters internally (its `denysko W` exits 0
+but emits zero equations); "52/52" was never validated end-to-end.
+
+Fix landed for W (and verified harmless for all other passing letters):
+build_route_corridor now merges same-column landmark stacks into ONE
+single-valued band per column - chain adjacent bands, clip to the
+column's actual fill run, then re-sample chords whose interpolation
+crosses unfilled space by inserting fill-clipped nodes. T/m/H/A xa/xb
+shift <=0.0013 (T xb .6556->.6543); reference-facts test re-frozen.
+
+Z/z remain FAILING: their routes traverse long diagonals whose landmarks
+are almost entirely parked at the crawl frontier, so even after merging,
+the surviving chord cuts across empty space and the repair pass cannot
+fully reconstruct the diagonal band sequence (containment miss ~0.4 at
+the bar-diagonal junction). Real fix direction: stop the unfold crawl
+from capturing non-vertical strokes (per-step VERT classification noise
+on staircase diagonals), or re-derive landmarks from raw arc positions
+when crawl displacement greatly exceeds the stroke width.

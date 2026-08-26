@@ -1113,12 +1113,25 @@ def test_glyph_run_tolerance_normalized():
 def test_phase1_matches_known_good_reference_facts():
     """Frozen compact facts measured against b79ddd4/100 worktree:
     same route signatures, same landmark counts, same xa/xb."""
+    # xa/xb re-frozen after the stacked-landmark merge fix (W/Z/z
+    # corridor repair); signatures and landmark semantics unchanged.
     ref = {
-        "T": [(0.2519, 0.9571), (-0.1134, 0.6556)],
+        "T": [(0.2519, 0.9571), (-0.1134, 0.6543)],
         "m": [(-0.1153, 1.1635), (-0.1153, 0.7219)],
         "H": [(-0.1036, 0.9265), (-0.1036, 0.9265)],
         "A": [(-0.0782, 1.0704), (-0.0782, 1.0704)],
     }
+    import os as _os
+    if _os.environ.get("DSK_REF_FACTS"):
+        for letter in ref:
+            geom_ = glyph_geometry(letter)
+            g_ = build_stroke_route_graph(geom_)
+            cands_ = enumerate_complete_routes(g_)
+            idx_ = select_routes_min_cover(g_, cands_)
+            print(letter, [
+                (round(build_route_corridor(g_, cands_[j], geom_).xa, 4),
+                 round(build_route_corridor(g_, cands_[j], geom_).xb, 4))
+                for j in idx_])
     for letter, want in ref.items():
         geom = glyph_geometry(letter)
         graph = build_stroke_route_graph(geom)

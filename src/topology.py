@@ -1280,6 +1280,102 @@ def build_route_corridor(graph: RouteGraph, route: Route,
         hi_keep -= 1
     p, lower0, upper0 = p[lo_keep:hi_keep + 1], \
         lo_arr[lo_keep:hi_keep + 1].copy(), hi_arr[lo_keep:hi_keep + 1]
+
+    # Merge stacked landmarks: vertical-unfold transitions collapse many
+    # consecutive route positions into (nearly) one constraint column,
+    # producing multi-valued bounds at a single x - a vertical wall no
+    # single-valued polynomial can thread. The geometrically faithful
+    # replacement keeps ONE single-valued band per raster column: chain
+    # adjacent stacked bands, clip to the column fill, then re-sample
+    # any chord whose interpolation crosses unfilled space through the
+    # actual glyph fill runs.
+    orig_to_merged = {}
+    if len(p) > 2:
+        merged_p, merged_lo, merged_hi = [], [], []
+        node_ks = []      # per node: tuple of original landmark indices
+        i_m = 0
+        n0 = len(p)
+        while i_m < n0:
+            j_m = i_m + 1
+            while j_m < n0 and abs(p[j_m] - p[i_m]) <= step:
+                j_m += 1
+            bands = sorted((lower0[k], upper0[k])
+                           for k in range(i_m, j_m))
+            chains = []
+            for blo, bhi in bands:
+                if chains and blo <= chains[-1][1] + step:
+                    chains[-1][1] = max(chains[-1][1], bhi)
+                    chains[-1][0] = min(chains[-1][0], blo)
+                else:
+                    chains.append([blo, bhi])
+            best = max(chains, key=lambda c: c[1] - c[0])
+            col_i = int(min(max(round(p[i_m] / step), 0),
+                            geom.fill.shape[1] - 1))
+            clipped = None
+            for r_lo, r_hi in col_fill_runs(col_i):
+                cb_lo = max(best[0], r_lo)
+                cb_hi = min(best[1], r_hi)
+                if cb_hi - cb_lo > MIN_CORRIDOR_WIDTH and (
+                        clipped is None
+                        or cb_hi - cb_lo > clipped[1] - clipped[0]):
+                    clipped = [cb_lo, cb_hi]
+            if clipped is not None:
+                best = clipped
+            else:
+                best = list(max(bands, key=lambda c: c[1] - c[0]))
+            merged_p.append(p[i_m])
+            merged_lo.append(best[0])
+            merged_hi.append(best[1])
+            node_ks.append(tuple(range(i_m, j_m)))
+            i_m = j_m
+
+        # Repair pass: a merged stack can leave a long chord whose
+        # linear interpolation crosses unfilled space (e.g. a diagonal
+        # traversed while realized x crawled at one frontier column).
+        # Insert fill-clipped intermediate nodes along such chords.
+        i_r = 0
+        while i_r < len(merged_p) - 1:
+            ax, bx_ = merged_p[i_r], merged_p[i_r + 1]
+            alo, ahi = merged_lo[i_r], merged_hi[i_r]
+            blo, bhi_ = merged_lo[i_r + 1], merged_hi[i_r + 1]
+            c_a = int(round(ax / step))
+            c_b = int(round(bx_ / step))
+            insertions = []
+            for c in range(c_a + 1, c_b):
+                xc = c * step
+                t = (xc - ax) / (bx_ - ax)
+                lo_t = alo + t * (blo - alo)
+                hi_t = ahi + t * (bhi_ - ahi)
+                rr = col_fill_runs(c)
+                if any(r_lo - step <= lo_t and hi_t <= r_hi + step
+                       for r_lo, r_hi in rr):
+                    continue
+                best_run, best_ov = None, MIN_CORRIDOR_WIDTH
+                for r_lo, r_hi in rr:
+                    ov = min(hi_t, r_hi) - max(lo_t, r_lo)
+                    if ov > best_ov:
+                        best_ov, best_run = ov, (r_lo, r_hi)
+                if best_run is not None:
+                    insertions.append(
+                        (xc, max(lo_t, best_run[0]),
+                         min(hi_t, best_run[1])))
+            for off, (xc, nb_lo, nb_hi) in enumerate(insertions):
+                merged_p.insert(i_r + 1 + off, xc)
+                merged_lo.insert(i_r + 1 + off, nb_lo)
+                merged_hi.insert(i_r + 1 + off, nb_hi)
+                node_ks.insert(i_r + 1 + off, ())
+            i_r += 1 + len(insertions)
+
+        p = np.asarray(merged_p)
+        lower0 = np.asarray(merged_lo)
+        upper0 = np.asarray(merged_hi)
+        for pos_, ks_ in enumerate(node_ks):
+            for k_ in ks_:
+                orig_to_merged[k_] = pos_
+    else:
+        for k_ in range(len(p)):
+            orig_to_merged[k_] = k_
+
     lam_kept = lam[lo_keep:hi_keep + 1]
 
     heights = upper0 - lower0
@@ -1297,16 +1393,17 @@ def build_route_corridor(graph: RouteGraph, route: Route,
     # raw_x, raw_y, realized_x, center_y, lower, upper, deformation.
     realized = {}
     for i3 in range(lo_keep, hi_keep + 1):
+        j_m = orig_to_merged[i3 - lo_keep]
         a_id = atom_of_landmark[i3]
         r = realized.setdefault(a_id, {
             "raw_x": [], "raw_y": [], "x": [], "y": [],
             "lower": [], "upper": [], "deform": []})
         r["raw_x"].append(lam[i3, 0])
         r["raw_y"].append(lam[i3, 1])
-        r["x"].append(p[i3 - lo_keep])
-        r["y"].append(center[i3 - lo_keep])
-        r["lower"].append(lower[i3 - lo_keep])
-        r["upper"].append(upper[i3 - lo_keep])
+        r["x"].append(p[j_m])
+        r["y"].append(center[j_m])
+        r["lower"].append(lower[j_m])
+        r["upper"].append(upper[j_m])
         r["deform"].append(deform[i3])
     realized = {k: {kk: np.asarray(vv) for kk, vv in v4.items()}
                 for k, v4 in realized.items()}
