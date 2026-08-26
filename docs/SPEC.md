@@ -137,3 +137,29 @@ individually.
 - Recognizable outlines without large spurious strokes.
 - Runtime ≤ 30 s per letter.
 - Dependencies: uv, Python ≥ 3.11, numpy, matplotlib, scipy (LP solver).
+
+## 8. Text generation
+
+- Input supports ASCII letters (A-Z, a-z) and spaces.
+- Each letter is generated independently by the existing single-letter
+  pipeline (`generate_letter`).
+- Every glyph keeps its existing independent normalization.
+- Placement is horizontal translation only: `y = P(x - dx)`.
+- Advance = visible glyph width + letter spacing
+  (`--letter-spacing`, default 0.15).
+- Spaces use a fixed space width (`--space-width`, default 0.50).
+- `--min-curves` applies per letter occurrence.
+- The same seed is reused for every occurrence: repeated letters have
+  identical local geometry and differ only in x translation.
+- Tails are not coordinated across letters; each curve is translated
+  rigidly, tails included.
+- No kerning or font shaping of any kind.
+
+Low-degree curves are translated by exact polynomial composition and
+serialized with the ascending raw-power serializer (falling back to the
+Horner form when the expanded coefficients lose numerical fidelity);
+high-degree curves are translated by shifting the Horner midpoint
+(`mid_global = mid_local + dx`) with identical Chebyshev coefficients
+and scale - they are never expanded to global raw x powers. Every
+placed equation is numerically validated against its canonical Chebyshev
+data before any output is written.
