@@ -455,11 +455,50 @@ def test_invalid_cli_input(capsys):
         with pytest.raises(SystemExit) as ei:
             d.run(argv)
         assert ei.value.code == 2, argv
-    # structurally valid text with unsupported characters exits 1
-    # with an explanatory message, not a usage error
-    assert d.run(["1"]) == 1
+
+
+def test_all_space_text_emits_zero_equations(capsys):
+    result = d.generate_text("   ")
+    assert result.placed_fits == ()
+    assert d.run(["   ", "-q"]) == 0
     captured = capsys.readouterr()
-    assert "index 0" in captured.err and "'1'" in captured.err
+    assert captured.out == ""
+
+
+def test_punctuation_is_attempted_not_whitelist_rejected(capsys):
+    # DejaVu Sans has outlines for ',' and '!': they must be attempted
+    # through the ordinary per-character path and rendered
+    result = d.generate_text("a,b")
+    chars = {p.char for p in result.placed_fits}
+    assert chars == {"a", ",", "b"}
+    bang = {p.char for p in d.generate_text("Hi!").placed_fits}
+    assert "!" in bang
+    assert d.run(["Hello, World!", "--seed", "42", "-q"]) == 0
+    out = capsys.readouterr().out
+    lines = out.splitlines()
+    assert lines and all(line.startswith("y=") for line in lines)
+
+
+def test_arbitrary_char_failure_reports_index_and_repr(monkeypatch,
+                                                       capsys):
+    import string
+
+    original = d.generate_letter
+
+    def boom(letter, **kwargs):
+        if letter in string.ascii_letters:
+            return original(letter, **kwargs)
+        raise RuntimeError("synthetic raster failure")
+
+    monkeypatch.setattr(d, "generate_letter", boom)
+    with pytest.raises(d.GenerationError) as ei:
+        d.generate_text("ab#")
+    msg = str(ei.value)
+    assert "character 2" in msg and "'#'" in msg
+    # zero partial stdout through the public CLI
+    assert d.run(["ab#", "-q"]) == 1
+    captured = capsys.readouterr()
+    assert "character 2" in captured.err and "'#'" in captured.err
     assert captured.out == ""
 
 
@@ -1309,12 +1348,15 @@ def test_a15_exact_count():
 # ---------------------------------------------------------------------------
 
 
-def test_validate_text_accepts_and_rejects():
+def test_validate_text_is_structural_only():
     d.validate_text("A")
     d.validate_text("Hello world")
-    for bad in ("", "123", "A!", "A\tB", "A\nB", "Привіт", "   "):
-        with pytest.raises(d.GenerationError):
-            d.validate_text(bad)
+    # no character whitelist: arbitrary text is accepted structurally
+    for good in ("123", "A!", "A\tB", "A\nB", "Привіт", "   ", ","):
+        d.validate_text(good)
+    # only emptiness remains invalid
+    with pytest.raises(d.GenerationError):
+        d.validate_text("")
 
 
 def test_glyph_visible_width_real():
@@ -1460,12 +1502,14 @@ def test_cli_one_letter_identity():
     assert direct == via_text
 
 
-def test_cli_unsupported_char_no_stdout(capsys):
+def test_cli_punctuation_attempted_no_partial_stdout(capsys):
+    # issue #5: punctuation is attempted through the ordinary path
+    # (DejaVu Sans has an outline for '!'), not whitelist-rejected
     rc = d.run(["A!"])
     captured = capsys.readouterr()
-    assert rc == 1
-    assert captured.out == ""
-    assert "index 1" in captured.err and "'" in captured.err
+    assert rc == 0
+    lines = captured.out.splitlines()
+    assert lines and all(line.startswith("y=") for line in lines)
 
 
 def test_cli_later_letter_failure_no_stdout(capsys, monkeypatch):
