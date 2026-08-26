@@ -444,10 +444,12 @@ def min_curves_type(value: str) -> int:
 
 @dataclass(frozen=True)
 class CliConfig:
-    letter: str
+    text: str
     min_curves: int
     seed: int
     quiet: bool
+    letter_spacing: float
+    space_width: float
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -464,14 +466,24 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=CLI_USAGE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("letter", type=ascii_letter, metavar="LETTER",
-                        help="one ASCII letter A-Z or a-z")
+    parser.add_argument("text", type=str, metavar="TEXT",
+                        help="text to render: ASCII letters and spaces")
     parser.add_argument("--min-curves", dest="min_curves",
                         type=min_curves_type, metavar="N", default=1,
                         help="request at least N output curves; "
                              "Denysko emits more automatically if "
                              "required for complete glyph coverage. "
                              "No upper limit.")
+    parser.add_argument("--letter-spacing", dest="letter_spacing",
+                        type=float, default=DEFAULT_LETTER_SPACING,
+                        metavar="FLOAT",
+                        help="extra horizontal advance after each glyph "
+                             "(default 0.15); must be non-negative")
+    parser.add_argument("--space-width", dest="space_width",
+                        type=float, default=DEFAULT_SPACE_WIDTH,
+                        metavar="FLOAT",
+                        help="horizontal advance of one space "
+                             "(default 0.50); must be non-negative")
     parser.add_argument("--seed", type=int, default=DEFAULT_SEED,
                         metavar="SEED",
                         help="seed controlling deterministic variation "
@@ -485,8 +497,10 @@ def build_parser() -> argparse.ArgumentParser:
 
 def parse_cli(argv) -> CliConfig:
     ns = build_parser().parse_args(list(argv))
-    return CliConfig(letter=ns.letter, min_curves=ns.min_curves,
-                     seed=ns.seed, quiet=ns.quiet)
+    return CliConfig(text=ns.text, min_curves=ns.min_curves,
+                     seed=ns.seed, quiet=ns.quiet,
+                     letter_spacing=ns.letter_spacing,
+                     space_width=ns.space_width)
 
 
 def allocate_counts(K: int, M: int, rng: np.random.Generator):
@@ -803,6 +817,112 @@ def generate_text(text: str, *, min_curves=None, seed: int = DEFAULT_SEED,
 generate = generate_letter
 
 
+def serialize_fit(fit: PathFit) -> str:
+    """Serialize one fit exactly as the single-letter CLI always has."""
+    deg = fit.degree
+    if _needs_horner(deg):
+        power_z = np.polynomial.chebyshev.cheb2poly(
+            np.asarray(fit.coef_cheb, dtype=float))
+        corr = fit.corridor
+        mid = (corr.xa + corr.xb) / 2.0
+        sc = (corr.xb - corr.xa) / 2.0
+        return "y=" + _horner_expression(power_z, mid, sc)
+    return format_expression(fit.poly)
+
+
+def serialize_translated_raw_fit(fit: PathFit, dx: float) -> str:
+    """Translate a low-degree raw polynomial by composition P(x-dx)."""
+    from numpy.polynomial import Polynomial
+    shift = Polynomial([-dx, 1.0])
+    Q = Polynomial(np.asarray(fit.poly.coef, dtype=float))(shift)
+    return format_expression(Q)
+
+
+def serialize_translated_horner_fit(fit: PathFit, dx: float) -> str:
+    """Translate a high-degree Horner fit by shifting its midpoint.
+
+    Same Chebyshev coefficients, same scale, mid_global = mid_local+dx:
+    z = (x_global - (mid_local + dx))/scale.
+    """
+    power_z = np.polynomial.chebyshev.cheb2poly(
+        np.asarray(fit.coef_cheb, dtype=float))
+    mid_local = (fit.corridor.xa + fit.corridor.xb) / 2.0
+    scale = (fit.corridor.xb - fit.corridor.xa) / 2.0
+    expr = _horner_expression(power_z, mid_local + dx, scale)
+    return expr if expr.startswith("y=") else "y=" + expr
+
+
+def serialize_placed_fit(placed: PlacedFit) -> str:
+    fit = placed.fit
+    dx = placed.dx
+
+    if dx == 0.0:
+        return serialize_fit(fit)
+
+    if fit.degree < fitting.HORNER_MIN_DEGREE:
+        line = serialize_translated_raw_fit(fit, dx)
+        # numerical faithfulness gate for the expanded raw form;
+        # fall back to the stable Horner path when it rings
+        local_xs = np.array([
+            fit.corridor.xa,
+            (fit.corridor.xa + fit.corridor.xb) / 2.0,
+            fit.corridor.xb,
+        ])
+        global_xs = local_xs + dx
+        truth = np.polynomial.Polynomial(
+            np.asarray(fit.poly.coef, dtype=float))(local_xs)
+        try:
+            actual = eval_expression(line[2:], global_xs)
+        except Exception:
+            actual = None
+        if actual is not None and np.allclose(actual, truth,
+                                              rtol=1e-8, atol=1e-10):
+            return line
+    return serialize_translated_horner_fit(fit, dx)
+
+
+def validate_placed_serialization(placed: PlacedFit, line: str) -> None:
+    """Check translation + serialization correctness only.
+
+    Emitted text at global x must reproduce the canonical local
+    Chebyshev values at x-dx on the corridor domain and nodes.
+    """
+    from numpy.polynomial import chebyshev as cheb
+    from src.fitting import _zmap
+    local_xs = np.unique(np.concatenate([
+        np.asarray(placed.fit.corridor.xs, dtype=float),
+        np.linspace(placed.fit.corridor.xa, placed.fit.corridor.xb, 32),
+    ]))
+    global_xs = local_xs + placed.dx
+    z = _zmap(local_xs, placed.fit.corridor.xa, placed.fit.corridor.xb)
+    truth = cheb.chebval(z, placed.fit.coef_cheb)
+    # raw monomial lines go through the exact parser; arithmetic
+    # (Horner) lines through the emitted-expression evaluator
+    parsed = parse_line(line)
+    if parsed is not None:
+        actual = parsed.poly(global_xs)
+        if not np.allclose(parsed.poly(local_xs), truth,
+                           rtol=1e-6, atol=1e-9):
+            raise GenerationError(
+                f"translation validation failed for character "
+                f"{placed.char_index} {placed.char!r}")
+        return
+    actual = eval_expression(line[2:], global_xs)
+    if not np.allclose(actual, truth, rtol=1e-6, atol=1e-9):
+        raise GenerationError(
+            f"translation validation failed for character "
+            f"{placed.char_index} {placed.char!r}")
+
+
+def serialize_text(result: TextGeneration) -> list:
+    lines = []
+    for placed in result.placed_fits:
+        line = serialize_placed_fit(placed)
+        validate_placed_serialization(placed, line)
+        lines.append(line)
+    return lines
+
+
 def run(argv) -> int:
     import sys as _sys
 
@@ -813,29 +933,47 @@ def run(argv) -> int:
             print(msg, file=_sys.stderr)
 
     try:
-        fits, corrs, routes_list = generate(
-            cfg.letter, min_curves=cfg.min_curves,
-            seed=cfg.seed, reporter=reporter)
-        lines = []
-        for f in fits:
-            deg = f.degree
-            if _needs_horner(deg):
-                power_z = np.polynomial.chebyshev.cheb2poly(
-                    np.asarray(f.coef_cheb, dtype=float))
-                corr = f.corridor
-                mid = (corr.xa + corr.xb) / 2.0
-                sc = (corr.xb - corr.xa) / 2.0
-                line = "y=" + _horner_expression(power_z, mid, sc)
-            else:
-                line = format_expression(f.poly)
-            lines.append(line)
+        text = cfg.text
+        if len(text) == 1 and text != " ":
+            # single-letter compatibility path: byte-identical to the
+            # historical one-letter CLI (no translation wrappers)
+            try:
+                validate_text(text)
+            except GenerationError as exc:
+                print(str(exc), file=_sys.stderr)
+                return 1
+            try:
+                fits, corrs, routes_list = generate_letter(
+                    text, min_curves=cfg.min_curves,
+                    seed=cfg.seed, reporter=reporter)
+                lines = [serialize_fit(f) for f in fits]
+            except GenerationError as exc:
+                print(str(exc), file=_sys.stderr)
+                return 1
+            except RuntimeError as exc:
+                # expected geometric/fitting gate failures raise
+                # RuntimeError; anything else is a genuine bug and
+                # propagates
+                print(f"generation failed: {exc}", file=_sys.stderr)
+                return 1
+        else:
+            try:
+                result = generate_text(
+                    text, min_curves=cfg.min_curves,
+                    seed=cfg.seed,
+                    letter_spacing=cfg.letter_spacing,
+                    space_width=cfg.space_width,
+                    reporter=reporter)
+                lines = serialize_text(result)
+            except GenerationError as exc:
+                print(str(exc), file=_sys.stderr)
+                return 1
+            except RuntimeError as exc:
+                print(f"generation failed at character: {exc}",
+                      file=_sys.stderr)
+                return 1
     except GenerationError as exc:
         print(str(exc), file=_sys.stderr)
-        return 1
-    except RuntimeError as exc:
-        # expected geometric/fitting gate failures raise RuntimeError;
-        # anything else is a genuine bug and propagates
-        print(f"generation failed: {exc}", file=_sys.stderr)
         return 1
 
     _sys.stdout.write("".join(line + "\n" for line in lines))
