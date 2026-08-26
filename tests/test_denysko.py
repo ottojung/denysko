@@ -1152,6 +1152,50 @@ def test_t_and_m_generation_succeed():
 
 
 # ---------------------------------------------------------------------------
+# Issue #7: staircase diagonals captured by vertical-unfold crawl (Z/z)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("letter", ["W", "Z", "z"])
+def test_wzz_generation_succeeds(letter):
+    """Real-glyph regression for issue #7: W, Z, z must generate."""
+    fits, _, _ = d.generate(letter)
+    assert len(fits) >= 1
+
+
+@pytest.mark.parametrize("letter", ["W", "Z", "z"])
+def test_wzz_all_corridors_contained(letter):
+    """Every selected route corridor of W/Z/z is a geometric subset of
+    the glyph fill (the failing Z route used to miss by ~0.40)."""
+    geom = glyph_geometry(letter)
+    graph = build_stroke_route_graph(geom)
+    cands = enumerate_complete_routes(graph)
+    sel = select_routes_min_cover(graph, cands)
+    assert sel
+    for j in sel:
+        c = build_route_corridor(graph, cands[j], geom)
+        assert d_topology.corridor_glyph_violation(c, geom) <= 0.09
+
+
+@pytest.mark.parametrize("letter", ["Z", "z"])
+def test_diagonal_atoms_keep_raw_x_progression(letter):
+    """Mechanism test: raster staircase noise on a diagonal must not be
+    vertically unfolded into a wide row run; the unfold-crawl frontier
+    may therefore never displace any realized landmark grossly beyond
+    the local stroke width (~0.06 normalized). Before the run-width
+    gate the crawl pinned up to ~0.52 of x on Z/z diagonals."""
+    geom = glyph_geometry(letter)
+    graph = build_stroke_route_graph(geom)
+    cands = enumerate_complete_routes(graph)
+    sel = select_routes_min_cover(graph, cands)
+    for j in sel:
+        c = build_route_corridor(graph, cands[j], geom)
+        for emb in c.realized.values():
+            shift = np.abs(np.asarray(emb["x"]) - np.asarray(emb["raw_x"]))
+            assert float(shift.max()) <= 0.1
+
+
+# ---------------------------------------------------------------------------
 # H multiplicity + balanced allocation (known-good reference coverage)
 # ---------------------------------------------------------------------------
 

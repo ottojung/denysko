@@ -1126,6 +1126,15 @@ def build_route_corridor(graph: RouteGraph, route: Route,
     # crawl just above the synthetic frontier until raw x catches up,
     # then EXACT raw x resumes. No persistent downstream translation.
     VERT = 0.25          # |dx| < VERT*dy => locally vertical (ratio)
+    # A GENUINE vertical regime cuts its containing row run at about the
+    # local stroke width. A raster staircase diagonal that merely touches
+    # a wider horizontal structure (bar/diagonal junctions in Z-like
+    # glyphs) cuts the row run at a multiple of the stroke width;
+    # unfolding there displaces landmarks grossly beyond the stroke and
+    # the crawl frontier captures the rest of the diagonal. Measured:
+    # real vertical/near-vertical strokes cut at <= ~1.1x stroke
+    # diameter; Z/z staircase artifacts at >= ~1.4x.
+    UNFOLD_RUN_WIDTH_GAIN = 1.25
     EPS_X = UNFOLD_CRAWL_STEP
     p = np.array(lam[:, 0], dtype=float)
     deform = np.array(["none"] * len(p), dtype=object)
@@ -1158,6 +1167,22 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                         lam[k, 0] + STROKE_MIN_HALF)
                     for k in range(i, j + 1)]
             lo_r, hi_r = min(wins, key=lambda w: w[1] - w[0])
+            # vertical-regime gate: the containing row run must be
+            # commensurate with the local stroke width; otherwise this
+            # is raster staircase noise inside a wider structure and
+            # raw x progression is preserved (no unfold, no frontier).
+            r_local = 0.0
+            for k in range(i, j + 1):
+                rr_ = int(min(max(round(lam[k, 1] / step), 0),
+                              geom.fill.shape[0] - 1))
+                cc_ = int(min(max(round(lam[k, 0] / step), 0),
+                              geom.fill.shape[1] - 1))
+                r_local = max(r_local, float(radius[rr_, cc_]) * step)
+            if hi_r - lo_r > \
+                    UNFOLD_RUN_WIDTH_GAIN * 2.0 * max(r_local,
+                                                      STROKE_MIN_HALF):
+                i = j + 1
+                continue
             margin = min(CORRIDOR_MARGIN, max((hi_r - lo_r) * 0.15,
                                          UNFOLD_MIN_MARGIN))
             win_lo = max(lo_r + margin, p[i - 1])

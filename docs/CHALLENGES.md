@@ -127,3 +127,39 @@ the bar-diagonal junction). Real fix direction: stop the unfold crawl
 from capturing non-vertical strokes (per-step VERT classification noise
 on staircase diagonals), or re-derive landmarks from raw arc positions
 when crawl displacement greatly exceeds the stroke width.
+
+## Z/z fixed: unfold run-width gate (measured, issue #7)
+
+Instrumentation over the selected Z/z routes (`build_route_corridor`
+landmark loop) shows the exact capture mechanism. The per-landmark
+verticality test `|dx| < 0.25*dy` fires on raster staircase noise:
+single-raster-step pairs with dx ~= 0.002 (=1/512) and dy ~= 0.009.
+The unfold window is then derived from the CONTAINING ROW RUN of the
+group; at bar/diagonal junctions that row run spans nearly the whole
+glyph: measured chosen-run widths 0.78-0.82 on Z and z versus a local
+stroke diameter of only ~0.11-0.18 (2 * distance-transform radius).
+Landmarks are spread across that oversized window, the synthetic crawl
+frontier lands up to ~0.5 to the right of the diagonal, and the
+unfold-exit-overlap branch then pins ~86-99 consecutive landmarks at
+the frontier (max |realized_x - raw_x| measured 0.513-0.525). The
+resulting single-column chord crosses unfilled space and Phase-1
+containment misses by ~0.40 (Z) / ~0.36 (z).
+
+The generic discriminator is geometric, not glyph-specific: a GENUINE
+vertical regime cuts its containing row run at approximately the local
+stroke width, while a staircase diagonal embedded in a wider horizontal
+structure cuts it at a multiple of that width. Measured ratios
+(run width / local stroke diameter): W's legitimately unfolded
+near-vertical strokes cut at 1.00-1.10x; Z/z staircase artifacts at
+1.39-7.4x. build_route_corridor now gates every candidate unfold
+group: if the narrowest containing row run exceeds
+UNFOLD_RUN_WIDTH_GAIN = 1.25 times twice the maximum local stroke
+radius over the group, the group is NOT unfolded - raw arc x is kept,
+no frontier is set, and the diagonal stays a monotone atom.
+
+Measured result: all Z/z route corridor violations drop from
+0.403/0.357 to 0.0000; max realized-x shift on Z/z drops from ~0.52
+to <= 0.002 (one raster step); `denysko Z`, `denysko z`, `denysko W`
+all emit valid equations and exit 0. Full A-Z/a-z CLI sweep: 52/52
+pass. W keeps its legitimate unfolds (69 vertical-unfold landmarks,
+worst shift 0.046 < stroke width) and its merged-wall fix untouched.
