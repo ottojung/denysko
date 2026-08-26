@@ -32,7 +32,7 @@ The orchestrator should make real progress, not merely triage or report. Select 
 
 If a reproducible Denysko bug is discovered and no issue describes it, create a focused GitHub bug issue with the reproduction and observed behavior before losing the discovery. If it blocks the current task, fix it as part of the current work or as an explicit prerequisite; otherwise leave it as actionable follow-up work. Do not create follow-up issues for features, enhancements, speculative improvements, or non-bug refactors.
 
-Current known regressions such as generation failures for `W`, `Z`, or `z` should not be normalized as expected behavior. If still reproducible and not already tracked, they are bugs to investigate and fix generically.
+Current known regressions must not be normalized as expected behavior. If still reproducible and not already tracked, they are bugs to investigate and fix generically.
 
 ## Denysko-specific engineering rules
 
