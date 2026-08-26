@@ -67,10 +67,35 @@ def _font_path() -> str:
     )
 
 
+_CAP_HEIGHT_LETTER = "H"
+_font_scale_cache: dict = {}
+
+
+def _font_normalization_scale() -> float:
+    """One deterministic font-wide normalization scale.
+
+    The visible height of the capital-height reference glyph ('H')
+    at the canonical source size maps exactly to SIZE (= 1.0). Every
+    glyph shares this single uniform x/y scale, preserving the font's
+    own relative metrics (x-height, ascenders, descenders, widths).
+    """
+    key = (_font_path(), SIZE)
+    if key not in _font_scale_cache:
+        ref = TextPath((0, 0), _CAP_HEIGHT_LETTER, size=100,
+                       prop=FontProperties(fname=_font_path()))
+        pts = np.vstack([np.asarray(p, dtype=float)
+                         for p in ref.to_polygons()])
+        height = float(pts[:, 1].max() - pts[:, 1].min())
+        _font_scale_cache[key] = SIZE / max(height, 1e-12)
+    return _font_scale_cache[key]
+
+
 def _normalized_polygons(letter: str) -> list[np.ndarray]:
     """Flattened glyph outlines normalized like the canonical raster:
-    bundled DejaVuSans at size 100, aspect preserved, filled-bbox
-    lower-left mapped to (0, 0), max dimension 100, y-up."""
+    bundled DejaVuSans at size 100, one shared font-wide uniform scale
+    mapping the capital-height reference ('H' visible height) to SIZE,
+    filled-bbox lower-left mapped to (0, 0), y-up. Glyphs are never
+    independently resized."""
     try:
         tp = TextPath((0, 0), letter, size=100,
                       prop=FontProperties(fname=_font_path()))
@@ -84,7 +109,7 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
     pts = np.vstack(polys)
     mn = pts.min(axis=0)
     mx = pts.max(axis=0)
-    scale = SIZE / max(mx[0] - mn[0], mx[1] - mn[1], 1e-12)
+    scale = _font_normalization_scale()
     out = []
     for poly in polys:
         t = np.empty_like(poly)
@@ -95,17 +120,25 @@ def _normalized_polygons(letter: str) -> list[np.ndarray]:
 
 
 def _canonical_fill(polys_norm: list[np.ndarray]):
-    """Even-odd rasterization of normalized outlines on the canonical
-    GRID x GRID sample grid. Rows increase with y (row r centers at
-    y = (r + 0.5) * step)."""
+    """Even-odd rasterization of normalized outlines at the canonical
+    resolution (step = SIZE / GRID). The canvas is sized from the
+    glyph's actual normalized extent: with the shared font-wide scale a
+    glyph may legitimately exceed SIZE (round-letter overshoot,
+    ascenders/descenders), so cell counts are derived from the outline
+    bbox instead of being hard-capped at GRID. Rows increase with y
+    (row r centers at y = (r + 0.5) * step)."""
     step = SIZE / GRID
-    axis = (np.arange(GRID) + 0.5) * step
-    gx, gy = np.meshgrid(axis, axis)
+    pts = np.vstack(polys_norm)
+    nx = max(GRID, int(np.ceil(pts[:, 0].max() / step)))
+    ny = max(GRID, int(np.ceil(pts[:, 1].max() / step)))
+    ax = (np.arange(nx) + 0.5) * step
+    ay = (np.arange(ny) + 0.5) * step
+    gx, gy = np.meshgrid(ax, ay)
     grid = np.column_stack([gx.ravel(), gy.ravel()])
     inside = np.zeros(len(grid), dtype=bool)
     for ring in polys_norm:
         inside ^= Path(ring).contains_points(grid)
-    return inside.reshape(GRID, GRID), step
+    return inside.reshape(ny, nx), step
 
 
 def _mask_boundary_cloud(fill: np.ndarray, step: float) -> np.ndarray:
@@ -566,6 +599,7 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
         vertices.append(v)
         return v.id
 
+
     node_vert = {n.id: new_vertex(n.xy[0] * step,
                                   "terminal" if n.kind == "end"
                                   else "junction")
@@ -632,13 +666,33 @@ def build_stroke_route_graph(geom: GlyphGeometry) -> RouteGraph:
         pts = se.points * np.array([step, step])   # pixel -> glyph coords
         if (len(pts) > 50
                 and float(np.hypot(*(pts[0] - pts[-1]))) <= 2.0 * step):
-            # closed ring: rotate to the global x-minimum and split into
-            # two arcs between a fresh terminal vertex pair
-            i0 = int(np.argmin(pts[:, 0]))
-            pts = np.roll(pts, -i0, axis=0)
-            mid = len(pts) // 2
+            # closed ring: split into two arcs between a fresh terminal
+            # vertex pair. Cut points are the MIDDLES of the leftmost
+            # and rightmost extremum plateaus: cutting anywhere else
+            # leaves a raster plateau fragment straddling an extremum,
+            # which atomizes into a spurious sub-stroke vertical stub.
+            def _plateau_mid(idx):
+                x = pts[idx, 0]
+                a = idx
+                while a > 0 and pts[a - 1, 0] == x:
+                    a -= 1
+                b = idx
+                while b + 1 < len(pts) and pts[b + 1, 0] == x:
+                    b += 1
+                return (a + b) // 2
+
+            i_left = _plateau_mid(int(np.argmin(pts[:, 0])))
+            pts = np.roll(pts, -i_left, axis=0)
+            i_right = _plateau_mid(int(np.argmax(pts[:, 0])))
+            n_pts = len(pts)
+            halves = []
+            if 1 <= i_right <= n_pts - 1:
+                halves.append(pts[:i_right + 1])
+                halves.append(np.vstack([pts[i_right:], pts[:1]]))
+            else:
+                halves.append(np.vstack([pts, pts[:1]]))
             vid = new_vertex(float(pts[0, 0]), "terminal")
-            for half in (pts[:mid + 1], pts[mid:]):
+            for half in halves:
                 for j0, j1 in _monotone_pieces(half):
                     seg = half[j0:j1 + 1]
                     a_vid = (vid if j0 == 0
@@ -1581,10 +1635,16 @@ def _monotone_pieces(pts: np.ndarray):
         if last_sign == 0:
             last_sign = sgn
         elif sgn != last_sign:
-            # the extremum POINT is index i (dx flips on the edge
-            # i->i+1); both pieces share it deterministically, which
-            # also places plateau extrema at the first plateau point
-            cuts.append(i)
+            # the extremum POINT is shared by both pieces. Raster
+            # skeletons flatten smooth extrema into multi-point
+            # plateaus; cutting at the first plateau point orphans the
+            # plateau remainder as a pure-vertical sub-stroke fragment.
+            # Cut at the MIDDLE of the zero-dx plateau instead so both
+            # pieces leave the extremum symmetrically.
+            j = i
+            while j > 0 and dx[j - 1] == 0:
+                j -= 1
+            cuts.append((j + i) // 2)
             last_sign = sgn
     if cuts[-1] != n - 1:
         cuts.append(n - 1)
