@@ -12,6 +12,7 @@ from src.fitting import (
     PathFit,
     fit_degree,
     fit_route,
+    preferred_tail_orientation,
 )
 from src.topology import (
     ESC_OFFSETS,
@@ -301,15 +302,14 @@ def test_impossible_low_degree_corridor_fails():
 
 
 def test_degree_minimization_verified_minimum():
-    """fit_route must return the LOWEST verified feasible degree: every
-    lower degree is infeasible for every tail orientation."""
+    """fit_route returns the lowest feasible degree for required geometry."""
     c = _linear_corridor()
     fit = fit_route(c, hi=24)
     assert fit is not None
+    ori = preferred_tail_orientation(c)
+    assert fit.orientation == ori
     for dd in range(fit.degree):
-        assert all(
-            fit_degree(c, dd, *ori) is None for ori in ORIENTATIONS
-        )
+        assert fit_degree(c, dd, *ori) is None
 
 
 # ---------------------------------------------------------------------------
@@ -393,9 +393,9 @@ def test_reentry_and_wrong_asymptote_fail_v3():
     assert d.tail_reentry_violation(wrong.coef, corr, (1, 1)) > 0
 
 
-def test_orientation_choice_prefers_feasible_low_degree():
-    # a corridor hugging the top of the band: only an UP-right tail can
-    # escape quickly; fit_route must find some feasible orientation.
+def test_orientation_choice_follows_endpoint_geometry():
+    # A corridor hugging the top of the band must choose upward escape
+    # from geometry before fitting rather than because it is numerically easy.
     xs = np.linspace(10.0, 60.0, 40)
     c = _corridor_from(xs, np.full(len(xs), 92.0), np.full(len(xs), 98.0))
     fit = fit_route(c, hi=20)
