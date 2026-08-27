@@ -1504,7 +1504,10 @@ def test_h_default_baseline_degrees():
 
 def test_family_members_have_real_orientation():
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("A")
-    counts = [5, 5]
+    # issue #6 (Cormorant) changes A's selected-route count, so size the
+    # per-route curve counts to the actual selection rather than pinning
+    # DejaVu's 2-corridor [5, 5].
+    counts = [5] * len(selected)
     out_fits, _, _ = d.realize_variants(graph, chosen, selected, counts,
                            42, geom)
     from src.fitting import ORIENTATIONS
