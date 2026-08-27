@@ -69,19 +69,17 @@ s = s.replace("_zmap(xs_t, corridor.xa, corridor.xb)",
               "_corridor_zmap(xs_t, corridor)")
 s = s.replace("_zmap(samp_x, corridor.xa, corridor.xb)",
               "_corridor_zmap(samp_x, corridor)")
-s = replace_once(
-    s,
-    '''    affine = np.polynomial.Polynomial(
+affine_old = '''    affine = np.polynomial.Polynomial(
         [
             -(corridor.xa + corridor.xb) / (corridor.xb - corridor.xa),
             2.0 / (corridor.xb - corridor.xa),
         ]
     )
-''',
-    '''    affine = _basis_affine(corridor)
-''',
-    "fit_degree affine",
-)
+'''
+if s.count(affine_old) != 2:
+    raise SystemExit(f"affine blocks: expected 2 matches, got {s.count(affine_old)}")
+s = s.replace(affine_old, '''    affine = _basis_affine(corridor)
+''')
 s = replace_once(
     s,
     '''    xa, xb = corridor.xa, corridor.xb
@@ -93,19 +91,6 @@ s = replace_once(
     def peval(xq):
 ''',
     "tail proof basis",
-)
-s = replace_once(
-    s,
-    '''    affine = np.polynomial.Polynomial(
-        [
-            -(corridor.xa + corridor.xb) / (corridor.xb - corridor.xa),
-            2.0 / (corridor.xb - corridor.xa),
-        ]
-    )
-''',
-    '''    affine = _basis_affine(corridor)
-''',
-    "fit_variant affine",
 )
 p.write_text(s)
 
