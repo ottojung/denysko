@@ -112,6 +112,35 @@ def test_issue22_legacy_y_prefix_still_parses():
     assert d.expr_body("0.5-1.25x+3x^2") == "0.5-1.25x+3x^2"
 
 
+def test_preview_samples_all_curves_over_common_text_wide_viewport():
+    """Regression for PR #32: the preview must evaluate EVERY emitted
+    globally-unbounded equation over ONE shared text-wide x viewport, not per
+    corridor, and clip only via the fixed y viewport.
+
+    Checks the shared viewport helper: it spans the whole laid-out text and
+    fully contains every curve's own global corridor window, and is strictly
+    wider than any single curve's window (so curves are not sampled only over
+    their own corridor)."""
+    from src import preview as pv
+
+    result = d.generate_text("AC", seed=42)
+    xs = pv.text_viewport_xs(result)
+    assert xs.ndim == 1 and xs[0] < xs[-1]
+    xs_min, xs_max = float(xs[0]), float(xs[-1])
+
+    single_widths = []
+    for placed in result.placed_fits:
+        c = placed.fit.corridor
+        a = c.xa + placed.dx
+        b = c.xb + placed.dx
+        single_widths.append(b - a)
+        # the common viewport must cover this curve's entire corridor window
+        assert a >= xs_min - 1e-9
+        assert b <= xs_max + 1e-9
+    # laid-out text (two letters + spacing) is wider than any single corridor
+    assert (xs_max - xs_min) > max(single_widths)
+
+
 # ---------------------------------------------------------------------------
 # Synthetic routing-graph topologies
 # ---------------------------------------------------------------------------
