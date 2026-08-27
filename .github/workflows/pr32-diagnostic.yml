@@ -1,0 +1,66 @@
+name: PR32 diagnostics
+
+on:
+  push:
+    branches:
+      - issue-6-cormorant
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - name: Measure stable-basis fitting and compact components
+        run: |
+          uv run python - <<'PY'
+          from string import ascii_letters
+          import numpy as np
+          from src import denysko as d
+          from src import fitting as f
+          from src.topology import glyph_connected_components
+
+          pad = max(f.ESC_OFFSETS) * 1.02
+          original_zmap = f._zmap
+          def stable_zmap(x, xa, xb):
+              a = xa - pad
+              b = xb + pad
+              return (2.0 * np.asarray(x, dtype=float) - a - b) / (b - a)
+          f._zmap = stable_zmap
+
+          max_degree = -1
+          failures = []
+          for ch in ascii_letters:
+              try:
+                  geom, graph, candidates, chosen, sigs, selected = d.build_phase1(ch)
+                  degrees = []
+                  for corr in selected:
+                      fit = f.fit_route(corr, hi=80)
+                      degrees.append(None if fit is None else fit.degree)
+                  if any(x is None for x in degrees):
+                      failures.append((ch, degrees))
+                  else:
+                      max_degree = max(max_degree, *degrees)
+                  print(f"ASCII {ch!r}: routes={len(selected)} degrees={degrees}")
+              except Exception as exc:
+                  failures.append((ch, type(exc).__name__, str(exc)))
+                  print(f"ASCII {ch!r}: ERROR {type(exc).__name__}: {exc}")
+
+          print(f"SUMMARY max_degree={max_degree} failures={failures}")
+
+          for ch in ('i', 'j', '.', ':'):
+              geom = d.glyph_geometry(ch)
+              labels, n_comp, info = glyph_connected_components(geom)
+              graph = d.build_stroke_route_graph(geom)
+              print(f"COMPACT {ch!r}: components={n_comp} info={info} report={graph.atom_report}")
+          PY
