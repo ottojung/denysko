@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import pytest
 
@@ -73,6 +75,94 @@ def test_malformed_lines_do_not_parse():
     assert d.parse_line("y=") is None
     assert d.parse_line("y=..") is None
     assert d.parse_line("") is None
+
+
+def test_parse_line_handles_nested_horner():
+    # Shifted Horner form emitted for high-degree (degree >= 10) curves:
+    #   0.5 + ((x-2)/3) * (1 + ((x-2)/3) * 2)
+    # equals 0.5 + z + 2 z^2 with z = (x-2)/3.
+    line = "y=0.5+((x-2.0)/3.0)*(1.0+((x-2.0)/3.0)*(2.0))"
+    parsed = d.parse_line(line)
+    assert parsed is not None
+    xs = np.linspace(-5.0, 10.0, 50)
+    z = (xs - 2.0) / 3.0
+    expected = 0.5 + z + 2.0 * z ** 2
+    got = parsed.poly(xs)
+    np.testing.assert_allclose(got, expected, rtol=1e-9, atol=1e-12)
+    # raw-x coefficients are retained for callers that need them
+    assert parsed.poly.coef is not None
+
+
+def test_parse_line_horner_flat_mix():
+    # a flat term plus a nested Horner term must parse and evaluate right
+    line = "y=-1.25*x+((x-0.5)/2.0)*(3.0)"
+    parsed = d.parse_line(line)
+    assert parsed is not None
+    xs = np.linspace(0.0, 5.0, 20)
+    expected = -1.25 * xs + ((xs - 0.5) / 2.0) * 3.0
+    np.testing.assert_allclose(parsed.poly(xs), expected, rtol=1e-9)
+
+
+def test_parse_line_rejects_malformed_arithmetic():
+    # The generic parser must reject unmatched non-whitespace characters
+    # (and other non-polynomial input) instead of silently discarding them.
+    # Each of these fails tokenization or structured parsing and must yield
+    # None from parse_line.
+    malformed = [
+        "y=x^y",            # caret with non-digit exponent is not a token
+        "y=x+2y",           # stray letter
+        "y=x*y",            # multiplication by y (not a token)
+        "y=(x+2",           # unbalanced parenthesis
+        "y=*3",             # dangling operator
+        "y=x 2",            # missing operator between terms
+        "y=x/0",            # division by zero (not a valid polynomial)
+        "y=2.3.4",          # malformed number
+        "y=sin(x)",         # unknown function
+    ]
+    for line in malformed:
+        assert d.parse_line(line) is None, f"expected reject: {line!r}"
+
+    # sanity: well-formed emitted-style expressions still parse (flat form
+    # uses implicit multiplication 2x^2; Horner form uses explicit *).
+    assert d.parse_line("y=2.0x^2-1") is not None
+    assert d.parse_line("y=0.5+((x-2.0)/3.0)*(1.0)") is not None
+
+
+def test_parse_expression_poly_tokenization_rejects_junk():
+    # Direct check that tokenizer rejects characters outside the grammar
+    # and incomplete input, instead of silently discarding them.
+    assert d._parse_expression_poly("x^y") is None
+    assert d._parse_expression_poly("x+y") is None
+    assert d._parse_expression_poly("(x+1") is None     # unbalanced paren
+    assert d._parse_expression_poly("x+") is None        # incomplete expr
+    assert d._parse_expression_poly("x/0") is None      # division by zero
+    assert d._parse_expression_poly("2.3.4") is None    # malformed number
+    assert d._parse_expression_poly("sin(x)") is None    # unknown function
+    # valid expressions parse to coefficient arrays
+    coef = d._parse_expression_poly("0.5+((x-2)/3)*(1+((x-2)/3)*2)")
+    assert coef is not None
+    assert coef.shape == (3,)
+
+
+def test_validate_horner_line_matches_chebyshev():
+    # validate_horner_line must compare the emitted expression against the
+    # canonical Chebyshev data (issue #30's dedicated Horner V4 check).
+    from numpy.polynomial import chebyshev as cheb
+
+    geom, _, _, _, _, selected = d.build_phase1("T")
+    fits, corrs, _ = d.generate_letter("T", min_curves=1)
+    lines = [d.serialize_fit(f) for f in fits]
+    for line, fit, corr in zip(lines, fits, corrs):
+        if not d._is_horner_line(line):
+            continue
+        err = d.validate_horner_line(line, corr, fit.coef_cheb)
+        # emitted Horner expression reproduces its Chebyshev source closely
+        assert err < 1e-6, f"horner line mismatch {err}"
+        # and a corrupted coefficient is detected (replace first numeric
+        # literal; robust to the optional y= prefix and changing coefficients)
+        broken = re.sub(r"[0-9]+(?:\.[0-9]+)?", "999.0", line, count=1)
+        bad_err = d.validate_horner_line(broken, corr, fit.coef_cheb)
+        assert bad_err > 1e-3
 
 
 def test_issue22_output_drops_y_prefix():
@@ -731,6 +821,44 @@ def test_validate_lines_flags_violations():
     bad_lines = [d.format_expression(_BadFit())]
     problems = d.validate_lines(bad_lines, _Geom(), [_BadFit()], [c])
     assert any(p.startswith("V2") for p in problems)
+
+
+def test_validate_lines_horner_emitted_lines_no_crash():
+    # Issue #30: validate_lines (V4/V6) crashed on Horner-form emitted lines
+    # because parse_line could not parse the nested shifted Horner form.
+    # A glyph that emits a degree>=10 curve must now validate cleanly.
+    geom, _, _, _, _, selected = d.build_phase1("T")
+    fits, corrs, routes = d.generate_letter("T", min_curves=1)
+    lines = [d.serialize_fit(f) for f in fits]
+    assert any(d._is_horner_line(l) for l in lines), "T must emit a Horner line"
+    # the original crash was AttributeError inside parse_line; ensure every
+    # emitted line parses and validate_lines returns a list without raising
+    for l in lines:
+        assert d.parse_line(l) is not None
+    problems = d.validate_lines(lines, geom, fits, corrs, routes)
+    assert isinstance(problems, list)
+    # no leftover "unparseable" crash artifacts and no false V4 mismatch
+    assert not any("unparseable" in p for p in problems)
+    assert not any(p.startswith("V4") for p in problems)
+
+
+def test_validate_lines_flags_corrupted_horner():
+    # Corrupting a Horner line must be caught by the V4 stability check
+    # (not silently skipped), proving the parser path does real validation.
+    geom, _, _, _, _, selected = d.build_phase1("T")
+    fits, corrs, routes = d.generate_letter("T", min_curves=1)
+    lines = [d.serialize_fit(f) for f in fits]
+    horner_idx = next(i for i, l in enumerate(lines)
+                      if d._is_horner_line(l))
+    broken = list(lines)
+    # corrupt the first numeric literal of the Horner line; robust to the
+    # actual emitted coefficient value (which varies with the fit)
+    broken[horner_idx] = re.sub(r"[0-9]+(?:\.[0-9]+)?",
+                                r"999.0", lines[horner_idx], count=1)
+    problems = d.validate_lines(broken, geom, fits, corrs, routes)
+    assert any(p.startswith("V4 curve %d: horner mismatch" % horner_idx)
+               for p in problems)
+
 
 
 # ---------------------------------------------------------------------------
