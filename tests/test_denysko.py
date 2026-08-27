@@ -7,18 +7,23 @@ from src import fitting as _fitting
 from src import topology as d_topology
 from src import topology as _topo
 from src.fitting import (
+    INITIAL_FIT_DEGREE,
     ORIENTATIONS,
     Corridor,
     PathFit,
     fit_degree,
     fit_route,
+    preferred_tail_orientation,
 )
 from src.topology import (
     ESC_OFFSETS,
     build_stroke_route_graph,
     _route_signature as route_sig_top,
     route_edge_ids,
+    route_join_score,
     GlyphGeometry,
+    Route,
+    OrientedRouteEdge,
     RouteEdge,
     RouteGraph,
     RouteVertex,
@@ -27,7 +32,11 @@ from src.topology import (
     build_route_graph,
     enumerate_complete_routes,
     glyph_geometry,
+    glyph_connected_components,
+    route_component_label,
+    component_preferred_orientation,
     route_coverage_fraction,
+    route_atom_ids,
     select_routes_min_cover,
 )
 
@@ -133,7 +142,6 @@ def test_parse_expression_poly_tokenization_rejects_junk():
     assert coef.shape == (3,)
 
 
-
 def test_validate_horner_line_matches_chebyshev():
     # validate_horner_line must compare the emitted expression against the
     # canonical Chebyshev data (issue #30's dedicated Horner V4 check).
@@ -153,6 +161,42 @@ def test_validate_horner_line_matches_chebyshev():
         bad_err = d.validate_horner_line(broken, corr, fit.coef_cheb)
         assert bad_err > 1e-3
 
+
+def test_issue22_output_drops_y_prefix():
+    # Issue #22: emitted equations must NOT carry the historical `y=`
+    # prefix (e.g. `a + b*x + c*x^2 ...`).
+    coef = np.array([0.5, -1.25, 3.0])
+    line = d.format_expression(
+        type("C", (), {"poly": np.polynomial.Polynomial(coef)})()
+    )
+    assert not line.startswith("y=")
+    assert line == "0.5-1.25x+3x^2"
+
+    # The public single-letter and text serialization paths also drop it.
+    fits, corrs, _ = d.generate_letter("A", seed=42)
+    for ln in [d.serialize_fit(f) for f in fits]:
+        assert not ln.startswith("y=")
+        assert d.parse_line(ln) is not None
+
+    placed = d.generate_text("Ab", seed=42)
+    for ln in d.serialize_text(placed):
+        assert not ln.startswith("y=")
+        # monomial lines parse back to a polynomial; Horner (nested
+        # arithmetic) lines still evaluate as equations.
+        if "(" in ln:
+            xs = np.linspace(0.0, 2.0, 8)
+            assert np.all(np.isfinite(d.eval_expression(d.expr_body(ln), xs)))
+        else:
+            assert d.parse_line(ln) is not None
+
+
+def test_issue22_legacy_y_prefix_still_parses():
+    # Backward tolerance: historical `y=` artifacts still round-trip.
+    assert d.parse_line("y=0.5-1.25x+3x^2") is not None
+    assert d.serialize(d.parse_line("y=0.5-1.25x+3x^2")) == \
+        "0.5-1.25x+3x^2"
+    assert d.expr_body("y=0.5-1.25x+3x^2") == "0.5-1.25x+3x^2"
+    assert d.expr_body("0.5-1.25x+3x^2") == "0.5-1.25x+3x^2"
 
 
 # ---------------------------------------------------------------------------
@@ -224,6 +268,133 @@ def test_two_disjoint_stripes_two_routes():
     chosen = select_routes_min_cover(graph, routes)
     assert len(chosen) == 2
 
+
+def _bruteforce_priority(graph, candidates):
+    """Reference lexicographic optimum for the staged objective:
+
+        (min route count, max join score, min complexity, min index sum)
+
+    Returns (K, Jmax, Cmin, Imin, optimal_sets) where optimal_sets are the
+    index-minimal selected sets achieving all four optima.
+    """
+    meaningful = set(graph.meaningful)
+    n = len(candidates)
+    feas = []
+    for mask in range(1 << n):
+        sel = [j for j in range(n) if (mask >> j) & 1]
+        if not sel:
+            continue
+        covered = set().union(*[
+            route_atom_ids(graph, candidates[j]) & meaningful
+            for j in sel])
+        if covered >= meaningful:
+            jsum = sum(route_join_score(graph, candidates[j]) for j in sel)
+            csum = sum(len(route_edge_ids(candidates[j])) for j in sel)
+            isum = sum(sel)
+            feas.append((len(sel), jsum, csum, isum, sel))
+    K = min(t[0] for t in feas)
+    feasK = [t for t in feas if t[0] == K]
+    Jmax = max(t[1] for t in feasK)
+    feasJ = [t for t in feasK if t[1] == Jmax]
+    Cmin = min(t[2] for t in feasJ)
+    feasC = [t for t in feasJ if t[2] == Cmin]
+    Imin = min(t[3] for t in feasC)
+    opt = [t[4] for t in feasC if t[3] == Imin]
+    return K, Jmax, Cmin, Imin, opt
+
+
+def _assert_staged_priority(graph, candidates, selected):
+    """Assert `selected` (a list of candidate INDICES) exactly matches the
+    staged lexicographic optimum."""
+    K, Jmax, Cmin, Imin, opt_sets = _bruteforce_priority(graph, candidates)
+    assert len(selected) == K, (len(selected), K)
+    sel_routes = [candidates[j] for j in selected]
+    jsum = sum(route_join_score(graph, r) for r in sel_routes)
+    csum = sum(len(route_edge_ids(r)) for r in sel_routes)
+    isum = sum(selected)
+    assert jsum == Jmax, (jsum, Jmax)          # join dominates complexity
+    assert csum == Cmin, (csum, Cmin)          # complexity dominates index
+    assert isum == Imin, (isum, Imin)          # deterministic index tie-break
+    assert set(selected) in [set(s) for s in opt_sets]
+
+
+def test_staged_priority_ordering_holds_on_real_glyphs():
+    """Issue #3: the staged objective must be a genuine lexicographic MILP
+    (K, then max join, then min complexity, then deterministic index
+    tie-break), not a single blended weighted cost. Verify the selected
+    routes for real junction-rich glyphs exactly match the brute-forced
+    lexicographic optimum over every candidate subset."""
+    from src.denysko import _glyph_geometry_or_error
+    for letter in ("y", "r"):
+        geom = _glyph_geometry_or_error(letter)
+        g = build_stroke_route_graph(geom)
+        cands = enumerate_complete_routes(g)
+        chosen = select_routes_min_cover(g, cands)
+        _assert_staged_priority(g, cands, chosen)
+
+
+def test_join_maximizing_prefers_joined_cover_over_shorter_unjoined():
+    """Issue #3 mechanism: when several minimum-size covers exist, prefer
+    the one with the greatest number of legal stroke continuations
+    through junctions, even at the cost of a longer (higher-complexity)
+    cover.
+
+    Synthetic routing graph with a genuine junction J and three incident
+    branches. Two minimum covers of size K=2 exist:
+
+      * joined cover    : two routes that each PASS THROUGH J (join=2)
+      * unjoined cover  : one route through J + one route that STARTS at
+                          J and escapes at the contact (join=1, and it is
+                          the shorter cover by total edge count)
+
+    The exact minimum curve count K is unchanged; the selection must pick
+    the maximal-join cover, not the shorter unjoined one.
+    """
+    V_a, V_J, V_b, V_c = 0, 1, 2, 3
+    edges = [
+        RouteEdge(0, V_a, V_J, xs=np.array([0.0, 0.5]),
+                  lower=np.zeros(2), upper=np.zeros(2)),
+        RouteEdge(1, V_J, V_b, xs=np.array([0.5, 1.0]),
+                  lower=np.zeros(2), upper=np.zeros(2)),
+        RouteEdge(2, V_J, V_c, xs=np.array([0.5, 1.0]),
+                  lower=np.zeros(2), upper=np.zeros(2)),
+    ]
+    verts = [
+        RouteVertex(V_a, 0.0, "terminal"),
+        RouteVertex(V_J, 0.5, "junction"),
+        RouteVertex(V_b, 1.0, "terminal"),
+        RouteVertex(V_c, 1.0, "terminal"),
+    ]
+    graph = RouteGraph(vertices=verts, edges=edges,
+                       meaningful=frozenset({0, 1, 2}))
+
+    # candidate routes (hand-built to expose the competing covers)
+    rj1 = Route(steps=(OrientedRouteEdge(0, V_a, V_J),
+                       OrientedRouteEdge(1, V_J, V_b)))   # passes through J
+    rj2 = Route(steps=(OrientedRouteEdge(0, V_a, V_J),
+                       OrientedRouteEdge(2, V_J, V_c)))   # passes through J
+    rk1 = Route(steps=(OrientedRouteEdge(1, V_J, V_b),))  # starts at J
+    rk2 = Route(steps=(OrientedRouteEdge(2, V_J, V_c),))  # starts at J
+    ra = Route(steps=(OrientedRouteEdge(0, V_a, V_J),))    # ends at J
+    candidates = [rj1, rj2, rk1, rk2, ra]
+
+    chosen = select_routes_min_cover(graph, candidates)
+    chosen_routes = [candidates[j] for j in chosen]
+
+    # proven minimum curve count is unchanged
+    assert len(chosen) == 2
+    # maximal-join cover (both routes pass through J) is preferred, NOT the
+    # shorter cover containing a route that starts at the contact
+    total_join = sum(route_join_score(graph, r) for r in chosen_routes)
+    assert total_join == 2, total_join
+    assert not any(route_join_score(graph, r) == 0 for r in chosen_routes)
+    # explicit: the two junction-passing routes are the selected pair
+    assert set(chosen) == {0, 1}
+    # full coverage still holds
+    assert route_coverage_fraction(graph, chosen_routes) == pytest.approx(1.0)
+    # the staged priority ordering (K -> max join -> min complexity ->
+    # deterministic index tie-break) is exactly the lexicographic optimum
+    _assert_staged_priority(graph, candidates, chosen)
 
 def test_route_corridor_matches_slice_intervals():
     cols = [[(300, 700)] for _ in range(500)]
@@ -390,15 +561,14 @@ def test_impossible_low_degree_corridor_fails():
 
 
 def test_degree_minimization_verified_minimum():
-    """fit_route must return the LOWEST verified feasible degree: every
-    lower degree is infeasible for every tail orientation."""
+    """fit_route returns the lowest feasible degree for required geometry."""
     c = _linear_corridor()
     fit = fit_route(c, hi=24)
     assert fit is not None
+    ori = preferred_tail_orientation(c)
+    assert fit.orientation == ori
     for dd in range(fit.degree):
-        assert all(
-            fit_degree(c, dd, *ori) is None for ori in ORIENTATIONS
-        )
+        assert fit_degree(c, dd, *ori) is None
 
 
 # ---------------------------------------------------------------------------
@@ -439,7 +609,7 @@ def test_constant_line_v2_passes_v3_fails():
         poly = np.polynomial.Polynomial(coef)
         orientation = (1, -1)
 
-    problems = d.validate_lines(["y=0.5"], _SlabGeom(), [_Fit()], [corr])
+    problems = d.validate_lines(["0.5"], _SlabGeom(), [_Fit()], [corr])
     assert any(p.startswith("V2") is False and p.startswith("V3")
                for p in problems)
 
@@ -482,15 +652,133 @@ def test_reentry_and_wrong_asymptote_fail_v3():
     assert d.tail_reentry_violation(wrong.coef, corr, (1, 1)) > 0
 
 
-def test_orientation_choice_prefers_feasible_low_degree():
-    # a corridor hugging the top of the band: only an UP-right tail can
-    # escape quickly; fit_route must find some feasible orientation.
+def test_orientation_choice_follows_endpoint_geometry():
+    # A corridor hugging the top of the band must choose upward escape
+    # from geometry before fitting rather than because it is numerically easy.
     xs = np.linspace(10.0, 60.0, 40)
     c = _corridor_from(xs, np.full(len(xs), 92.0), np.full(len(xs), 98.0))
     fit = fit_route(c, hi=20)
     assert fit is not None
     sig_l, sig_r = fit.orientation
     assert sig_r == 1   # downward from y~97 would fight the ramp rows
+
+
+def test_issue2_real_glyph_tail_orientation_is_geometry_driven():
+    """Issue #2: tail escape direction is a geometric decision made before
+    fitting and must be inspected directly via PathFit.orientation (not
+    inferred from the serialized equations).
+
+    For every selected route the emitted orientation must equal the
+    endpoint-geometry-derived orientation; fit_route must never silently
+    flip to the opposite direction merely because another orientation is
+    easier to fit. The documented acceptance cases are locked in:
+
+      C: upper end up, lower end down;
+      A: the relevant leg-route ends both escape down;
+      r: stem and hat joined through the junction; both curves escape
+         down at the shared top-of-stem endpoint and up at the far end;
+      e: the lower route escapes down; the joined spine-to-bar routes
+         escape down at the spine end and up at the bar end.
+    """
+    expected = {
+        "C": [(-1, -1), (-1, 1)],
+        "A": [(-1, -1), (-1, -1)],
+        # issue #3: r's stem and hat are joined through the junction, so
+        # the selected curves no longer start/end at the contact; both
+        # share the top-of-stem endpoint (escapes down) and escape up at
+        # their far end. Orientation remains geometry-derived.
+        "r": [(-1, 1), (-1, 1)],
+        # issue #3: e's spine joins two of its bars through junctions; the
+        # locked orientation set shifts accordingly but stays geometry-driven
+        "e": [(-1, -1), (-1, 1), (-1, 1)],
+    }
+    for letter, want in expected.items():
+        geom, graph, candidates, chosen, sigs, selected = \
+            d.build_phase1(letter)
+        got = []
+        for corr in selected:
+            fit = fit_route(corr, hi=INITIAL_FIT_DEGREE)
+            assert fit is not None, f"{letter}: route infeasible"
+            # core contract: fit uses the geometry-derived orientation,
+            # never a flipped one chosen for fit ease.
+            assert fit.orientation == preferred_tail_orientation(corr), (
+                f"{letter}: fit orientation {fit.orientation} != "
+                f"geometry-derived "
+                f"{preferred_tail_orientation(corr)}")
+            got.append(fit.orientation)
+        # order-independent: route enumeration is deterministic but we key
+        # on the geometric end directions, not on internal edge ids.
+        assert sorted(got) == sorted(want), (
+            f"{letter}: orientations {sorted(got)} != documented "
+            f"{sorted(want)}")
+
+
+def test_issue4_component_preference_bottom_top_middle():
+    """Issue #4 mechanism (letter-independent): a bottom-most component
+    sends both tails down, a top-most component sends both tails up, a
+    single component defers to the ordinary nearest-boundary rule, and a
+    side-by-side (overlapping-y) pair has no clear outward side so it too
+    defers."""
+    info = {
+        1: {"ymin": 0.0, "ymax": 0.3, "cy": 0.15},   # bottom
+        2: {"ymin": 0.7, "ymax": 1.0, "cy": 0.85},   # top
+    }
+    present = {1, 2}
+    assert component_preferred_orientation(1, info, present) == (-1, -1)
+    assert component_preferred_orientation(2, info, present) == (1, 1)
+    # single component present -> fall back (no disconnected partner)
+    assert component_preferred_orientation(1, info, {1}) is None
+    # side-by-side (overlapping y, no clear vertical outward side) -> None
+    side = {3: {"ymin": 0.0, "ymax": 0.5, "cy": 0.25},
+            4: {"ymin": 0.0, "ymax": 0.5, "cy": 0.25}}
+    assert component_preferred_orientation(3, side, {3, 4}) is None
+
+
+def test_issue4_i_disconnected_components_escape_away():
+    """Issue #4 acceptance: `i` has two disconnected glyph components
+    (stem + dot) identified purely from glyph geometry. The bottom
+    component (stem) escapes down/down and the top component (dot) escapes
+    up/up; each selected route's emitted orientation must equal its
+    component-level preference and the fitter must not flip it to a
+    geometry-easier orientation."""
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("i")
+    labels, n_comp, comp_info = glyph_connected_components(geom)
+    assert n_comp >= 2
+    route_comps = [route_component_label(graph, r, labels)
+                   for r in chosen]
+    present = {c for c in route_comps if c is not None}
+    assert len(present) == 2
+    prefs = [component_preferred_orientation(c, comp_info, present)
+             for c in route_comps]
+    # exactly one bottom (down/down) and one top (up/up)
+    assert sorted(prefs) == [(-1, -1), (1, 1)]
+    for r, corr in zip(chosen, selected):
+        fit = fit_route(corr, hi=INITIAL_FIT_DEGREE)
+        assert fit is not None
+        assert fit.orientation == corr.preferred_orientation, (
+            f"i: fit orientation {fit.orientation} overrode the "
+            f"component-level preference {corr.preferred_orientation}")
+        assert fit.orientation in prefs
+
+
+def test_issue4_j_inspect_disconnected_components():
+    """Issue #4: inspect `j` where the same stem/dot disconnected
+    structure applies. The dot (top component) escapes up/up and the
+    stem+descender (bottom component) escapes down/down; the fitter must
+    not override either to a geometry-easier orientation. The two
+    selected routes map to two distinct connected components."""
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("j")
+    labels, n_comp, comp_info = glyph_connected_components(geom)
+    assert n_comp >= 2
+    route_comps = [route_component_label(graph, r, labels)
+                   for r in chosen]
+    assert len({c for c in route_comps if c is not None}) == 2
+    for r, corr in zip(chosen, selected):
+        fit = fit_route(corr, hi=INITIAL_FIT_DEGREE)
+        assert fit is not None
+        assert fit.orientation == corr.preferred_orientation, (
+            f"j: fit orientation {fit.orientation} overrode the "
+            f"component-level preference {corr.preferred_orientation}")
 
 
 def test_emitted_poly_leaving_corridor_rejected():
@@ -597,7 +885,9 @@ def test_punctuation_is_attempted_not_whitelist_rejected(capsys):
     assert d.run([",!", "--seed", "42", "-q"]) == 0
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert lines and all(line.startswith("y=") for line in lines)
+    assert lines and all(not line.startswith("y=") for line in lines)
+    for line in lines:
+        assert d.parse_line(line) is not None or d.expr_body(line)
 
 
 def test_arbitrary_char_failure_reports_index_and_repr(monkeypatch,
@@ -632,7 +922,7 @@ def test_entry_propagates_exit_code(monkeypatch, capsys):
         entry()
     assert ei.value.code == 0
     out = capsys.readouterr().out
-    assert all(line.startswith("y=") for line in out.splitlines())
+    assert all(not line.startswith("y=") for line in out.splitlines())
 
 
 def test_stale_pinch_branch_terminates():
@@ -914,6 +1204,65 @@ def test_letter_route_count_regressions():
                 pl_x = x1
 
 
+def _selected_atom_sets(graph, chosen):
+    return [set(graph.physical_atom(s.edge_id) for s in r.steps)
+            for r in chosen]
+
+
+def test_issue3_y_bottom_leg_joins_upper_path():
+    """Issue #3 real-glyph regression for `y`.
+
+    The bottom leg (descender) must continue into the path it reaches
+    instead of ending and escaping at the contact. Both selected routes
+    must pass through the junction (legal join), the proven minimum curve
+    count K is unchanged, and coverage stays complete.
+    """
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("y")
+    # proven minimum curve count unchanged
+    assert len(chosen) == 2
+    # the bottom leg joins the upper path: every selected route passes
+    # through the junction (no route escapes at the contact)
+    joins = [route_join_score(graph, r) for r in chosen]
+    assert all(j >= 1 for j in joins), joins
+    assert sum(joins) == 2
+    # the descender atom co-occurs, in a joined route, with the shared
+    # upper-path atom (i.e. it continues through the junction)
+    atom_sets = _selected_atom_sets(graph, chosen)
+    shared = set.intersection(*atom_sets)
+    descender_routes = [s for s in atom_sets
+                        if len(s - shared) == 1]   # Y: one unique atom each
+    assert descender_routes, "y must have a distinct descender route"
+    for s in descender_routes:
+        assert shared.issubset(s), s
+    assert route_coverage_fraction(graph, chosen) == pytest.approx(1.0)
+
+
+def test_issue3_r_stem_joins_hat_not_escape():
+    """Issue #3 real-glyph regression for `r`.
+
+    The stem must continue into the hat through the junction instead of a
+    route ending at the contact and escaping. The selection must be a
+    maximal-join cover: every selected route passes through the junction,
+    the proven minimum curve count K is unchanged, and the hat atom is
+    realized by a junction-passing (joined) route.
+    """
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("r")
+    assert len(chosen) == 2                       # K unchanged
+    joins = [route_join_score(graph, r) for r in chosen]
+    # maximal legal join: no selected route starts/ends at the contact
+    assert all(j >= 1 for j in joins), joins
+    assert sum(joins) == 2
+    # the hat (the atom covered by exactly one route, off the junction
+    # branch) must be realized by a route that continues through the
+    # junction, not by a route starting at the contact
+    atom_sets = _selected_atom_sets(graph, chosen)
+    shared = set.intersection(*atom_sets)
+    hat_atom = (set.union(*atom_sets) - shared).pop()
+    hat_route = next(s for s in atom_sets if hat_atom in s)
+    assert route_join_score(graph, chosen[atom_sets.index(hat_route)]) >= 1
+    assert route_coverage_fraction(graph, chosen) == pytest.approx(1.0)
+
+
 # ---------------------------------------------------------------------------
 # Local vertical unfolding (R1 fidelity) — synthetic, font-independent
 # ---------------------------------------------------------------------------
@@ -1065,10 +1414,23 @@ def test_a_default_baseline_degrees():
 
 
 def test_h_default_baseline_degrees():
+    # Issue #2 fixes each route's tail orientation from endpoint geometry
+    # before fitting, which can change the minimal feasible degree (the old
+    # min-coefficient rule picked a numerically easier orientation at a lower
+    # degree). V3 permanent-escape validation is unchanged, so the curve is
+    # still correct - only the geometry-mandated degree differs.
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
     fits, _ = fit_selected(selected)
     assert len(fits) == 2
-    assert all(f.degree == 9 for f in fits)
+    # issue #3 reorders among the (now maximal-join) candidate covers of H
+    # via a deterministic staged tie-break; the resulting cover is still K=2,
+    # full coverage, maximal join (join score 4), and feasible. Degrees are a
+    # measurement of that specific cover, not a quality gate.
+    # Re-frozen after issue #28 (Chebyshev domain = corridor constraint
+    # region) tightened localization: the merged cover now fits one H route
+    # at degree 10 instead of 14, still K=2, full coverage, maximal join,
+    # and valid (no V2/V3/V6 problems).
+    assert sorted(f.degree for f in fits) == [10, 17]
 
 
 def test_family_members_have_real_orientation():
@@ -1159,13 +1521,15 @@ def _norm_corridor(xs, lo, hi, ylo=0.0, yhi=1.0):
     from src.topology import BoundaryPath
 
     xs = np.asarray(xs, dtype=float)
-    mid = 0.5 * (np.asarray(lo) + np.asarray(hi))
+    lo = np.asarray(lo, dtype=float)
+    hi = np.asarray(hi, dtype=float)
+    mid = 0.5 * (lo + hi)
     pad = ESC_OFFSETS[-1] + 1.0
     return Corridor(
         path=BoundaryPath(points=np.column_stack([xs, mid]), contour_id=-1),
         xa=float(xs[0] - pad), xb=float(xs[-1] + pad),
-        xs=xs, lower=np.asarray(lo, dtype=float),
-        upper=np.asarray(hi, dtype=float), ylo=ylo, yhi=yhi)
+        xs=xs, lower=lo, upper=hi, ylo=ylo, yhi=yhi,
+        ylo_local=float(lo.min()), yhi_local=float(hi.max()))
 
 
 def test_raw_vs_cheb_v3_agree_low_degree():
@@ -1278,10 +1642,10 @@ def test_phase1_matches_known_good_reference_facts():
     # the 'H' cap height to 1.0): capital-letter facts are unchanged;
     # lowercase 'm' corridors moved with its font-relative size.
     ref = {
-        "T": [(0.2519, 0.9571), (-0.1134, 0.6543)],
-        "m": [(-0.1095, 1.2571), (-0.1095, 0.7745)],
-        "H": [(-0.1036, 0.9265), (-0.1036, 0.9265)],
-        "A": [(-0.0782, 1.0704), (-0.0782, 1.0704)],
+        "T": [(0.4219, 0.7871), (0.0566, 0.4843)],
+        "m": [(0.0605, 0.6043), (0.0605, 1.0875)],
+        "H": [(0.0664, 0.7565), (0.0664, 0.7566)],
+        "A": [(0.0918, 0.9004), (0.0918, 0.9004)],
     }
     import os as _os
     if _os.environ.get("DSK_REF_FACTS"):
@@ -1579,7 +1943,7 @@ def test_low_degree_translation_values():
         local_xs = np.linspace(p.fit.corridor.xa, p.fit.corridor.xb, 32)
         z = _zmap(local_xs, p.fit.corridor.xa, p.fit.corridor.xb)
         truth = cheb.chebval(z, p.fit.coef_cheb)
-        actual = d.eval_expression(line[2:], local_xs + p.dx)
+        actual = d.eval_expression(d.expr_body(line), local_xs + p.dx)
         np.testing.assert_allclose(actual, truth, rtol=1e-6, atol=1e-9)
 
 
@@ -1598,7 +1962,7 @@ def test_high_degree_translation_horner_midshift():
     local_xs = np.linspace(p.fit.corridor.xa, p.fit.corridor.xb, 64)
     z = _zmap(local_xs, p.fit.corridor.xa, p.fit.corridor.xb)
     truth = cheb.chebval(z, p.fit.coef_cheb)
-    actual = d.eval_expression(line[2:], local_xs + p.dx)
+    actual = d.eval_expression(d.expr_body(line), local_xs + p.dx)
     np.testing.assert_allclose(actual, truth, rtol=1e-6, atol=1e-8)
 
 
