@@ -1200,8 +1200,11 @@ def test_atom_accounting_complete_and_twin_counted_once():
 
 
 def test_v6_partial_atom_coverage_fails(monkeypatch):
+    # Issue #6: H does not yet yield a feasible fit under Cormorant, so use
+    # a generating glyph (O) to exercise the font-agnostic V6 partial-
+    # atom-coverage detection.
     monkeypatch.setattr(_fitting, "USE_LP", True)
-    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("O")
     fits, failures = [], []
     for c in selected:
         f = fit_route(c, hi=24)
