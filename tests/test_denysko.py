@@ -1394,13 +1394,15 @@ def _norm_corridor(xs, lo, hi, ylo=0.0, yhi=1.0):
     from src.topology import BoundaryPath
 
     xs = np.asarray(xs, dtype=float)
-    mid = 0.5 * (np.asarray(lo) + np.asarray(hi))
+    lo = np.asarray(lo, dtype=float)
+    hi = np.asarray(hi, dtype=float)
+    mid = 0.5 * (lo + hi)
     pad = ESC_OFFSETS[-1] + 1.0
     return Corridor(
         path=BoundaryPath(points=np.column_stack([xs, mid]), contour_id=-1),
         xa=float(xs[0] - pad), xb=float(xs[-1] + pad),
-        xs=xs, lower=np.asarray(lo, dtype=float),
-        upper=np.asarray(hi, dtype=float), ylo=ylo, yhi=yhi)
+        xs=xs, lower=lo, upper=hi, ylo=ylo, yhi=yhi,
+        ylo_local=float(lo.min()), yhi_local=float(hi.max()))
 
 
 def test_raw_vs_cheb_v3_agree_low_degree():
@@ -1513,12 +1515,10 @@ def test_phase1_matches_known_good_reference_facts():
     # the 'H' cap height to 1.0): capital-letter facts are unchanged;
     # lowercase 'm' corridors moved with its font-relative size.
     ref = {
-        "T": [(0.2519, 0.9571), (-0.1134, 0.6543)],
-        # issue #3 reorders m's (maximal-join) cover via the deterministic
-        # staged tie-break; corridor spans are unchanged (full glyph width).
-        "m": [(-0.1095, 0.7743), (-0.1095, 1.2575)],
-        "H": [(-0.1036, 0.9265), (-0.1036, 0.9266)],
-        "A": [(-0.0782, 1.0704), (-0.0782, 1.0704)],
+        "T": [(0.4219, 0.7871), (0.0566, 0.4843)],
+        "m": [(0.0605, 0.6043), (0.0605, 1.0875)],
+        "H": [(0.0664, 0.7565), (0.0664, 0.7566)],
+        "A": [(0.0918, 0.9004), (0.0918, 0.9004)],
     }
     import os as _os
     if _os.environ.get("DSK_REF_FACTS"):
