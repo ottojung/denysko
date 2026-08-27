@@ -1,0 +1,73 @@
+name: Apply issue 2 joined-tail fix
+
+on:
+  push:
+    branches: [issue-2-e-tail-regression]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: issue-2-e-tail-regression
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+      - name: Apply focused source and regression edits
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(path, old, new):
+              p = Path(path)
+              text = p.read_text()
+              count = text.count(old)
+              if count != 1:
+                  raise SystemExit(f"{path}: expected one match, found {count}")
+              p.write_text(text.replace(old, new, 1))
+
+          replace_once(
+              "src/topology.py",
+              '''    ylo_local: float = 0.0          # curve's own vertical region (min lower)\n    yhi_local: float = 0.0          # curve's own vertical region (max upper)\n    realized: dict = None            # phys atom id -> (xs, ys, lo, hi)\n''',
+              '''    ylo_local: float = 0.0          # curve's own vertical region (min lower)\n    yhi_local: float = 0.0          # curve's own vertical region (max upper)\n    realized: dict = None            # phys atom id -> (xs, ys, lo, hi)\n    # Number of genuine split/merge/junction vertices this route continues\n    # THROUGH. Used only by the pre-fit escape-geometry rule; ordinary\n    # non-joined routes keep endpoint-by-endpoint boundary selection.\n    join_score: int = 0\n''')
+
+          replace_once(
+              "src/topology.py",
+              '''        ylo_local=float(lower.min()),\n        yhi_local=float(upper.max()),\n        realized=realized,\n    )\n''',
+              '''        ylo_local=float(lower.min()),\n        yhi_local=float(upper.max()),\n        realized=realized,\n        join_score=route_join_score(graph, route),\n    )\n''')
+
+          old_func = '''def preferred_tail_orientation(corridor: Corridor) -> tuple[int, int]:\n    \"\"\"Choose tail directions from endpoint/glyph geometry before fitting.\n\n    Issue #4: a component-level preference (set on ``corridor`` during\n    Phase 1 for disconnected glyph components) is applied FIRST and\n    overrides the per-endpoint rule - the fitter must never flip it merely\n    because another orientation is easier to fit.\n\n    Otherwise each endpoint escapes toward the nearer vertical exterior\n    boundary. Distances are measured from the endpoint corridor interval\n    itself, not from a fitted value. Exact ties deterministically prefer\n    upward escape.\n    \"\"\"\n    pref = getattr(corridor, \"preferred_orientation\", None)\n    if pref is not None:\n        return tuple(int(s) for s in pref)\n    orientation = []\n    for i in (0, -1):\n        down_distance = float(corridor.lower[i] - corridor.ylo)\n        up_distance = float(corridor.yhi - corridor.upper[i])\n        orientation.append(-1 if down_distance < up_distance else 1)\n    return tuple(orientation)\n'''
+          new_func = '''def preferred_tail_orientation(corridor: Corridor) -> tuple[int, int]:\n    \"\"\"Choose tail directions from geometry before fitting.\n\n    Priority is geometric and fixed before polynomial optimization:\n\n    1. disconnected-component separation (issue #4), when present;\n    2. ordinary endpoint-to-nearest-exterior selection;\n    3. when a route CONTINUES THROUGH a real junction and its two endpoint\n       choices conflict, treat the low/high shared trunk as join geometry\n       rather than as two independent escape decisions: the joined curve\n       escapes on both sides toward the exterior containing the route's\n       dominant vertical region (median corridor centerline).\n\n    Step 3 is what keeps an upper joined branch such as the upper curves of\n    ``e`` from acquiring a downward tail merely because the route shares a\n    lower junction endpoint. Unjoined curves such as ``C`` retain opposite\n    endpoint directions, and when both endpoint choices already agree (for\n    example the legs of ``A``) that agreement is preserved. The optimizer\n    may never flip any of these choices for fit ease.\n    \"\"\"\n    pref = getattr(corridor, \"preferred_orientation\", None)\n    if pref is not None:\n        return tuple(int(s) for s in pref)\n\n    orientation = []\n    for i in (0, -1):\n        down_distance = float(corridor.lower[i] - corridor.ylo)\n        up_distance = float(corridor.yhi - corridor.upper[i])\n        orientation.append(-1 if down_distance < up_distance else 1)\n    endpoint_orientation = tuple(orientation)\n\n    if (endpoint_orientation[0] != endpoint_orientation[1]\n            and getattr(corridor, \"join_score\", 0) > 0):\n        centerline = 0.5 * (np.asarray(corridor.lower, dtype=float)\n                            + np.asarray(corridor.upper, dtype=float))\n        route_center = float(np.median(centerline))\n        glyph_center = 0.5 * (float(corridor.ylo) + float(corridor.yhi))\n        sigma = 1 if route_center >= glyph_center else -1\n        return (sigma, sigma)\n\n    return endpoint_orientation\n'''
+          replace_once("src/fitting.py", old_func, new_func)
+
+          replace_once(
+              "tests/test_denysko.py",
+              '''      r: stem and hat joined through the junction; both curves escape\n         down at the shared top-of-stem endpoint and up at the far end;\n      e: the lower route escapes down; the joined spine-to-bar routes\n         escape down at the spine end and up at the bar end.\n''',
+              '''      r: stem and hat joined through the junction; the joined hat\n         curves occupy the upper region and escape up on both sides;\n      e: the lower route escapes down; the two joined upper routes escape\n         up on both sides, as required by issue #2.\n''')
+
+          replace_once(
+              "tests/test_denysko.py",
+              '''        # issue #3: r's stem and hat are joined through the junction, so\n        # the selected curves no longer start/end at the contact; both\n        # share the top-of-stem endpoint (escapes down) and escape up at\n        # their far end. Orientation remains geometry-derived.\n        \"r\": [(-1, 1), (-1, 1)],\n        # issue #3: e's spine joins two of its bars through junctions; the\n        # locked orientation set shifts accordingly but stays geometry-driven\n        \"e\": [(-1, -1), (-1, 1), (-1, 1)],\n''',
+              '''        # Joined r routes have conflicting raw endpoint preferences, but\n        # their dominant corridor region is above the glyph midline.\n        \"r\": [(1, 1), (1, 1)],\n        # The lower e route remains down/down; both junction-joined upper\n        # routes belong to the upper region and therefore escape up/up.\n        \"e\": [(-1, -1), (1, 1), (1, 1)],\n''')
+
+          diag = Path("tests/test_issue2_e_diagnostic.py")
+          if diag.exists():
+              diag.unlink()
+          Path("tests/test_issue2_joined_escape.py").write_text('''import numpy as np\n\nfrom src import denysko as d\nfrom src.fitting import preferred_tail_orientation\nfrom src.topology import BoundaryPath, Corridor\n\n\ndef _corr(lower, upper, *, join_score=0, pref=None):\n    xs = np.array([0.0, 0.5, 1.0])\n    lower = np.asarray(lower, dtype=float)\n    upper = np.asarray(upper, dtype=float)\n    center = 0.5 * (lower + upper)\n    return Corridor(\n        path=BoundaryPath(points=np.column_stack([xs, center]), contour_id=-1),\n        xa=0.0, xb=1.0, xs=xs, lower=lower, upper=upper,\n        ylo=0.0, yhi=1.0, ylo_local=float(lower.min()),\n        yhi_local=float(upper.max()), join_score=join_score,\n        preferred_orientation=pref,\n    )\n\n\ndef test_joined_conflicting_endpoints_use_dominant_vertical_region():\n    # Left endpoint is nearer the bottom; right endpoint nearer the top.\n    # Without a junction join, preserve the ordinary opposite-tail rule.\n    upper = _corr([0.10, 0.64, 0.70], [0.20, 0.76, 0.80])\n    assert preferred_tail_orientation(upper) == (-1, 1)\n\n    # The same geometry joined through a real junction belongs dominantly to\n    # the upper half, so both unbounded tails escape upward.\n    upper.join_score = 1\n    assert preferred_tail_orientation(upper) == (1, 1)\n\n    # Symmetric lower-region mechanism.\n    lower = _corr([0.20, 0.24, 0.80], [0.30, 0.36, 0.90], join_score=1)\n    assert preferred_tail_orientation(lower) == (-1, -1)\n\n\ndef test_component_preference_still_overrides_join_rule():\n    c = _corr([0.10, 0.64, 0.70], [0.20, 0.76, 0.80],\n              join_score=1, pref=(-1, -1))\n    assert preferred_tail_orientation(c) == (-1, -1)\n\n\ndef test_e_upper_routes_escape_up_both_sides():\n    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("e")\n    orientations = [preferred_tail_orientation(c) for c in selected]\n    assert sorted(orientations) == [(-1, -1), (1, 1), (1, 1)]\n\n    # The lower route is the only unjoined/downward one. The two joined\n    # routes are the upper curves and must both escape upward.\n    joined = [c for c in selected if c.join_score > 0]\n    assert len(joined) == 2\n    assert all(preferred_tail_orientation(c) == (1, 1) for c in joined)\n\n\ndef test_unjoined_C_and_agreeing_A_are_unchanged():\n    for letter, expected in {\n        "C": [(-1, -1), (-1, 1)],\n        "A": [(-1, -1), (-1, -1)],\n    }.items():\n        *_, selected = d.build_phase1(letter)\n        got = sorted(preferred_tail_orientation(c) for c in selected)\n        assert got == sorted(expected)\n''')
+
+          workflow = Path(".github/workflows/issue2-apply.yml")
+          if workflow.exists():
+              workflow.unlink()
+          PY
+      - name: Commit focused fix
+        run: |
+          git config user.name "denysko-orchestrator"
+          git config user.email "denysko-orchestrator@users.noreply.github.com"
+          git add -A
+          git commit -m "Fix joined upper-route tail direction\n\nWhen a route continues through a real junction and its endpoint boundary preferences disagree, choose both tails from the route's dominant vertical region. This restores issue #2's e/r behavior without changing unjoined C or agreeing A routes."
+          git push origin HEAD:issue-2-e-tail-regression
