@@ -456,16 +456,52 @@ def build_route_graph(geom: GlyphGeometry) -> RouteGraph:
     return RouteGraph(vertices=vertices, edges=edges, meaningful=meaningful)
 
 
+def route_join_score(graph: RouteGraph, route) -> int:
+    """Legal-join score of a single candidate route.
+
+    A *legal join* is a vertex the route CONTINUES THROUGH: it arrives on
+    one graph edge and leaves on another, at a genuine routing junction
+    (a split or merge of the filled-glyph / stroke graph), carrying on
+    into other glyph material rather than ending and escaping there.
+
+    This specifically rewards continuation through a real skeleton
+    junction into material that is also part of the glyph. It does NOT
+    reward mere redundant traversal: only genuine junction pass-throughs
+    count, and a route can only pass through a junction when it actually
+    continues (which preserves the x-realizable, non-retrace invariants).
+    """
+    if not isinstance(route, Route) or len(route.steps) < 2:
+        return 0
+    # genuine routing junctions: split/merge in the fill-mask graph and
+    # 'junction' in the stroke-skeleton graph (stroke-tip 'terminal'
+    # vertices are never passed through by a complete route)
+    junc_ids = {v.id for v in graph.vertices
+                if v.kind in ("split", "merge", "junction")}
+    score = 0
+    for a, b in zip(route.steps, route.steps[1:]):
+        # continue through the shared internal vertex `a.to_vertex`
+        if a.to_vertex == b.from_vertex and a.to_vertex in junc_ids:
+            score += 1
+    return score
+
+
 def select_routes_min_cover(graph: RouteGraph, candidates: list):
     """Exact minimum cover of meaningful PHYSICAL atoms by valid routes.
 
-    Staged MILP proof (HiGHS):
-      stage 1: minimize route count -> proven optimum K
-      stage 2: fix count == K, minimize total complexity
-      stage 3 (folded into 2's cost): stable index tie-break
+    Staged MILP proof (HiGHS), generic (no letter-specific routing):
+
+      stage 1: minimize route count -> proven optimum K (unchanged)
+      stage 2: fix count == K; MAXIMIZE the total legal-join score
+               (prefer joined continuations over routes that end and
+               escape at a contact)
+      stage 3: among maximal-join covers, minimize total route
+               complexity (shorter selected routes)
+      stage 4: stable index tie-break for determinism
 
     Candidate enumeration is complete over the directed x-realizable
-    graph and overflow raises, so K is a proven exact minimum.
+    graph and overflow raises, so K is a proven exact minimum and the
+    join/complexity objectives only reorder *among* proven-minimum
+    covers of size K. No correctness check is weakened.
     """
     from scipy.optimize import milp, LinearConstraint, Bounds
 
@@ -498,13 +534,25 @@ def select_routes_min_cover(graph: RouteGraph, candidates: list):
     res1 = _solve(np.ones(n_r))
     K = float(round(sum(res1.x)))
 
-    # stage 2+3: fix count == K; minimize complexity then stable index
-    con2 = LinearConstraint(np.ones((1, n_r)), lb=[K], ub=[K])
+    # join / complexity / index objectives, combined into ONE cost with
+    # lexicographic weights so that one unit of join dominates any
+    # possible complexity difference, and complexity dominates the index
+    # tie-break. All three are integers, so the ordering is exact.
+    joins = np.array([float(route_join_score(graph, r))
+                      for r in candidates])
     complexity = np.array([float(len(route_edge_ids(r)))
                            for r in candidates])
-    cost2 = complexity + np.array([1e-6 * j / max(1, n_r)
-                                   for j in range(n_r)])
-    res2 = _solve(cost2, con2)
+    # largest achievable complexity difference is the sum of all route
+    # lengths; a join difference of 1 must outweigh it entirely.
+    Cmax = float(complexity.sum()) + 1.0
+    W_join = Cmax + 1.0
+    W_complex = 1.0
+    index_w = np.array([1e-6 * j / max(1, n_r) for j in range(n_r)])
+    # minimize: -join (max join) + complexity (min) + tiny*index (min)
+    cost = -W_join * joins + W_complex * complexity + index_w
+
+    con2 = LinearConstraint(np.ones((1, n_r)), lb=[K], ub=[K])
+    res2 = _solve(cost, con2)
 
     return [j for j in range(n_r) if res2.x[j] > 0.5]
 
