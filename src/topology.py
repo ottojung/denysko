@@ -968,6 +968,8 @@ class Corridor:
     upper: np.ndarray
     ylo: float
     yhi: float
+    ylo_local: float = 0.0          # curve's own vertical region (min lower)
+    yhi_local: float = 0.0          # curve's own vertical region (max upper)
     realized: dict = None            # phys atom id -> (xs, ys, lo, hi)
 
     def __post_init__(self):
@@ -1511,16 +1513,27 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                 for k, v4 in realized.items()}
 
 
-    pad = ESC_OFFSETS[-1] + CORRIDOR_Z_EXTRA_PAD
+    # The Chebyshev normalization domain is the corridor's REAL constraint
+    # region (the slice-interval x-range `xs`), NOT a window padded wider
+    # than it. Padding `xa/xb` beyond `xs` collapses the meaningful
+    # interior into a tiny central slice of the z in [-1,1] while leaving
+    # the escape tails in the same central region - the polynomial then
+    # has almost no z-resolution across the actual stroke and swings
+    # wildly (spanning far more vertical space than the local stroke
+    # occupies). Keeping `xa/xb == xs` puts the stroke at z in [-1,1] and
+    # the escape tails just outside it, so every curve preserves its local
+    # vertical occupancy instead of being forced across the whole glyph.
     return Corridor(
         path=path,
-        xa=float(p[0] - pad),
-        xb=float(p[-1] + pad),
+        xa=float(p[0]),
+        xb=float(p[-1]),
         xs=p,
         lower=lower,
         upper=upper,
         ylo=float(geom.ymin),
         yhi=float(geom.ymax),
+        ylo_local=float(lower.min()),
+        yhi_local=float(upper.max()),
         realized=realized,
     )
 
@@ -1576,16 +1589,19 @@ def build_slice_corridor(graph: RouteGraph, edge_ids, geom) -> Corridor:
     path = BoundaryPath(points=np.column_stack([xs, center]),
                         contour_id=-1)
 
-    pad = ESC_OFFSETS[-1] + CORRIDOR_Z_EXTRA_PAD   # window covers all escape checkpoints
+    # Chebyshev domain == the slice-interval x-range (see
+    # build_route_corridor for the rationale); do NOT pad past `xs`.
     return Corridor(
         path=path,
-        xa=float(xs[0] - pad),
-        xb=float(xs[-1] + pad),
+        xa=float(xs[0]),
+        xb=float(xs[-1]),
         xs=xs,
         lower=lower,
         upper=upper,
         ylo=float(geom.ymin),
         yhi=float(geom.ymax),
+        ylo_local=float(lower.min()),
+        yhi_local=float(upper.max()),
     )
 
 
