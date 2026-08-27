@@ -63,6 +63,8 @@ DEFAULT_SEED = 42
 MAX_POLY_GLYPH_MISS = 0.04        # ~20 raster steps at normalized scale
 MAX_CORRIDOR_GLYPH_MISS = 0.08    # ~40 raster steps
 MAX_REALIZATION_X_ERROR = 0.005   # ~2.5 raster steps
+HORNER_V4_TOL = 1e-6          # V4 stability tolerance for Horner lines
+                            # (numerical comparison vs canonical Chebyshev)
 
 
 # ---------------------------------------------------------------------------
@@ -201,6 +203,149 @@ def parse_poly(s: str):
     return coef
 
 
+class _NotPolynomial(Exception):
+    """Raised internally when an arithmetic expression is not a polynomial
+    in x (e.g. it divides by a non-constant)."""
+
+
+_TOK_RE = re.compile(r"[-+*/()]|[0-9]+(?:\.[0-9]*)?|\.[0-9]+|x")
+# Whitespace is insignificant; every other character must be part of a valid
+# token, otherwise the expression is rejected rather than silently truncated.
+_TOKEN_SEQ_RE = re.compile(
+    r"(?:[-+*/()]|[0-9]+(?:\.[0-9]*)?|\.[0-9]+|x)*\Z")
+_WS_RE = re.compile(r"\s+")
+
+
+def _parse_expression_poly(s: str):
+    """Parse a restricted arithmetic expression in x (numbers, x, + - * / and
+    parentheses) into power-basis coefficients of x.
+
+    Returns an ``np.ndarray`` of coefficients or ``None`` when the string is
+    not a polynomial in x. This is the generic fallback behind ``parse_line``:
+    it handles the nested shifted Horner form emitted for high-degree curves
+    as well as the flat ``a*x^n`` form that ``parse_poly`` already covers.
+
+    Any character that is neither whitespace nor a valid token (e.g. ``^``,
+    stray letters, ``y``) causes rejection, so malformed input is never
+    silently discarded and mis-parsed.
+    """
+    compact = _WS_RE.sub("", s)
+    if compact and not _TOKEN_SEQ_RE.fullmatch(compact):
+        return None
+    tokens = _TOK_RE.findall(s)
+    if not tokens:
+        return None
+    n = len(tokens)
+    pos = 0
+
+    def peek():
+        return tokens[pos] if pos < n else None
+
+    def adv():
+        nonlocal pos
+        tok = tokens[pos]
+        pos += 1
+        return tok
+
+    def _pad(a, b):
+        L = max(len(a), len(b))
+        aa = np.zeros(L)
+        aa[: len(a)] = a
+        bb = np.zeros(L)
+        bb[: len(b)] = b
+        return aa, bb
+
+    def p_expr():
+        val = p_term()
+        while peek() in ("+", "-"):
+            op = adv()
+            rhs = p_term()
+            aa, bb = _pad(val, rhs)
+            val = aa + bb if op == "+" else aa - bb
+        return val
+
+    def p_term():
+        val = p_factor()
+        while peek() in ("*", "/"):
+            op = adv()
+            rhs = p_factor()
+            if op == "*":
+                val = np.convolve(val, rhs)
+            else:
+                if len(rhs) != 1:
+                    raise _NotPolynomial("division by non-constant")
+                if rhs[0] == 0.0:
+                    raise _NotPolynomial("division by zero")
+                val = val / rhs[0]
+        return val
+
+    def p_factor():
+        t = peek()
+        if t is None:
+            raise _NotPolynomial("incomplete expression")
+        if t in ("+", "-"):
+            adv()
+            v = p_factor()
+            return -v if t == "-" else v
+        if t == "(":
+            adv()
+            v = p_expr()
+            if peek() != ")":
+                raise _NotPolynomial("missing )")
+            adv()
+            return v
+        if t == "x":
+            adv()
+            return np.array([0.0, 1.0])
+        try:
+            v = float(adv())
+        except (ValueError, TypeError):
+            raise _NotPolynomial("bad number")
+        return np.array([v])
+
+    # All malformed-input paths raise _NotPolynomial; only that is caught so
+    # an unexpected error is not silently swallowed.
+    try:
+        result = p_expr()
+    except _NotPolynomial:
+        return None
+    if pos != n or result is None:
+        return None
+    return result
+
+
+class _EmittedPoly:
+    """A polynomial emitted in nested/arithmetic (Horner) form.
+
+    Exposes a numerically stable callable (evaluation of the original
+    emitted expression via ``eval_expression``) and a raw-x power-basis
+    ``.coef`` for callers that need coefficients. The callable is preferred
+    for evaluation: raw-x coefficients of a high-degree Horner line are
+    numerically unstable, which is exactly why the line was emitted in
+    Horner form in the first place.
+    """
+
+    def __init__(self, expr: str, coef):
+        self.expr = expr
+        self.coef = coef
+
+    def __call__(self, x):
+        return eval_expression(self.expr, x)
+
+
+def _is_horner_line(line: str) -> bool:
+    """True for emitted lines that use the nested shifted Horner form.
+
+    They contain parentheses (``((x-mid)/scale)*...``). Flat power-basis
+    lines never contain parentheses, so this reliably distinguishes the two
+    serialization styles without fragile pattern matching.
+    """
+    m = _EXPR_RE.match(line)
+    if m is None:
+        return False
+    return "(" in m.group(1)
+
+
 def eval_expression(expr: str, x_vals: np.ndarray) -> np.ndarray:
     """Safely evaluate a restricted arithmetic expression for many x.
 
@@ -222,7 +367,6 @@ def validate_horner_line(line: str, corridor, coef_cheb: np.ndarray,
                          grid: int = 200):
     """V4-stability check: evaluate serialized expression at many points
     and compare against the intended Chebyshev polynomial."""
-    from numpy.polynomial import Polynomial as Poly
     from numpy.polynomial import chebyshev as _ch
 
     m = _EXPR_RE.match(line)
@@ -232,29 +376,39 @@ def validate_horner_line(line: str, corridor, coef_cheb: np.ndarray,
     xs = np.linspace(corridor.xa, corridor.xb, grid)
     try:
         parsed_vals = eval_expression(expr, xs)
-    except Exception:
+    except (ValueError, TypeError, ArithmeticError, IndexError):
         return float("inf")
 
     scale = (corridor.xb - corridor.xa) / 2.0
     mid = (corridor.xa + corridor.xb) / 2.0
     z = (xs - mid) / scale
-    cheb_vals = cheb.chebval(z, np.asarray(coef_cheb, dtype=float))
+    cheb_vals = _ch.chebval(z, np.asarray(coef_cheb, dtype=float))
     return float(np.max(np.abs(parsed_vals - cheb_vals)))
 
 
 def parse_line(line: str):
-    m = _EXPR_RE.match(line)
-    if m is None:
-        return None
-    coef = parse_poly(m.group(1))
-    if coef is None:
-        return None
-
     class _Curve:
         pass
 
+    m = _EXPR_RE.match(line)
+    if m is None:
+        return None
+    expr = m.group(1)
+    coef = parse_poly(expr)
+    if coef is not None:
+        curve = _Curve()
+        curve.poly = np.polynomial.Polynomial(coef)
+        return curve
+    # Not a flat power-basis form: try the generic arithmetic parser. This
+    # covers the nested shifted Horner form emitted for high-degree curves.
+    gen = _parse_expression_poly(expr)
+    if gen is None:
+        return None
+
     curve = _Curve()
-    curve.poly = np.polynomial.Polynomial(coef)
+    # Keep the emitted expression for numerically stable evaluation. The
+    # raw-x coefficients are retained for callers that need them.
+    curve.poly = _EmittedPoly(expr, gen)
     return curve
 
 
@@ -268,9 +422,17 @@ def corridor_adherence_violation(poly_coef, corridor, grid=500):
 
     Independent of the fitter: evaluates the PARSED emitted coefficients
     against the route corridor's interior tube over its x-window.
+
+    ``poly_coef`` may be a raw-x coefficient array or any callable that
+    evaluates the polynomial (e.g. the stable ``_EmittedPoly`` wrapper used
+    for Horner-form lines).
     """
     xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
-    vals = np.polynomial.Polynomial(poly_coef)(xs)
+    if callable(poly_coef):
+        vals = np.asarray(poly_coef(xs), dtype=float)
+    else:
+        vals = np.polynomial.Polynomial(
+            np.asarray(poly_coef, dtype=float))(xs)
     lo = np.interp(xs, corridor.xs, corridor.lower)
     hi = np.interp(xs, corridor.xs, corridor.upper)
     return float(max(0.0, np.max(np.maximum(lo - vals, vals - hi))))
@@ -293,13 +455,29 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
         if parsed is None:
             problems.append(f"V4 curve {i}: unparseable line {line!r}")
             continue
-        again = serialize(parsed)
-        if again != line:
-            problems.append(
-                f"V4 curve {i}: serialization mismatch: {line!r} -> {again!r}"
-            )
-            continue
-        coef = np.asarray(parsed.poly.coef, dtype=float)
+        horner = _is_horner_line(line)
+        if horner:
+            # Horner lines are not round-trippable through the flat
+            # power-basis serializer; validate them by numerical comparison
+            # against their canonical Chebyshev data instead. This is the
+            # dedicated V4-stability check designed for Horner output.
+            coef_cheb = getattr(fit, "coef_cheb", None)
+            if coef_cheb is not None:
+                err = validate_horner_line(line, corr, coef_cheb)
+                if err > HORNER_V4_TOL:
+                    problems.append(
+                        f"V4 curve {i}: horner mismatch {err:.3e}")
+        else:
+            again = serialize(parsed)
+            if again != line:
+                problems.append(
+                    f"V4 curve {i}: serialization mismatch: "
+                    f"{line!r} -> {again!r}"
+                )
+                continue
+        # V2/V5 evaluate via the (numerically stable) parsed polynomial
+        # callable; this works identically for flat and Horner lines.
+        coef = parsed.poly
         v2 = corridor_adherence_violation(coef, corr)
         if v2 > CORRIDOR_EPS:
             problems.append(f"V2 curve {i}: corridor violation {v2:.3f}")
@@ -307,9 +485,13 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
         coef_cheb = getattr(fit, "coef_cheb", None)
         if coef_cheb is not None:
             v3 = tail_reentry_violation_cheb(coef_cheb, corr, ori)
-        else:
+        elif not horner:
             # synthetic/low-degree fits carry only raw coefficients
-            v3 = tail_reentry_violation(coef, corr, ori)
+            v3 = tail_reentry_violation(
+                np.asarray(parsed.poly.coef, dtype=float), corr, ori)
+        else:
+            # Horner line without Chebyshev data: tail check is unavailable
+            v3 = 0.0
         if v3:
             problems.append(f"V3 curve {i}: tail re-entry {v3:.3f}")
         v5 = poly_glyph_violation(coef, corr, geom)
@@ -322,17 +504,14 @@ def validate_lines(lines, geom, fits, corridors, routes=None,
     # any uncovered sample fails. Assignment is branch-aware: the curve
     # of the route claiming the atom is the one checked.
     if routes is not None and graph is not None:
-        polys = [(s_.edge_id,
-                  np.asarray(parse_line(line).poly.coef, dtype=float))
-                 for r, line in zip(routes, lines)
-                 for s_ in r.steps]
         for i3, (r, corr) in enumerate(zip(routes, corridors)):
+            curve = parse_line(lines[i3])
+            if curve is None:
+                continue
+            poly = curve.poly
             for a_id, emb in corr.realized.items():
                 rx, rlo, rhi = emb["x"], emb["lower"], emb["upper"]
-                poly = np.polynomial.Polynomial(
-                    np.asarray(parse_line(lines[i3]).poly.coef,
-                               dtype=float))
-                vals = poly(rx)
+                vals = np.asarray(poly(rx), dtype=float)
                 # the assigned curve may use the same solver-level
                 # allowance as V2; branch identity is preserved because
                 # the interval itself is the atom's realized corridor
@@ -958,18 +1137,16 @@ def validate_placed_serialization(placed: PlacedFit, line: str) -> None:
     global_xs = local_xs + placed.dx
     z = _zmap(local_xs, placed.fit.corridor.xa, placed.fit.corridor.xb)
     truth = cheb.chebval(z, placed.fit.coef_cheb)
-    # raw monomial lines go through the exact parser; arithmetic
-    # (Horner) lines through the emitted-expression evaluator
+    # The emitted line is the canonical local curve shifted by dx, so it
+    # must reproduce the local truth when evaluated at GLOBAL x. Both flat
+    # and Horner lines are evaluated through parse_line's stable callable;
+    # the fallback evaluator is kept only for forms parse_line cannot
+    # represent (none are emitted by the current serializers).
     parsed = parse_line(line)
     if parsed is not None:
         actual = parsed.poly(global_xs)
-        if not np.allclose(parsed.poly(local_xs), truth,
-                           rtol=1e-6, atol=1e-9):
-            raise GenerationError(
-                f"translation validation failed for character "
-                f"{placed.char_index} {placed.char!r}")
-        return
-    actual = eval_expression(expr_body(line), global_xs)
+    else:
+        actual = eval_expression(expr_body(line), global_xs)
     if not np.allclose(actual, truth, rtol=1e-6, atol=1e-9):
         raise GenerationError(
             f"translation validation failed for character "

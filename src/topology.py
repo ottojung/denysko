@@ -662,7 +662,10 @@ def poly_glyph_violation(coef, corridor: Corridor, geom: GlyphGeometry,
     leaves the filled stroke at the same x over dense route-domain
     samples. Zero means every sample is inside the glyph."""
     xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
-    vals = np.polynomial.Polynomial(coef)(xs)
+    if callable(coef):
+        vals = np.asarray(coef(xs), dtype=float)
+    else:
+        vals = np.polynomial.Polynomial(np.asarray(coef, dtype=float))(xs)
     step = SIZE / GRID
     worst = 0.0
     for xi, yi in zip(xs, vals):
