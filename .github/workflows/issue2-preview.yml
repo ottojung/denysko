@@ -1,0 +1,59 @@
+name: Verify issue 2 visuals
+
+on:
+  push:
+    branches: [issue-2-e-tail-regression]
+
+permissions:
+  contents: write
+
+jobs:
+  preview:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: issue-2-e-tail-regression
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked environment
+        run: uv sync --locked
+      - name: Verify e and render fresh previews
+        run: |
+          echo '--- public CLI: e ---'
+          uv run denysko e --seed 42 -q | tee /tmp/e-equations.txt
+          echo '--- fitted e orientations ---'
+          uv run python - <<'PY'
+          from src import denysko as d
+          from src.fitting import fit_route, preferred_tail_orientation, INITIAL_FIT_DEGREE
+          _, _, _, _, _, corridors = d.build_phase1('e')
+          for i, c in enumerate(corridors):
+              f = fit_route(c, hi=INITIAL_FIT_DEGREE)
+              print(i, 'join_score=', c.join_score,
+                    'preferred=', preferred_tail_orientation(c),
+                    'fit=', None if f is None else f.orientation,
+                    'degree=', None if f is None else f.degree)
+          PY
+          uv run python tools/preview.py "e" artifacts/issue2-e.png --seed 42
+          uv run python tools/preview.py "Hello, World!" artifacts/issue2-hello-world.png --seed 42
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue2-previews
+          path: |
+            artifacts/issue2-e.png
+            artifacts/issue2-hello-world.png
+            /tmp/e-equations.txt
+      - name: Pin previews then clean product tree
+        run: |
+          git config user.name "denysko-orchestrator"
+          git config user.email "denysko-orchestrator@users.noreply.github.com"
+          git add -f artifacts/issue2-e.png artifacts/issue2-hello-world.png
+          git commit -m "Add temporary issue #2 visual previews"
+          echo "PREVIEW_SHA=$(git rev-parse HEAD)"
+          rm artifacts/issue2-e.png artifacts/issue2-hello-world.png
+          rm .github/workflows/issue2-preview.yml
+          git add -A
+          git commit -m "Remove temporary issue #2 visual previews"
+          git push origin HEAD:issue-2-e-tail-regression
