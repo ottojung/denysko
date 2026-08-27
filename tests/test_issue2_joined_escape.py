@@ -30,6 +30,11 @@ def test_joined_conflicting_endpoints_use_dominant_vertical_region():
     upper.join_score = 1
     assert preferred_tail_orientation(upper) == (1, 1)
 
+    # Multiple-junction routes are more complex topology; do not collapse
+    # their endpoint choices into one dominant-region escape direction.
+    upper.join_score = 2
+    assert preferred_tail_orientation(upper) == (-1, 1)
+
     # Symmetric lower-region mechanism.
     lower = _corr([0.20, 0.24, 0.80], [0.30, 0.36, 0.90], join_score=1)
     assert preferred_tail_orientation(lower) == (-1, -1)

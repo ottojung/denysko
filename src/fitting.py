@@ -99,7 +99,7 @@ def preferred_tail_orientation(corridor: Corridor) -> tuple[int, int]:
     endpoint_orientation = tuple(orientation)
 
     if (endpoint_orientation[0] != endpoint_orientation[1]
-            and getattr(corridor, "join_score", 0) > 0):
+            and getattr(corridor, "join_score", 0) == 1):
         centerline = 0.5 * (np.asarray(corridor.lower, dtype=float)
                             + np.asarray(corridor.upper, dtype=float))
         route_center = float(np.median(centerline))
