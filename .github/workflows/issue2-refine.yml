@@ -1,0 +1,50 @@
+name: Refine issue 2 joined-tail fix
+
+on:
+  push:
+    branches: [issue-2-e-tail-regression]
+
+permissions:
+  contents: write
+
+jobs:
+  refine:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: issue-2-e-tail-regression
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+      - name: Narrow rule to single-junction branch joins
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+
+          p = Path("src/fitting.py")
+          text = p.read_text()
+          old = '            and getattr(corridor, "join_score", 0) > 0):\n'
+          new = '            and getattr(corridor, "join_score", 0) == 1):\n'
+          if text.count(old) != 1:
+              raise SystemExit("unexpected fitting join-score pattern")
+          p.write_text(text.replace(old, new, 1))
+
+          p = Path("tests/test_issue2_joined_escape.py")
+          text = p.read_text()
+          needle = '''    upper.join_score = 1\n    assert preferred_tail_orientation(upper) == (1, 1)\n\n    # Symmetric lower-region mechanism.\n'''
+          replacement = '''    upper.join_score = 1\n    assert preferred_tail_orientation(upper) == (1, 1)\n\n    # Multiple-junction routes are more complex topology; do not collapse\n    # their endpoint choices into one dominant-region escape direction.\n    upper.join_score = 2\n    assert preferred_tail_orientation(upper) == (-1, 1)\n\n    # Symmetric lower-region mechanism.\n'''
+          if text.count(needle) != 1:
+              raise SystemExit("unexpected mechanism-test pattern")
+          p.write_text(text.replace(needle, replacement, 1))
+
+          Path(".github/workflows/issue2-refine.yml").unlink()
+          PY
+      - name: Commit refinement
+        run: |
+          git config user.name "denysko-orchestrator"
+          git config user.email "denysko-orchestrator@users.noreply.github.com"
+          git add -A
+          git commit -m "Limit dominant-region tails to single joins\n\nKeep complex multi-junction routes on the established endpoint-by-endpoint geometry while fixing the single-junction upper-branch pattern in e and r."
+          git push origin HEAD:issue-2-e-tail-regression
