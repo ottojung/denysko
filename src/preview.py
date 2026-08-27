@@ -32,11 +32,41 @@ def _body(line: str) -> str:
 def evaluate_line(line: str, xs: np.ndarray) -> np.ndarray:
     """Evaluate one emitted equation line at the given x samples.
 
-    Uses the same tolerant evaluator the validators use, so the preview is
-    faithful to what users receive (including the stable nested-Horner form
-    for high-degree curves).
+    Uses the same evaluation path the validators use, so the preview is
+    faithful to what a user pastes into Desmos:
+
+    * raw power-basis lines (``a*x^2+b*x+c``) are parsed to their ordinary
+      polynomial and evaluated directly;
+    * the stable nested-Horner form used for high-degree curves (ordinary
+      polynomial in ``x`` with explicit ``*``) is evaluated by the tolerant
+      expression evaluator.
+
+    No domain restriction is added to the equations themselves.
     """
+    parsed = _d.parse_line(line)
+    if parsed is not None:
+        return parsed.poly(xs)
     return _d.eval_expression(_body(line), xs)
+
+
+def text_viewport_xs(result, samples_per_unit: int = 600) -> np.ndarray:
+    """Shared text-wide x viewport for every emitted curve.
+
+    Returns a single, globally-increasing x sample array spanning the whole
+    laid-out text: from the minimum global corridor start to the maximum
+    global corridor end across all placed fits. Every curve is evaluated on
+    this *same* array so the unbounded escape tails remain part of the drawn
+    picture and are removed only by the fixed y viewport, never by trimming x
+    per curve.
+    """
+    xs_min = np.inf
+    xs_max = -np.inf
+    for placed in result.placed_fits:
+        c = placed.fit.corridor
+        xs_min = min(xs_min, c.xa + placed.dx)
+        xs_max = max(xs_max, c.xb + placed.dx)
+    n = max(64, int(round((xs_max - xs_min) * samples_per_unit)))
+    return np.linspace(xs_min, xs_max, n)
 
 
 def render_text_preview(
@@ -51,9 +81,11 @@ def render_text_preview(
 ):
     """Render ``text`` from its emitted equations and save a PNG to ``out_path``.
 
-    The y viewport includes the glyph band plus a margin and clips the
-    intentionally unbounded escape tails after they leave the visible
-    region. No domain restrictions are added to the equations themselves.
+    Every emitted globally-unbounded equation is evaluated over ONE common
+    text-wide x viewport (see :func:`text_viewport_xs`) and drawn on the same
+    axes. The intentionally unbounded escape tails are clipped only by the
+    fixed y viewport ``[-y_pad, 1 + y_pad]``; no per-curve x trimming is
+    applied and no domain restriction is added to the equations themselves.
     """
     import matplotlib
 
@@ -68,30 +100,18 @@ def render_text_preview(
     )
     lines = _d.serialize_text(result)
 
-    # Global x-extent of every drawn curve (its own translated corridor
-    # window). Tails extend beyond this, but we sample exactly the drawn
-    # window so the preview shows the recognizable letter body.
-    xs_min = np.inf
-    xs_max = -np.inf
-    for placed, line in zip(result.placed_fits, lines):
-        c = placed.fit.corridor
-        a = c.xa + placed.dx
-        b = c.xb + placed.dx
-        xs_min = min(xs_min, a)
-        xs_max = max(xs_max, b)
+    # One shared x viewport for the whole laid-out text.
+    xs = text_viewport_xs(result, samples_per_unit)
+    xs_min, xs_max = float(xs[0]), float(xs[-1])
 
     fig, ax = plt.subplots(figsize=(max(6.0, (xs_max - xs_min) * 2.2), 3.2))
     ax.set_facecolor("white")
-    for placed, line in zip(result.placed_fits, lines):
-        c = placed.fit.corridor
-        a = c.xa + placed.dx
-        b = c.xb + placed.dx
-        n = max(64, int(round((b - a) * samples_per_unit)))
-        xs = np.linspace(a, b, n)
+    for line in lines:
         ys = evaluate_line(line, xs)
         ax.plot(xs, ys, color="black", linewidth=2.0)
 
-    ax.set_xlim(xs_min - 0.2, xs_max + 0.2)
+    # Clip only via the fixed y viewport; the common x viewport is not trimmed.
+    ax.set_xlim(xs_min, xs_max)
     ax.set_ylim(-y_pad, 1.0 + y_pad)
     ax.set_aspect("equal", adjustable="datalim")
     ax.axis("off")
