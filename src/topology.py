@@ -950,6 +950,112 @@ def route_coverage_fraction(graph: RouteGraph, selected: list):
     return len(graph.meaningful & hit) / len(graph.meaningful)
 
 
+# ---------------------------------------------------------------------------
+# Connected components of the canonical fill (issue #4)
+# ---------------------------------------------------------------------------
+
+
+def glyph_connected_components(geom: GlyphGeometry):
+    """Connected components of the canonical even-odd fill.
+
+    Used by issue #4 to separate disconnected glyph components (e.g. the
+    dot and stem of `i`/`j`) before route fitting. Returns
+    ``(labels, n, info)`` where ``labels`` is an ``(ny, nx)`` int array
+    (0 = background), ``n`` the component count, and ``info`` maps each
+    label to its normalized vertical/horizontal extent, centroid and
+    pixel area. Components are derived purely from geometry, never from
+    character names. 8-connectivity is used so diagonally-touching
+    strokes count as one physical component while genuinely separate
+    blobs (with a raster gap) stay distinct.
+    """
+    from scipy import ndimage
+
+    fill = geom.fill
+    struct = np.ones((3, 3), dtype=int)
+    labels, n = ndimage.label(fill, structure=struct)
+    step = SIZE / GRID
+    info = {}
+    if n:
+        ys, xs = np.nonzero(fill)
+        flat = labels[ys, xs]
+        for lbl in range(1, n + 1):
+            m = flat == lbl
+            py = ys[m]
+            px = xs[m]
+            info[lbl] = {
+                "ymin": float(py.min() + 0.5) * step,
+                "ymax": float(py.max() + 0.5) * step,
+                "cy": float(py.mean() + 0.5) * step,
+                "cx": float(px.mean() + 0.5) * step,
+                "area": int(m.sum()),
+            }
+    return labels, n, info
+
+
+def route_component_label(graph: RouteGraph, route, labels) -> int | None:
+    """Dominant connected-component label of a route's skeleton polyline.
+
+    The skeleton is the medial axis of the fill, so every route point lies
+    inside a filled pixel; the dominant (most frequent) label across the
+    route is its physical component. Returns ``None`` only if the polyline
+    somehow lands entirely on background.
+    """
+    pts = route_polyline(graph, route)
+    ny, nx = labels.shape
+    step = SIZE / GRID
+    cols = np.clip(np.round(pts[:, 0] / step).astype(int), 0, nx - 1)
+    rows = np.clip(np.round(pts[:, 1] / step).astype(int), 0, ny - 1)
+    labs = labels[rows, cols]
+    labs = labs[labs > 0]
+    if labs.size == 0:
+        return None
+    vals, counts = np.unique(labs, return_counts=True)
+    return int(vals[int(counts.argmax())])
+
+
+def component_preferred_orientation(comp_label, info, present_labels):
+    """Issue #4: disconnected components must send their unbounded tails
+    AWAY from each other, not toward the gap between them.
+
+    ``comp_label`` is the route's connected-component id (or ``None``);
+    ``info`` maps labels to vertical extents/centroids; ``present_labels``
+    is the set of component ids actually traversed by the selected routes.
+
+    Returns ``(sigma_left, sigma_right)`` to force, or ``None`` to fall
+    back to the ordinary per-endpoint nearest-boundary rule:
+
+      - bottom-most component (strictly below every other): down/down
+        ``(-1, -1)``;
+      - top-most component (strictly above every other): up/up ``(1, 1)``;
+      - middle component: escape away from the centroid of the others when
+        there is a clear vertical outward side, else ``None``.
+    """
+    if comp_label is None:
+        return None
+    others = [c for c in present_labels if c != comp_label]
+    if not others:
+        return None
+    ext = info[comp_label]
+    other_ymin = min(info[c]["ymin"] for c in others)
+    other_ymax = max(info[c]["ymax"] for c in others)
+    # strictly below every other component -> both tails escape downward
+    if ext["ymax"] <= other_ymin:
+        return (-1, -1)
+    # strictly above every other component -> both tails escape upward
+    if ext["ymin"] >= other_ymax:
+        return (1, 1)
+    # middle component: move away from the centroid of the other
+    # components when there is a clear vertical outward side; otherwise
+    # defer to the normal nearest-boundary rule.
+    other_cy = sum(info[c]["cy"] for c in others) / len(others)
+    d = ext["cy"] - other_cy
+    if d < -1e-9:
+        return (-1, -1)
+    if d > 1e-9:
+        return (1, 1)
+    return None
+
+
 @dataclass
 class Corridor:
     """Allowed region for one complete route.
@@ -969,6 +1075,11 @@ class Corridor:
     ylo: float
     yhi: float
     realized: dict = None            # phys atom id -> (xs, ys, lo, hi)
+    # issue #4: escape direction forced by disconnected-component geometry
+    # BEFORE the ordinary per-endpoint nearest-boundary rule. ``None``
+    # means "use the nearest-boundary rule" (the default single-component
+    # behavior). Forced value is ``(sigma_left, sigma_right)`` each +-1.
+    preferred_orientation: tuple | None = None
 
     def __post_init__(self):
         if self.realized is None:

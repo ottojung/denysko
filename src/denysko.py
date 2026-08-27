@@ -34,6 +34,9 @@ from src.topology import (
     select_routes_min_cover,
     build_route_corridor,
     corridor_glyph_violation,
+    glyph_connected_components,
+    route_component_label,
+    component_preferred_orientation,
     poly_glyph_violation,
     route_continuity_violation,
     nonvertical_realization_x_error,
@@ -360,6 +363,25 @@ def build_phase1(letter: str):
     chosen = [candidates[j] for j in chosen_idx]
     selected = [build_route_corridor(graph, route, geom)
                 for route in chosen]
+    # issue #4: associate each selected route with its physical connected
+    # component and, when components are disconnected, force the
+    # component-level escape direction BEFORE the ordinary per-endpoint
+    # nearest-boundary rule. Single-component glyphs keep the existing
+    # behavior (corridor.preferred_orientation stays None).
+    labels, n_comp, comp_info = glyph_connected_components(geom)
+    present = set()
+    route_comp = []
+    for route in chosen:
+        comp = route_component_label(graph, route, labels)
+        route_comp.append(comp)
+        if comp is not None:
+            present.add(comp)
+    # only override when the selected routes actually touch more than one
+    # disconnected component; otherwise the nearest-boundary rule stands.
+    if n_comp > 1 and len(present) > 1:
+        for comp, corr in zip(route_comp, selected):
+            corr.preferred_orientation = component_preferred_orientation(
+                comp, comp_info, present)
     for j, corr in enumerate(selected):
         v = corridor_glyph_violation(corr, geom)
         # raster-derived tolerance; see CHALLENGES (measured
@@ -595,8 +617,21 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     cap = degree_cap or INITIAL_FIT_DEGREE
     directions = _family_directions(corr, seed, path_index)
 
+    # issue #4: the component-level escape preference (set on the corridor
+    # during Phase 1) must win over any orientation the family search
+    # would otherwise pick for fit ease. When a component preference
+    # exists the fitter must NOT override it merely because another
+    # orientation admits a simpler/cheaper family: only the preferred
+    # orientation is attempted, and if no family exists in it the caller
+    # fails loudly rather than silently flipping topology.
+    pref = getattr(corr, "preferred_orientation", None)
+    if pref is not None:
+        orientations = [tuple(int(s) for s in pref)]
+    else:
+        orientations = ((1, -1), (-1, 1), (1, 1), (-1, -1))
+
     for D in range(d_min, cap + 1):
-        for ori in ((1, -1), (-1, 1), (1, 1), (-1, -1)):
+        for ori in orientations:
             for dname, w_dir in directions[:3]:   # max 3 directions
                 w_raw = w_dir   # raw direction; solve_anchor normalizes
                 plo = solve_anchor(corr, D, ori[0], ori[1], w_raw,
