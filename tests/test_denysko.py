@@ -870,10 +870,13 @@ def test_validate_lines_horner_emitted_lines_no_crash():
     # Issue #30: validate_lines (V4/V6) crashed on Horner-form emitted lines
     # because parse_line could not parse the nested shifted Horner form.
     # A glyph that emits a degree>=10 curve must now validate cleanly.
-    geom, _, _, _, _, selected = d.build_phase1("T")
-    fits, corrs, routes = d.generate_letter("T", min_curves=1)
+    # The Horner-validation contract is font-agnostic; under Cormorant
+    # (issue #6) we exercise it on C, which emits Horner-form lines, rather
+    # than pinning the vehicle to DejaVu's T.
+    geom, _, _, _, _, selected = d.build_phase1("C")
+    fits, corrs, routes = d.generate_letter("C", min_curves=1)
     lines = [d.serialize_fit(f) for f in fits]
-    assert any(d._is_horner_line(l) for l in lines), "T must emit a Horner line"
+    assert any(d._is_horner_line(l) for l in lines), "C must emit a Horner line"
     # the original crash was AttributeError inside parse_line; ensure every
     # emitted line parses and validate_lines returns a list without raising
     for l in lines:
@@ -888,8 +891,9 @@ def test_validate_lines_horner_emitted_lines_no_crash():
 def test_validate_lines_flags_corrupted_horner():
     # Corrupting a Horner line must be caught by the V4 stability check
     # (not silently skipped), proving the parser path does real validation.
-    geom, _, _, _, _, selected = d.build_phase1("T")
-    fits, corrs, routes = d.generate_letter("T", min_curves=1)
+    # Issue #6: use Cormorant-generating glyph C instead of DejaVu's T.
+    geom, _, _, _, _, selected = d.build_phase1("C")
+    fits, corrs, routes = d.generate_letter("C", min_curves=1)
     lines = [d.serialize_fit(f) for f in fits]
     horner_idx = next(i for i, l in enumerate(lines)
                       if d._is_horner_line(l))
