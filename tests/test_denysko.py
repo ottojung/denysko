@@ -1,3 +1,5 @@
+import re
+
 import numpy as np
 import pytest
 
@@ -156,8 +158,9 @@ def test_validate_horner_line_matches_chebyshev():
         err = d.validate_horner_line(line, corr, fit.coef_cheb)
         # emitted Horner expression reproduces its Chebyshev source closely
         assert err < 1e-6, f"horner line mismatch {err}"
-        # and a corrupted coefficient is detected
-        broken = line.replace(line.split("+")[0][2:], "999.0", 1)
+        # and a corrupted coefficient is detected (replace first numeric
+        # literal; robust to the optional y= prefix and changing coefficients)
+        broken = re.sub(r"[0-9]+(?:\.[0-9]+)?", "999.0", line, count=1)
         bad_err = d.validate_horner_line(broken, corr, fit.coef_cheb)
         assert bad_err > 1e-3
 
@@ -848,8 +851,10 @@ def test_validate_lines_flags_corrupted_horner():
     horner_idx = next(i for i, l in enumerate(lines)
                       if d._is_horner_line(l))
     broken = list(lines)
-    broken[horner_idx] = lines[horner_idx].replace(
-        "0.9588237954388035", "0.9588237954388035+5.0", 1)
+    # corrupt the first numeric literal of the Horner line; robust to the
+    # actual emitted coefficient value (which varies with the fit)
+    broken[horner_idx] = re.sub(r"[0-9]+(?:\.[0-9]+)?",
+                                r"999.0", lines[horner_idx], count=1)
     problems = d.validate_lines(broken, geom, fits, corrs, routes)
     assert any(p.startswith("V4 curve %d: horner mismatch" % horner_idx)
                for p in problems)
