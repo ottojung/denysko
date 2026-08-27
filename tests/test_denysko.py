@@ -149,8 +149,13 @@ def test_validate_horner_line_matches_chebyshev():
     # canonical Chebyshev data (issue #30's dedicated Horner V4 check).
     from numpy.polynomial import chebyshev as cheb
 
-    geom, _, _, _, _, selected = d.build_phase1("T")
-    fits, corrs, _ = d.generate_letter("T", min_curves=1)
+    # The Horner-validation contract is font-agnostic. Issue #6 switched the
+    # default font to Cormorant, and Cormorant's skeleton for some letters
+    # (e.g. T) does not yet yield a feasible polynomial fit, so we exercise
+    # the check on a glyph that generates under the current font rather than
+    # pinning the vehicle to DejaVu's T.
+    geom, _, _, _, _, selected = d.build_phase1("A")
+    fits, corrs, _ = d.generate_letter("A", min_curves=1)
     lines = [d.serialize_fit(f) for f in fits]
     for line, fit, corr in zip(lines, fits, corrs):
         if not d._is_horner_line(line):
