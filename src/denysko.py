@@ -196,6 +196,11 @@ class _NotPolynomial(Exception):
 
 
 _TOK_RE = re.compile(r"[-+*/()]|[0-9]+(?:\.[0-9]*)?|\.[0-9]+|x")
+# Whitespace is insignificant; every other character must be part of a valid
+# token, otherwise the expression is rejected rather than silently truncated.
+_TOKEN_SEQ_RE = re.compile(
+    r"(?:[-+*/()]|[0-9]+(?:\.[0-9]*)?|\.[0-9]+|x)*\Z")
+_WS_RE = re.compile(r"\s+")
 
 
 def _parse_expression_poly(s: str):
@@ -206,7 +211,14 @@ def _parse_expression_poly(s: str):
     not a polynomial in x. This is the generic fallback behind ``parse_line``:
     it handles the nested shifted Horner form emitted for high-degree curves
     as well as the flat ``a*x^n`` form that ``parse_poly`` already covers.
+
+    Any character that is neither whitespace nor a valid token (e.g. ``^``,
+    stray letters, ``y``) causes rejection, so malformed input is never
+    silently discarded and mis-parsed.
     """
+    compact = _WS_RE.sub("", s)
+    if compact and not _TOKEN_SEQ_RE.fullmatch(compact):
+        return None
     tokens = _TOK_RE.findall(s)
     if not tokens:
         return None
@@ -249,11 +261,15 @@ def _parse_expression_poly(s: str):
             else:
                 if len(rhs) != 1:
                     raise _NotPolynomial("division by non-constant")
+                if rhs[0] == 0.0:
+                    raise _NotPolynomial("division by zero")
                 val = val / rhs[0]
         return val
 
     def p_factor():
         t = peek()
+        if t is None:
+            raise _NotPolynomial("incomplete expression")
         if t in ("+", "-"):
             adv()
             v = p_factor()
@@ -274,11 +290,11 @@ def _parse_expression_poly(s: str):
             raise _NotPolynomial("bad number")
         return np.array([v])
 
+    # All malformed-input paths raise _NotPolynomial; only that is caught so
+    # an unexpected error is not silently swallowed.
     try:
         result = p_expr()
     except _NotPolynomial:
-        return None
-    except Exception:
         return None
     if pos != n or result is None:
         return None
@@ -347,7 +363,7 @@ def validate_horner_line(line: str, corridor, coef_cheb: np.ndarray,
     xs = np.linspace(corridor.xa, corridor.xb, grid)
     try:
         parsed_vals = eval_expression(expr, xs)
-    except Exception:
+    except (ValueError, TypeError, ArithmeticError, IndexError):
         return float("inf")
 
     scale = (corridor.xb - corridor.xa) / 2.0
