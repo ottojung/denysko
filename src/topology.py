@@ -61,10 +61,54 @@ UNFOLD_MONOTONE_PUSH = 1e-6 * NORMALIZED_SIZE  # old monotone push 1e-4
 UNFOLD_NOISE_X = 5e-4 * NORMALIZED_SIZE      # old NOISE_X 0.05
 
 
+# Canonical glyph source: a vendored, SHA-pinned copy of
+# CormorantUpright-SemiBold (SIL OFL 1.1). See fonts/SOURCES.md for
+# provenance, license, and the recorded pin. _font_path() always resolves
+# the repository-owned artifact so the canonical raster is byte-identical
+# on every machine and in CI (no fontconfig/system-font lookup).
+_FONT_DIR = os.path.join(os.path.dirname(__file__), "..", "fonts", "ttf")
+_CANONICAL_FONT = "CormorantUpright-SemiBold.ttf"
+_PINNED_SHA256 = "585e9106c433f1b4cc5d023103305123d92741526a7e27e9ff8a1f5befcc90e6"
+
+_font_pin_verified: set = set()
+
+
 def _font_path() -> str:
-    return os.path.join(
-        matplotlib.get_data_path(), "fonts", "ttf", "DejaVuSans.ttf"
-    )
+    path = os.path.join(_FONT_DIR, _CANONICAL_FONT)
+    if path not in _font_pin_verified:
+        _verify_font_pin(path)
+        _font_pin_verified.add(path)
+    return path
+
+
+def _verify_font_pin(path: str) -> None:
+    """Fail fast if the vendored font does not match the recorded SHA pin.
+
+    A mismatched font would silently change every raster, skeleton, route
+    graph, corridor, and minimum degree, defeating determinism and
+    reproducibility. We only pin the bytes, not the path, so a legitimate
+    font update must update _PINNED_SHA256 together with the artifact.
+    """
+    import hashlib
+
+    if not os.path.exists(path):
+        raise FileNotFoundError(
+            f"canonical font artifact missing: {path}. "
+            "Restore fonts/ttf/CormorantUpright-SemiBold.ttf from the "
+            "pinned source recorded in fonts/SOURCES.md."
+        )
+    digest = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            digest.update(chunk)
+    actual = digest.hexdigest()
+    if actual != _PINNED_SHA256:
+        raise RuntimeError(
+            f"canonical font pin mismatch: expected {_PINNED_SHA256}, "
+            f"got {actual}. The vendored CormorantUpright-SemiBold.ttf "
+            "differs from the pinned artifact; restore the pinned bytes or "
+            "update the pin together with the artifact and fonts/SOURCES.md."
+        )
 
 
 _CAP_HEIGHT_LETTER = "H"
@@ -78,6 +122,9 @@ def _font_normalization_scale() -> float:
     at the canonical source size maps exactly to SIZE (= 1.0). Every
     glyph shares this single uniform x/y scale, preserving the font's
     own relative metrics (x-height, ascenders, descenders, widths).
+    This is font-relative normalization: the chosen font's actual
+    cap-height/x-height relationship survives into Denysko geometry,
+    and no glyph is independently scaled to fill a 1x1 box.
     """
     key = (_font_path(), SIZE)
     if key not in _font_scale_cache:
@@ -92,10 +139,10 @@ def _font_normalization_scale() -> float:
 
 def _normalized_polygons(letter: str) -> list[np.ndarray]:
     """Flattened glyph outlines normalized like the canonical raster:
-    bundled DejaVuSans at size 100, one shared font-wide uniform scale
-    mapping the capital-height reference ('H' visible height) to SIZE,
-    filled-bbox lower-left mapped to (0, 0), y-up. Glyphs are never
-    independently resized."""
+    the vendored CormorantUpright-SemiBold at size 100, one shared
+    font-wide uniform scale mapping the capital-height reference ('H'
+    visible height) to SIZE, filled-bbox lower-left mapped to (0, 0),
+    y-up. Glyphs are never independently resized."""
     try:
         tp = TextPath((0, 0), letter, size=100,
                       prop=FontProperties(fname=_font_path()))
@@ -578,6 +625,16 @@ def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,
     (modulo raster_tol). Returns the worst outside distance in glyph
     units; 0.0 means fully contained."""
     xs = np.linspace(corridor.xs[0], corridor.xs[-1], grid)
+    # Only the glyph-tracing body must stay inside the fill. The escape
+    # tails extend (in x) beyond the route's actual x-range and are
+    # intentionally outside the glyph; they are governed by V3, not by
+    # this containment check. Enforcing containment over the tails would
+    # penalize a correct escape that merely passes over another filled
+    # column of the glyph.
+    mask = (xs >= corridor.body_xa) & (xs <= corridor.body_xb)
+    if not mask.any():
+        return 0.0
+    xs = xs[mask]
     lo = corridor.lower_at(xs)
     hi = corridor.upper_at(xs)
     step = SIZE / GRID
