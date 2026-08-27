@@ -1065,9 +1065,12 @@ def _h_glyph():
 
 def test_h_corridors_are_continuous_and_inside_glyph():
     """The old diagonal arc-length remapping crossed empty quadrants;
-    both selected H corridors must now satisfy corridor ⊂ glyph."""
+    every selected H corridor must satisfy corridor ⊂ glyph.
+
+    Issue #6 switched the default font to Cormorant; the selected-route
+    count for H is no longer pinned to DejaVu's 2, so only the structural
+    invariant (continuity + full-interval containment) is asserted."""
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
-    assert len(selected) == 2
     for r, c in zip(chosen, selected):
         assert d.route_continuity_violation(graph, r) < 1e-6
         # full-interval containment: worst poke-out budget (transition
@@ -1083,14 +1086,11 @@ def test_h_corridors_are_continuous_and_inside_glyph():
         rows = np.clip(np.round(mids / step).astype(int), 0,
                        geom.fill.shape[0] - 1)
         assert geom.fill[rows, cols].mean() > 0.99
-        # probe the previously-fake diagonal zone between stems/bar
-        xs_probe = np.linspace(0.20, 0.55, 40)
-        mids = 0.5 * (c.lower_at(xs_probe) + c.upper_at(xs_probe))
-        step = _NS / _GRID
-        cols = np.clip(np.round(xs_probe / step).astype(int), 0, 511)
-        rows = np.clip(np.round(mids / step).astype(int), 0,
-                       geom.fill.shape[0] - 1)
-        assert geom.fill[rows, cols].mean() > 0.97
+        # Issue #6: the old-world "diagonal zone between stems/bar" probe
+        # pinned DejaVu's exact crossbar geometry; Cormorant's H crossbar
+        # sits differently, so that glyph-specific probe is dropped. The
+        # historical diagonal arc-length remap bug is still guarded by the
+        # route_continuity_violation check above.
 
 
 def test_tiny_leading_coefficient_sets_degree_for_v3():
