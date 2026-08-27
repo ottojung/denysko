@@ -21,11 +21,13 @@ jobs:
       - uses: astral-sh/setup-uv@v6
       - name: Install locked environment
         run: uv sync --locked
-      - name: Emit t and inspect fitted tails
+      - name: Emit t in default and dense modes
         run: |
           echo '--- public CLI t ---'
           uv run denysko t --seed 42 -q | tee /tmp/t-equations.txt
-          echo '--- fitted t routes ---'
+          echo '--- public CLI --min-curves 10 t ---'
+          uv run denysko --min-curves 10 t --seed 42 -q | tee /tmp/t10-equations.txt
+          echo '--- fitted default t routes ---'
           uv run python - <<'PY'
           from src import denysko as d
           from src.fitting import fit_route, preferred_tail_orientation, INITIAL_FIT_DEGREE
@@ -42,9 +44,32 @@ jobs:
           PY
           mkdir -p artifacts
           uv run python tools/preview.py "t" artifacts/issue37-t.png --seed 42
+          uv run python - <<'PY'
+          import numpy as np
+          import matplotlib.pyplot as plt
+          from tools.preview import evaluate_line, layout_x_bounds, Y_MIN, Y_MAX, X_SAMPLE_STEP
+          lines = [x.strip() for x in open('/tmp/t10-equations.txt') if x.strip()]
+          x_lo, x_hi = layout_x_bounds('t')
+          pad = 0.05 * (x_hi - x_lo) or 0.5
+          xs = np.arange(x_lo - pad, x_hi + pad + X_SAMPLE_STEP, X_SAMPLE_STEP)
+          fig, ax = plt.subplots(figsize=(4, 8))
+          for line in lines:
+              ys = evaluate_line(line, xs)
+              mask = (ys >= Y_MIN) & (ys <= Y_MAX)
+              ax.plot(xs[mask], ys[mask], linewidth=1.5)
+          ax.set_xlim(x_lo - pad, x_hi + pad)
+          ax.set_ylim(Y_MIN, Y_MAX)
+          ax.set_aspect('equal', adjustable='box')
+          ax.axis('off')
+          fig.tight_layout()
+          fig.savefig('artifacts/issue37-t-min10.png', dpi=120, bbox_inches='tight')
+          print('dense curves:', len(lines))
+          PY
       - uses: actions/upload-artifact@v4
         with:
           name: issue37-t-preview
           path: |
             artifacts/issue37-t.png
+            artifacts/issue37-t-min10.png
             /tmp/t-equations.txt
+            /tmp/t10-equations.txt
