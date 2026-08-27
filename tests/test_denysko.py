@@ -678,22 +678,20 @@ def test_issue2_real_glyph_tail_orientation_is_geometry_driven():
 
       C: upper end up, lower end down;
       A: the relevant leg-route ends both escape down;
-      r: stem and hat joined through the junction; both curves escape
-         down at the shared top-of-stem endpoint and up at the far end;
-      e: the lower route escapes down; the joined spine-to-bar routes
-         escape down at the spine end and up at the bar end.
+      r: stem and hat joined through the junction; the joined hat
+         curves occupy the upper region and escape up on both sides;
+      e: the lower route escapes down; the two joined upper routes escape
+         up on both sides, as required by issue #2.
     """
     expected = {
         "C": [(-1, -1), (-1, 1)],
         "A": [(-1, -1), (-1, -1)],
-        # issue #3: r's stem and hat are joined through the junction, so
-        # the selected curves no longer start/end at the contact; both
-        # share the top-of-stem endpoint (escapes down) and escape up at
-        # their far end. Orientation remains geometry-derived.
-        "r": [(-1, 1), (-1, 1)],
-        # issue #3: e's spine joins two of its bars through junctions; the
-        # locked orientation set shifts accordingly but stays geometry-driven
-        "e": [(-1, -1), (-1, 1), (-1, 1)],
+        # Joined r routes have conflicting raw endpoint preferences, but
+        # their dominant corridor region is above the glyph midline.
+        "r": [(1, 1), (1, 1)],
+        # The lower e route remains down/down; both junction-joined upper
+        # routes belong to the upper region and therefore escape up/up.
+        "e": [(-1, -1), (1, 1), (1, 1)],
     }
     for letter, want in expected.items():
         geom, graph, candidates, chosen, sigs, selected = \

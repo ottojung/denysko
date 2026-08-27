@@ -68,27 +68,46 @@ class PathFit:
 
 
 def preferred_tail_orientation(corridor: Corridor) -> tuple[int, int]:
-    """Choose tail directions from endpoint/glyph geometry before fitting.
+    """Choose tail directions from geometry before fitting.
 
-    Issue #4: a component-level preference (set on ``corridor`` during
-    Phase 1 for disconnected glyph components) is applied FIRST and
-    overrides the per-endpoint rule - the fitter must never flip it merely
-    because another orientation is easier to fit.
+    Priority is geometric and fixed before polynomial optimization:
 
-    Otherwise each endpoint escapes toward the nearer vertical exterior
-    boundary. Distances are measured from the endpoint corridor interval
-    itself, not from a fitted value. Exact ties deterministically prefer
-    upward escape.
+    1. disconnected-component separation (issue #4), when present;
+    2. ordinary endpoint-to-nearest-exterior selection;
+    3. when a route CONTINUES THROUGH a real junction and its two endpoint
+       choices conflict, treat the low/high shared trunk as join geometry
+       rather than as two independent escape decisions: the joined curve
+       escapes on both sides toward the exterior containing the route's
+       dominant vertical region (median corridor centerline).
+
+    Step 3 is what keeps an upper joined branch such as the upper curves of
+    ``e`` from acquiring a downward tail merely because the route shares a
+    lower junction endpoint. Unjoined curves such as ``C`` retain opposite
+    endpoint directions, and when both endpoint choices already agree (for
+    example the legs of ``A``) that agreement is preserved. The optimizer
+    may never flip any of these choices for fit ease.
     """
     pref = getattr(corridor, "preferred_orientation", None)
     if pref is not None:
         return tuple(int(s) for s in pref)
+
     orientation = []
     for i in (0, -1):
         down_distance = float(corridor.lower[i] - corridor.ylo)
         up_distance = float(corridor.yhi - corridor.upper[i])
         orientation.append(-1 if down_distance < up_distance else 1)
-    return tuple(orientation)
+    endpoint_orientation = tuple(orientation)
+
+    if (endpoint_orientation[0] != endpoint_orientation[1]
+            and getattr(corridor, "join_score", 0) == 1):
+        centerline = 0.5 * (np.asarray(corridor.lower, dtype=float)
+                            + np.asarray(corridor.upper, dtype=float))
+        route_center = float(np.median(centerline))
+        glyph_center = 0.5 * (float(corridor.ylo) + float(corridor.yhi))
+        sigma = 1 if route_center >= glyph_center else -1
+        return (sigma, sigma)
+
+    return endpoint_orientation
 
 
 def _zmap(x, xa: float, xb: float):

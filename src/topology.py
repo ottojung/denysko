@@ -1140,6 +1140,10 @@ class Corridor:
     ylo_local: float = 0.0          # curve's own vertical region (min lower)
     yhi_local: float = 0.0          # curve's own vertical region (max upper)
     realized: dict = None            # phys atom id -> (xs, ys, lo, hi)
+    # Number of genuine split/merge/junction vertices this route continues
+    # THROUGH. Used only by the pre-fit escape-geometry rule; ordinary
+    # non-joined routes keep endpoint-by-endpoint boundary selection.
+    join_score: int = 0
     # issue #4: escape direction forced by disconnected-component geometry
     # BEFORE the ordinary per-endpoint nearest-boundary rule. ``None``
     # means "use the nearest-boundary rule" (the default single-component
@@ -1709,6 +1713,7 @@ def build_route_corridor(graph: RouteGraph, route: Route,
         ylo_local=float(lower.min()),
         yhi_local=float(upper.max()),
         realized=realized,
+        join_score=route_join_score(graph, route),
     )
 
 
