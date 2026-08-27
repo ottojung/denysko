@@ -45,6 +45,15 @@ sha256sum fonts/ttf/CormorantUpright-SemiBold.ttf
 585e9106c433f1b4cc5d023103305123d92741526a7e27e9ff8a1f5befcc90e6  fonts/ttf/CormorantUpright-SemiBold.ttf
 ```
 
+## Version
+
+The Cormorant project does not publish semantic version tags; the
+authoritative version of the artifact is its content, fixed by the
+SHA-256 pin above. Treat the digest (and the matching
+`src/topology.py::_PINNED_SHA256`) as the version of record. Any change
+to the vendored bytes is, by definition, a new version and must update
+the artifact, the code constant, and this file together.
+
 ## Follow-up calibration note
 
 After the switch, stroke thickness at the 512 raster scale should be inspected. If
