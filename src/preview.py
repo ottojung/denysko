@@ -24,6 +24,11 @@ import numpy as np
 from src import denysko as _d
 
 
+def _body(line: str) -> str:
+    """Strip an optional ``y=`` prefix, matching the public output form."""
+    return line[2:] if line.startswith("y=") else line
+
+
 def evaluate_line(line: str, xs: np.ndarray) -> np.ndarray:
     """Evaluate one emitted equation line at the given x samples.
 
@@ -31,7 +36,7 @@ def evaluate_line(line: str, xs: np.ndarray) -> np.ndarray:
     faithful to what users receive (including the stable nested-Horner form
     for high-degree curves).
     """
-    return _d.eval_expression(_d.expr_body(line), xs)
+    return _d.eval_expression(_body(line), xs)
 
 
 def render_text_preview(
