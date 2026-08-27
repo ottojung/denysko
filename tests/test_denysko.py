@@ -1303,7 +1303,11 @@ def test_h_default_baseline_degrees():
     # via a deterministic staged tie-break; the resulting cover is still K=2,
     # full coverage, maximal join (join score 4), and feasible. Degrees are a
     # measurement of that specific cover, not a quality gate.
-    assert sorted(f.degree for f in fits) == [14, 17]
+    # Re-frozen after issue #28 (Chebyshev domain = corridor constraint
+    # region) tightened localization: the merged cover now fits one H route
+    # at degree 10 instead of 14, still K=2, full coverage, maximal join,
+    # and valid (no V2/V3/V6 problems).
+    assert sorted(f.degree for f in fits) == [10, 17]
 
 
 def test_family_members_have_real_orientation():
