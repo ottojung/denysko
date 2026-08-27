@@ -34,6 +34,9 @@ from src.topology import (
     select_routes_min_cover,
     build_route_corridor,
     corridor_glyph_violation,
+    glyph_connected_components,
+    route_component_label,
+    component_preferred_orientation,
     poly_glyph_violation,
     route_continuity_violation,
     nonvertical_realization_x_error,
@@ -110,7 +113,17 @@ def poly_str(coef: np.ndarray) -> str:
 
 def format_expression(curve) -> str:
     poly = getattr(curve, "poly", curve)
-    return f"y={poly_str(np.asarray(poly.coef))}"
+    return poly_str(np.asarray(poly.coef))
+
+
+def expr_body(line: str) -> str:
+    """Return the equation body, stripping an optional ``y=`` prefix.
+
+    The public output format dropped the ``y=`` prefix (issue #22), but
+    the parser stays tolerant of the historical form so old artifacts and
+    tests still round-trip.
+    """
+    return line[2:] if line.startswith("y=") else line
 
 
 def _horner_expression(coef, mid, scale):
@@ -150,7 +163,7 @@ def serialize(fit_or_curve) -> str:
     return format_expression(fit_or_curve)
 
 
-_EXPR_RE = re.compile(r"^y=(.+)$")
+_EXPR_RE = re.compile(r"^(?:y=)?(.+)$")
 _TERM_RE = re.compile(
     r"([+-]?)((?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)?)(?:x(?:\^([0-9]+))?)?"
 )
@@ -360,6 +373,25 @@ def build_phase1(letter: str):
     chosen = [candidates[j] for j in chosen_idx]
     selected = [build_route_corridor(graph, route, geom)
                 for route in chosen]
+    # issue #4: associate each selected route with its physical connected
+    # component and, when components are disconnected, force the
+    # component-level escape direction BEFORE the ordinary per-endpoint
+    # nearest-boundary rule. Single-component glyphs keep the existing
+    # behavior (corridor.preferred_orientation stays None).
+    labels, n_comp, comp_info = glyph_connected_components(geom)
+    present = set()
+    route_comp = []
+    for route in chosen:
+        comp = route_component_label(graph, route, labels)
+        route_comp.append(comp)
+        if comp is not None:
+            present.add(comp)
+    # only override when the selected routes actually touch more than one
+    # disconnected component; otherwise the nearest-boundary rule stands.
+    if n_comp > 1 and len(present) > 1:
+        for comp, corr in zip(route_comp, selected):
+            corr.preferred_orientation = component_preferred_orientation(
+                comp, comp_info, present)
     for j, corr in enumerate(selected):
         v = corridor_glyph_violation(corr, geom)
         # raster-derived tolerance; see CHALLENGES (measured
@@ -595,8 +627,21 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     cap = degree_cap or INITIAL_FIT_DEGREE
     directions = _family_directions(corr, seed, path_index)
 
+    # issue #4: the component-level escape preference (set on the corridor
+    # during Phase 1) must win over any orientation the family search
+    # would otherwise pick for fit ease. When a component preference
+    # exists the fitter must NOT override it merely because another
+    # orientation admits a simpler/cheaper family: only the preferred
+    # orientation is attempted, and if no family exists in it the caller
+    # fails loudly rather than silently flipping topology.
+    pref = getattr(corr, "preferred_orientation", None)
+    if pref is not None:
+        orientations = [tuple(int(s) for s in pref)]
+    else:
+        orientations = ((1, -1), (-1, 1), (1, 1), (-1, -1))
+
     for D in range(d_min, cap + 1):
-        for ori in ((1, -1), (-1, 1), (1, 1), (-1, -1)):
+        for ori in orientations:
             for dname, w_dir in directions[:3]:   # max 3 directions
                 w_raw = w_dir   # raw direction; solve_anchor normalizes
                 plo = solve_anchor(corr, D, ori[0], ori[1], w_raw,
@@ -842,7 +887,7 @@ def serialize_fit(fit: PathFit) -> str:
         corr = fit.corridor
         mid = (corr.xa + corr.xb) / 2.0
         sc = (corr.xb - corr.xa) / 2.0
-        return "y=" + _horner_expression(power_z, mid, sc)
+        return _horner_expression(power_z, mid, sc)
     return format_expression(fit.poly)
 
 
@@ -865,7 +910,7 @@ def serialize_translated_horner_fit(fit: PathFit, dx: float) -> str:
     mid_local = (fit.corridor.xa + fit.corridor.xb) / 2.0
     scale = (fit.corridor.xb - fit.corridor.xa) / 2.0
     expr = _horner_expression(power_z, mid_local + dx, scale)
-    return expr if expr.startswith("y=") else "y=" + expr
+    return expr
 
 
 def serialize_placed_fit(placed: PlacedFit) -> str:
@@ -888,7 +933,7 @@ def serialize_placed_fit(placed: PlacedFit) -> str:
         truth = np.polynomial.Polynomial(
             np.asarray(fit.poly.coef, dtype=float))(local_xs)
         try:
-            actual = eval_expression(line[2:], global_xs)
+                actual = eval_expression(expr_body(line), global_xs)
         except Exception:
             actual = None
         if actual is not None and np.allclose(actual, truth,
@@ -923,7 +968,7 @@ def validate_placed_serialization(placed: PlacedFit, line: str) -> None:
                 f"translation validation failed for character "
                 f"{placed.char_index} {placed.char!r}")
         return
-    actual = eval_expression(line[2:], global_xs)
+    actual = eval_expression(expr_body(line), global_xs)
     if not np.allclose(actual, truth, rtol=1e-6, atol=1e-9):
         raise GenerationError(
             f"translation validation failed for character "

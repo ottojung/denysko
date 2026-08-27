@@ -13,9 +13,8 @@ violation). No stochastic search.
 
 Tail escape is MANDATORY on both sides for every emitted polynomial:
 after traversing its route the polynomial must leave the glyph's
-vertical band and never re-enter. The escape direction per side is a
-deterministic finite choice (up/down, four combinations) solved during
-fitting; among feasible orientations at a degree the simplest fit wins.
+vertical band and never re-enter. The escape direction per side is chosen deterministically from endpoint/glyph
+geometry before fitting; polynomial optimization may not change that topology.
 """
 
 from __future__ import annotations
@@ -50,11 +49,11 @@ HORNER_MIN_DEGREE = 10             # degree >= this uses Horner serialization
 CERT_TOL = 2.0 * (1.0 / 512)   # certificate violation tolerance (~2 raster steps)
 USE_LP = True   # unit tests may disable for speed (pure POCS)
 
-ORIENTATIONS = ((1, 1), (1, -1), (-1, 1), (-1, -1))  # stable order
 # Stage-1 skip rule (sound): the probe solves a strict SUBSET of the
 # full constraint rows, so probe-infeasible => truly infeasible; only
 # then is the degree/orientation skipped without a false negative.
 STAGE1_SKIP_VIOL = 0.005
+ORIENTATIONS = ((1, 1), (1, -1), (-1, 1), (-1, -1))  # compatibility/reference
 
 
 @dataclass
@@ -66,6 +65,30 @@ class PathFit:
     poly: np.polynomial.Polynomial   # ordinary powers of x
     dense_max_violation: float
     orientation: tuple               # (sigma_left, sigma_right), each +-1
+
+
+def preferred_tail_orientation(corridor: Corridor) -> tuple[int, int]:
+    """Choose tail directions from endpoint/glyph geometry before fitting.
+
+    Issue #4: a component-level preference (set on ``corridor`` during
+    Phase 1 for disconnected glyph components) is applied FIRST and
+    overrides the per-endpoint rule - the fitter must never flip it merely
+    because another orientation is easier to fit.
+
+    Otherwise each endpoint escapes toward the nearer vertical exterior
+    boundary. Distances are measured from the endpoint corridor interval
+    itself, not from a fitted value. Exact ties deterministically prefer
+    upward escape.
+    """
+    pref = getattr(corridor, "preferred_orientation", None)
+    if pref is not None:
+        return tuple(int(s) for s in pref)
+    orientation = []
+    for i in (0, -1):
+        down_distance = float(corridor.lower[i] - corridor.ylo)
+        up_distance = float(corridor.yhi - corridor.upper[i])
+        orientation.append(-1 if down_distance < up_distance else 1)
+    return tuple(orientation)
 
 
 def _zmap(x, xa: float, xb: float):
@@ -339,40 +362,29 @@ def fit_degree(corridor: Corridor, degree: int,
 
 
 def fit_route(corridor: Corridor, hi: int = INITIAL_FIT_DEGREE) -> PathFit | None:
-    """Lowest VERIFIED feasible degree with valid escaping tails.
+    """Lowest VERIFIED feasible degree for the required tail geometry.
 
-    Degrees are probed exhaustively from 0 upward (fit_degree is a
-    numerical oracle whose success can be non-monotone in degree). A
-    cheap stage-1 LP pre-filter skips only clearly infeasible
-    (degree, orientation) pairs; anything marginal runs the FULL
-    verified pipeline. All four tail orientations are deterministic
-    finite choices; among feasible fits at a degree the simplest
-    (smallest max |Chebyshev coefficient|) wins, ties broken by stable
-    ORIENTATIONS order. The first degree with any feasible fit returns
-    immediately.
+    Tail orientation is fixed from the route endpoint corridors before any
+    polynomial optimization. Degrees are then probed exhaustively from 0
+    upward (fit_degree is a numerical oracle whose success can be
+    non-monotone in degree). A cheap stage-1 LP pre-filter skips only clearly
+    infeasible degrees; marginal cases run the full verified pipeline. If the
+    geometrically required orientation cannot be fitted within ``hi``, fail
+    rather than silently flipping topology.
     """
+    ori = preferred_tail_orientation(corridor)
     for d in range(0, hi + 1):
-        best = None
-        best_key = None
-        for ori in ORIENTATIONS:
-            c0 = _weighted_init(corridor, d)
-            A, lo, hi_b = _constraint_set(corridor, d, *ori,
-                                          slope_rows=False)
-            _, viol = _project_feasible(A, lo, hi_b, c0)
-            if not np.isfinite(viol) or viol > STAGE1_SKIP_VIOL:
-                continue   # sound: subset infeasible => full infeasible
-            fit = fit_degree(corridor, d, ori[0], ori[1])
-            if fit is None:
-                continue
-            if tail_reentry_violation_cheb(
-                    fit.coef_cheb, corridor, ori) != 0.0:
-                continue   # ramps satisfied but not permanently outward
-            key = (float(np.max(np.abs(fit.coef_cheb))),
-                   ORIENTATIONS.index(ori))
-            if best_key is None or key < best_key:
-                best_key, best = key, fit
-        if best is not None:
-            return best
+        c0 = _weighted_init(corridor, d)
+        A, lo, hi_b = _constraint_set(corridor, d, *ori, slope_rows=False)
+        _, viol = _project_feasible(A, lo, hi_b, c0)
+        if not np.isfinite(viol) or viol > STAGE1_SKIP_VIOL:
+            continue   # sound: subset infeasible => full infeasible
+        fit = fit_degree(corridor, d, ori[0], ori[1])
+        if fit is None:
+            continue
+        if tail_reentry_violation_cheb(fit.coef_cheb, corridor, ori) != 0.0:
+            continue   # ramps satisfied but not permanently outward
+        return fit
     return None
 
 

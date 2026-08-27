@@ -456,16 +456,57 @@ def build_route_graph(geom: GlyphGeometry) -> RouteGraph:
     return RouteGraph(vertices=vertices, edges=edges, meaningful=meaningful)
 
 
+def route_join_score(graph: RouteGraph, route) -> int:
+    """Legal-join score of a single candidate route.
+
+    A *legal join* is a vertex the route CONTINUES THROUGH: it arrives on
+    one graph edge and leaves on another, at a genuine routing junction
+    (a split or merge of the filled-glyph / stroke graph), carrying on
+    into other glyph material rather than ending and escaping there.
+
+    This specifically rewards continuation through a real skeleton
+    junction into material that is also part of the glyph. It does NOT
+    reward mere redundant traversal: only genuine junction pass-throughs
+    count, and a route can only pass through a junction when it actually
+    continues (which preserves the x-realizable, non-retrace invariants).
+    """
+    if not isinstance(route, Route) or len(route.steps) < 2:
+        return 0
+    # genuine routing junctions: split/merge in the fill-mask graph and
+    # 'junction' in the stroke-skeleton graph (stroke-tip 'terminal'
+    # vertices are never passed through by a complete route)
+    junc_ids = {v.id for v in graph.vertices
+                if v.kind in ("split", "merge", "junction")}
+    score = 0
+    for a, b in zip(route.steps, route.steps[1:]):
+        # continue through the shared internal vertex `a.to_vertex`
+        if a.to_vertex == b.from_vertex and a.to_vertex in junc_ids:
+            score += 1
+    return score
+
+
 def select_routes_min_cover(graph: RouteGraph, candidates: list):
     """Exact minimum cover of meaningful PHYSICAL atoms by valid routes.
 
-    Staged MILP proof (HiGHS):
-      stage 1: minimize route count -> proven optimum K
-      stage 2: fix count == K, minimize total complexity
-      stage 3 (folded into 2's cost): stable index tie-break
+    Staged MILP proof (HiGHS), generic (no letter-specific routing):
 
-    Candidate enumeration is complete over the directed x-realizable
-    graph and overflow raises, so K is a proven exact minimum.
+       stage 1: minimize route count -> proven optimum K (unchanged)
+       stage 2: fix count == K (equality); MAXIMIZE the total legal-join
+                score (prefer joined continuations over routes that end
+                and escape at a contact)
+       stage 3: fix count == K AND join == Jmax (equalities); MINIMIZE
+                total route complexity (shorter selected routes)
+       stage 4: fix count == K AND join == Jmax AND complexity == Cmin
+                (equalities); deterministic stable-index tie-break
+
+    Each preceding optimum is FIXED by an equality constraint; the
+    objectives are never blended into one floating weighted cost. This is
+    a genuine lexicographic (staged) MILP, so the priority order
+    (K, then join, then complexity, then index) is exact regardless of
+    scaling. Candidate enumeration is complete over the directed
+    x-realizable graph and overflow raises, so K is a proven exact
+    minimum and the later stages only reorder *among* proven-minimum
+    covers of size K. No correctness check is weakened.
     """
     from scipy.optimize import milp, LinearConstraint, Bounds
 
@@ -486,27 +527,46 @@ def select_routes_min_cover(graph: RouteGraph, candidates: list):
     bounds = Bounds(0, 1)
     integrality = np.ones(n_r)
 
-    def _solve(cost, extra_con=None):
-        cons = [cover] + ([extra_con] if extra_con is not None else [])
-        res = milp(c=cost, constraints=cons, integrality=integrality,
+    def _solve(cost, cons):
+        all_cons = [cover] + list(cons)
+        res = milp(c=cost, constraints=all_cons, integrality=integrality,
                    bounds=bounds)
         if not res.success or res.x is None:
             raise RuntimeError("route cover MILP failed")
         return res
 
-    # stage 1: proven minimum route count K
-    res1 = _solve(np.ones(n_r))
-    K = float(round(sum(res1.x)))
-
-    # stage 2+3: fix count == K; minimize complexity then stable index
-    con2 = LinearConstraint(np.ones((1, n_r)), lb=[K], ub=[K])
+    joins = np.array([float(route_join_score(graph, r))
+                      for r in candidates])
     complexity = np.array([float(len(route_edge_ids(r)))
                            for r in candidates])
-    cost2 = complexity + np.array([1e-6 * j / max(1, n_r)
-                                   for j in range(n_r)])
-    res2 = _solve(cost2, con2)
+    ones = np.ones((1, n_r))
 
-    return [j for j in range(n_r) if res2.x[j] > 0.5]
+    # stage 1: proven minimum route count K
+    res = _solve(ones[0].copy(), [])
+    K = float(round(sum(res.x)))
+    count_eq = LinearConstraint(ones, lb=[K], ub=[K])
+
+    # stage 2: maximize join score, count fixed to K
+    res = _solve(-joins, [count_eq])
+    Jmax = float(round(float(sum(res.x * joins))))
+    join_eq = LinearConstraint(joins.reshape(1, -1),
+                              lb=[Jmax], ub=[Jmax])
+
+    # stage 3: minimize complexity, count and join fixed
+    res = _solve(complexity, [count_eq, join_eq])
+    Cmin = float(round(float(sum(res.x * complexity))))
+    comp_eq = LinearConstraint(complexity.reshape(1, -1),
+                               lb=[Cmin], ub=[Cmin])
+
+    # stage 4: deterministic stable-index tie-break among the optimal
+    # (K, join, complexity) covers; lower-index routes are preferred.
+    # join and complexity are already fixed by equality constraints, so the
+    # index objective can use full-magnitude coefficients (a tiny weight
+    # would be numerically swallowed and make the tie-break unstable).
+    index_cost = np.arange(n_r, dtype=float)
+    res = _solve(index_cost, [count_eq, join_eq, comp_eq])
+
+    return [j for j in range(n_r) if res.x[j] > 0.5]
 
 
 def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,
@@ -950,6 +1010,112 @@ def route_coverage_fraction(graph: RouteGraph, selected: list):
     return len(graph.meaningful & hit) / len(graph.meaningful)
 
 
+# ---------------------------------------------------------------------------
+# Connected components of the canonical fill (issue #4)
+# ---------------------------------------------------------------------------
+
+
+def glyph_connected_components(geom: GlyphGeometry):
+    """Connected components of the canonical even-odd fill.
+
+    Used by issue #4 to separate disconnected glyph components (e.g. the
+    dot and stem of `i`/`j`) before route fitting. Returns
+    ``(labels, n, info)`` where ``labels`` is an ``(ny, nx)`` int array
+    (0 = background), ``n`` the component count, and ``info`` maps each
+    label to its normalized vertical/horizontal extent, centroid and
+    pixel area. Components are derived purely from geometry, never from
+    character names. 8-connectivity is used so diagonally-touching
+    strokes count as one physical component while genuinely separate
+    blobs (with a raster gap) stay distinct.
+    """
+    from scipy import ndimage
+
+    fill = geom.fill
+    struct = np.ones((3, 3), dtype=int)
+    labels, n = ndimage.label(fill, structure=struct)
+    step = SIZE / GRID
+    info = {}
+    if n:
+        ys, xs = np.nonzero(fill)
+        flat = labels[ys, xs]
+        for lbl in range(1, n + 1):
+            m = flat == lbl
+            py = ys[m]
+            px = xs[m]
+            info[lbl] = {
+                "ymin": float(py.min() + 0.5) * step,
+                "ymax": float(py.max() + 0.5) * step,
+                "cy": float(py.mean() + 0.5) * step,
+                "cx": float(px.mean() + 0.5) * step,
+                "area": int(m.sum()),
+            }
+    return labels, n, info
+
+
+def route_component_label(graph: RouteGraph, route, labels) -> int | None:
+    """Dominant connected-component label of a route's skeleton polyline.
+
+    The skeleton is the medial axis of the fill, so every route point lies
+    inside a filled pixel; the dominant (most frequent) label across the
+    route is its physical component. Returns ``None`` only if the polyline
+    somehow lands entirely on background.
+    """
+    pts = route_polyline(graph, route)
+    ny, nx = labels.shape
+    step = SIZE / GRID
+    cols = np.clip(np.round(pts[:, 0] / step).astype(int), 0, nx - 1)
+    rows = np.clip(np.round(pts[:, 1] / step).astype(int), 0, ny - 1)
+    labs = labels[rows, cols]
+    labs = labs[labs > 0]
+    if labs.size == 0:
+        return None
+    vals, counts = np.unique(labs, return_counts=True)
+    return int(vals[int(counts.argmax())])
+
+
+def component_preferred_orientation(comp_label, info, present_labels):
+    """Issue #4: disconnected components must send their unbounded tails
+    AWAY from each other, not toward the gap between them.
+
+    ``comp_label`` is the route's connected-component id (or ``None``);
+    ``info`` maps labels to vertical extents/centroids; ``present_labels``
+    is the set of component ids actually traversed by the selected routes.
+
+    Returns ``(sigma_left, sigma_right)`` to force, or ``None`` to fall
+    back to the ordinary per-endpoint nearest-boundary rule:
+
+      - bottom-most component (strictly below every other): down/down
+        ``(-1, -1)``;
+      - top-most component (strictly above every other): up/up ``(1, 1)``;
+      - middle component: escape away from the centroid of the others when
+        there is a clear vertical outward side, else ``None``.
+    """
+    if comp_label is None:
+        return None
+    others = [c for c in present_labels if c != comp_label]
+    if not others:
+        return None
+    ext = info[comp_label]
+    other_ymin = min(info[c]["ymin"] for c in others)
+    other_ymax = max(info[c]["ymax"] for c in others)
+    # strictly below every other component -> both tails escape downward
+    if ext["ymax"] <= other_ymin:
+        return (-1, -1)
+    # strictly above every other component -> both tails escape upward
+    if ext["ymin"] >= other_ymax:
+        return (1, 1)
+    # middle component: move away from the centroid of the other
+    # components when there is a clear vertical outward side; otherwise
+    # defer to the normal nearest-boundary rule.
+    other_cy = sum(info[c]["cy"] for c in others) / len(others)
+    d = ext["cy"] - other_cy
+    if d < -1e-9:
+        return (-1, -1)
+    if d > 1e-9:
+        return (1, 1)
+    return None
+
+
 @dataclass
 class Corridor:
     """Allowed region for one complete route.
@@ -971,6 +1137,11 @@ class Corridor:
     ylo_local: float = 0.0          # curve's own vertical region (min lower)
     yhi_local: float = 0.0          # curve's own vertical region (max upper)
     realized: dict = None            # phys atom id -> (xs, ys, lo, hi)
+    # issue #4: escape direction forced by disconnected-component geometry
+    # BEFORE the ordinary per-endpoint nearest-boundary rule. ``None``
+    # means "use the nearest-boundary rule" (the default single-component
+    # behavior). Forced value is ``(sigma_left, sigma_right)`` each +-1.
+    preferred_orientation: tuple | None = None
 
     def __post_init__(self):
         if self.realized is None:
