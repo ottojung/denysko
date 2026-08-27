@@ -1708,16 +1708,20 @@ def test_glyph_run_tolerance_normalized():
 
 
 def test_phase1_matches_known_good_reference_facts():
-    """Frozen compact facts measured against b79ddd4/100 worktree:
-    same route signatures, same landmark counts, same xa/xb."""
-    # xa/xb re-frozen after issue #1 (shared font-wide scale mapping
-    # the 'H' cap height to 1.0): capital-letter facts are unchanged;
-    # lowercase 'm' corridors moved with its font-relative size.
+    """Frozen compact facts: same min-cover selection order and consistent
+    corridor xa/xb for a fixed font. Issue #6 switched the default font to
+    Cormorant, so the DejaVu reference values (route counts and x-ranges)
+    are re-baselined to the current font; the invariant kept is that the
+    phase-1 pipeline is deterministic and internally consistent."""
     ref = {
-        "T": [(0.4219, 0.7871), (0.0566, 0.4843)],
-        "m": [(0.0605, 0.6043), (0.0605, 1.0875)],
-        "H": [(0.0664, 0.7565), (0.0664, 0.7566)],
-        "A": [(0.0918, 0.9004), (0.0918, 0.9004)],
+        "T": [(0.2305, 0.8684), (0.0098, 0.8628), (0.0332, 0.6562)],
+        "m": [(0.207, 1.0505), (0.6016, 1.0551), (0.9941, 1.1875),
+              (0.9941, 1.0513), (0.0117, 1.0498)],
+        "H": [(0.0137, 1.0215), (0.0137, 0.373), (0.6602, 1.0176),
+              (0.0137, 0.375), (0.6582, 1.0215)],
+        "A": [(0.0137, 1.0605), (0.0137, 0.3633), (0.5605, 1.0605),
+              (0.3672, 1.0605), (0.7031, 1.0605), (0.5605, 0.5826),
+              (0.5605, 0.5841)],
     }
     import os as _os
     if _os.environ.get("DSK_REF_FACTS"):
