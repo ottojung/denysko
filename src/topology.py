@@ -456,16 +456,57 @@ def build_route_graph(geom: GlyphGeometry) -> RouteGraph:
     return RouteGraph(vertices=vertices, edges=edges, meaningful=meaningful)
 
 
+def route_join_score(graph: RouteGraph, route) -> int:
+    """Legal-join score of a single candidate route.
+
+    A *legal join* is a vertex the route CONTINUES THROUGH: it arrives on
+    one graph edge and leaves on another, at a genuine routing junction
+    (a split or merge of the filled-glyph / stroke graph), carrying on
+    into other glyph material rather than ending and escaping there.
+
+    This specifically rewards continuation through a real skeleton
+    junction into material that is also part of the glyph. It does NOT
+    reward mere redundant traversal: only genuine junction pass-throughs
+    count, and a route can only pass through a junction when it actually
+    continues (which preserves the x-realizable, non-retrace invariants).
+    """
+    if not isinstance(route, Route) or len(route.steps) < 2:
+        return 0
+    # genuine routing junctions: split/merge in the fill-mask graph and
+    # 'junction' in the stroke-skeleton graph (stroke-tip 'terminal'
+    # vertices are never passed through by a complete route)
+    junc_ids = {v.id for v in graph.vertices
+                if v.kind in ("split", "merge", "junction")}
+    score = 0
+    for a, b in zip(route.steps, route.steps[1:]):
+        # continue through the shared internal vertex `a.to_vertex`
+        if a.to_vertex == b.from_vertex and a.to_vertex in junc_ids:
+            score += 1
+    return score
+
+
 def select_routes_min_cover(graph: RouteGraph, candidates: list):
     """Exact minimum cover of meaningful PHYSICAL atoms by valid routes.
 
-    Staged MILP proof (HiGHS):
-      stage 1: minimize route count -> proven optimum K
-      stage 2: fix count == K, minimize total complexity
-      stage 3 (folded into 2's cost): stable index tie-break
+    Staged MILP proof (HiGHS), generic (no letter-specific routing):
 
-    Candidate enumeration is complete over the directed x-realizable
-    graph and overflow raises, so K is a proven exact minimum.
+       stage 1: minimize route count -> proven optimum K (unchanged)
+       stage 2: fix count == K (equality); MAXIMIZE the total legal-join
+                score (prefer joined continuations over routes that end
+                and escape at a contact)
+       stage 3: fix count == K AND join == Jmax (equalities); MINIMIZE
+                total route complexity (shorter selected routes)
+       stage 4: fix count == K AND join == Jmax AND complexity == Cmin
+                (equalities); deterministic stable-index tie-break
+
+    Each preceding optimum is FIXED by an equality constraint; the
+    objectives are never blended into one floating weighted cost. This is
+    a genuine lexicographic (staged) MILP, so the priority order
+    (K, then join, then complexity, then index) is exact regardless of
+    scaling. Candidate enumeration is complete over the directed
+    x-realizable graph and overflow raises, so K is a proven exact
+    minimum and the later stages only reorder *among* proven-minimum
+    covers of size K. No correctness check is weakened.
     """
     from scipy.optimize import milp, LinearConstraint, Bounds
 
@@ -486,27 +527,46 @@ def select_routes_min_cover(graph: RouteGraph, candidates: list):
     bounds = Bounds(0, 1)
     integrality = np.ones(n_r)
 
-    def _solve(cost, extra_con=None):
-        cons = [cover] + ([extra_con] if extra_con is not None else [])
-        res = milp(c=cost, constraints=cons, integrality=integrality,
+    def _solve(cost, cons):
+        all_cons = [cover] + list(cons)
+        res = milp(c=cost, constraints=all_cons, integrality=integrality,
                    bounds=bounds)
         if not res.success or res.x is None:
             raise RuntimeError("route cover MILP failed")
         return res
 
-    # stage 1: proven minimum route count K
-    res1 = _solve(np.ones(n_r))
-    K = float(round(sum(res1.x)))
-
-    # stage 2+3: fix count == K; minimize complexity then stable index
-    con2 = LinearConstraint(np.ones((1, n_r)), lb=[K], ub=[K])
+    joins = np.array([float(route_join_score(graph, r))
+                      for r in candidates])
     complexity = np.array([float(len(route_edge_ids(r)))
                            for r in candidates])
-    cost2 = complexity + np.array([1e-6 * j / max(1, n_r)
-                                   for j in range(n_r)])
-    res2 = _solve(cost2, con2)
+    ones = np.ones((1, n_r))
 
-    return [j for j in range(n_r) if res2.x[j] > 0.5]
+    # stage 1: proven minimum route count K
+    res = _solve(ones[0].copy(), [])
+    K = float(round(sum(res.x)))
+    count_eq = LinearConstraint(ones, lb=[K], ub=[K])
+
+    # stage 2: maximize join score, count fixed to K
+    res = _solve(-joins, [count_eq])
+    Jmax = float(round(float(sum(res.x * joins))))
+    join_eq = LinearConstraint(joins.reshape(1, -1),
+                              lb=[Jmax], ub=[Jmax])
+
+    # stage 3: minimize complexity, count and join fixed
+    res = _solve(complexity, [count_eq, join_eq])
+    Cmin = float(round(float(sum(res.x * complexity))))
+    comp_eq = LinearConstraint(complexity.reshape(1, -1),
+                               lb=[Cmin], ub=[Cmin])
+
+    # stage 4: deterministic stable-index tie-break among the optimal
+    # (K, join, complexity) covers; lower-index routes are preferred.
+    # join and complexity are already fixed by equality constraints, so the
+    # index objective can use full-magnitude coefficients (a tiny weight
+    # would be numerically swallowed and make the tie-break unstable).
+    index_cost = np.arange(n_r, dtype=float)
+    res = _solve(index_cost, [count_eq, join_eq, comp_eq])
+
+    return [j for j in range(n_r) if res.x[j] > 0.5]
 
 
 def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,

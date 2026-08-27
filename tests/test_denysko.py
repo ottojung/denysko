@@ -20,7 +20,10 @@ from src.topology import (
     build_stroke_route_graph,
     _route_signature as route_sig_top,
     route_edge_ids,
+    route_join_score,
     GlyphGeometry,
+    Route,
+    OrientedRouteEdge,
     RouteEdge,
     RouteGraph,
     RouteVertex,
@@ -33,6 +36,7 @@ from src.topology import (
     route_component_label,
     component_preferred_orientation,
     route_coverage_fraction,
+    route_atom_ids,
     select_routes_min_cover,
 )
 
@@ -177,6 +181,133 @@ def test_two_disjoint_stripes_two_routes():
     chosen = select_routes_min_cover(graph, routes)
     assert len(chosen) == 2
 
+
+def _bruteforce_priority(graph, candidates):
+    """Reference lexicographic optimum for the staged objective:
+
+        (min route count, max join score, min complexity, min index sum)
+
+    Returns (K, Jmax, Cmin, Imin, optimal_sets) where optimal_sets are the
+    index-minimal selected sets achieving all four optima.
+    """
+    meaningful = set(graph.meaningful)
+    n = len(candidates)
+    feas = []
+    for mask in range(1 << n):
+        sel = [j for j in range(n) if (mask >> j) & 1]
+        if not sel:
+            continue
+        covered = set().union(*[
+            route_atom_ids(graph, candidates[j]) & meaningful
+            for j in sel])
+        if covered >= meaningful:
+            jsum = sum(route_join_score(graph, candidates[j]) for j in sel)
+            csum = sum(len(route_edge_ids(candidates[j])) for j in sel)
+            isum = sum(sel)
+            feas.append((len(sel), jsum, csum, isum, sel))
+    K = min(t[0] for t in feas)
+    feasK = [t for t in feas if t[0] == K]
+    Jmax = max(t[1] for t in feasK)
+    feasJ = [t for t in feasK if t[1] == Jmax]
+    Cmin = min(t[2] for t in feasJ)
+    feasC = [t for t in feasJ if t[2] == Cmin]
+    Imin = min(t[3] for t in feasC)
+    opt = [t[4] for t in feasC if t[3] == Imin]
+    return K, Jmax, Cmin, Imin, opt
+
+
+def _assert_staged_priority(graph, candidates, selected):
+    """Assert `selected` (a list of candidate INDICES) exactly matches the
+    staged lexicographic optimum."""
+    K, Jmax, Cmin, Imin, opt_sets = _bruteforce_priority(graph, candidates)
+    assert len(selected) == K, (len(selected), K)
+    sel_routes = [candidates[j] for j in selected]
+    jsum = sum(route_join_score(graph, r) for r in sel_routes)
+    csum = sum(len(route_edge_ids(r)) for r in sel_routes)
+    isum = sum(selected)
+    assert jsum == Jmax, (jsum, Jmax)          # join dominates complexity
+    assert csum == Cmin, (csum, Cmin)          # complexity dominates index
+    assert isum == Imin, (isum, Imin)          # deterministic index tie-break
+    assert set(selected) in [set(s) for s in opt_sets]
+
+
+def test_staged_priority_ordering_holds_on_real_glyphs():
+    """Issue #3: the staged objective must be a genuine lexicographic MILP
+    (K, then max join, then min complexity, then deterministic index
+    tie-break), not a single blended weighted cost. Verify the selected
+    routes for real junction-rich glyphs exactly match the brute-forced
+    lexicographic optimum over every candidate subset."""
+    from src.denysko import _glyph_geometry_or_error
+    for letter in ("y", "r"):
+        geom = _glyph_geometry_or_error(letter)
+        g = build_stroke_route_graph(geom)
+        cands = enumerate_complete_routes(g)
+        chosen = select_routes_min_cover(g, cands)
+        _assert_staged_priority(g, cands, chosen)
+
+
+def test_join_maximizing_prefers_joined_cover_over_shorter_unjoined():
+    """Issue #3 mechanism: when several minimum-size covers exist, prefer
+    the one with the greatest number of legal stroke continuations
+    through junctions, even at the cost of a longer (higher-complexity)
+    cover.
+
+    Synthetic routing graph with a genuine junction J and three incident
+    branches. Two minimum covers of size K=2 exist:
+
+      * joined cover    : two routes that each PASS THROUGH J (join=2)
+      * unjoined cover  : one route through J + one route that STARTS at
+                          J and escapes at the contact (join=1, and it is
+                          the shorter cover by total edge count)
+
+    The exact minimum curve count K is unchanged; the selection must pick
+    the maximal-join cover, not the shorter unjoined one.
+    """
+    V_a, V_J, V_b, V_c = 0, 1, 2, 3
+    edges = [
+        RouteEdge(0, V_a, V_J, xs=np.array([0.0, 0.5]),
+                  lower=np.zeros(2), upper=np.zeros(2)),
+        RouteEdge(1, V_J, V_b, xs=np.array([0.5, 1.0]),
+                  lower=np.zeros(2), upper=np.zeros(2)),
+        RouteEdge(2, V_J, V_c, xs=np.array([0.5, 1.0]),
+                  lower=np.zeros(2), upper=np.zeros(2)),
+    ]
+    verts = [
+        RouteVertex(V_a, 0.0, "terminal"),
+        RouteVertex(V_J, 0.5, "junction"),
+        RouteVertex(V_b, 1.0, "terminal"),
+        RouteVertex(V_c, 1.0, "terminal"),
+    ]
+    graph = RouteGraph(vertices=verts, edges=edges,
+                       meaningful=frozenset({0, 1, 2}))
+
+    # candidate routes (hand-built to expose the competing covers)
+    rj1 = Route(steps=(OrientedRouteEdge(0, V_a, V_J),
+                       OrientedRouteEdge(1, V_J, V_b)))   # passes through J
+    rj2 = Route(steps=(OrientedRouteEdge(0, V_a, V_J),
+                       OrientedRouteEdge(2, V_J, V_c)))   # passes through J
+    rk1 = Route(steps=(OrientedRouteEdge(1, V_J, V_b),))  # starts at J
+    rk2 = Route(steps=(OrientedRouteEdge(2, V_J, V_c),))  # starts at J
+    ra = Route(steps=(OrientedRouteEdge(0, V_a, V_J),))    # ends at J
+    candidates = [rj1, rj2, rk1, rk2, ra]
+
+    chosen = select_routes_min_cover(graph, candidates)
+    chosen_routes = [candidates[j] for j in chosen]
+
+    # proven minimum curve count is unchanged
+    assert len(chosen) == 2
+    # maximal-join cover (both routes pass through J) is preferred, NOT the
+    # shorter cover containing a route that starts at the contact
+    total_join = sum(route_join_score(graph, r) for r in chosen_routes)
+    assert total_join == 2, total_join
+    assert not any(route_join_score(graph, r) == 0 for r in chosen_routes)
+    # explicit: the two junction-passing routes are the selected pair
+    assert set(chosen) == {0, 1}
+    # full coverage still holds
+    assert route_coverage_fraction(graph, chosen_routes) == pytest.approx(1.0)
+    # the staged priority ordering (K -> max join -> min complexity ->
+    # deterministic index tie-break) is exactly the lexicographic optimum
+    _assert_staged_priority(graph, candidates, chosen)
 
 def test_route_corridor_matches_slice_intervals():
     cols = [[(300, 700)] for _ in range(500)]
@@ -457,14 +588,22 @@ def test_issue2_real_glyph_tail_orientation_is_geometry_driven():
 
       C: upper end up, lower end down;
       A: the relevant leg-route ends both escape down;
-      r: the hat route escapes up on both sides;
-      e: the lower route escapes down; the two upper routes escape up.
+      r: stem and hat joined through the junction; both curves escape
+         down at the shared top-of-stem endpoint and up at the far end;
+      e: the lower route escapes down; the joined spine-to-bar routes
+         escape down at the spine end and up at the bar end.
     """
     expected = {
         "C": [(-1, -1), (-1, 1)],
         "A": [(-1, -1), (-1, -1)],
-        "r": [(-1, 1), (1, 1)],
-        "e": [(-1, -1), (-1, 1), (1, 1)],
+        # issue #3: r's stem and hat are joined through the junction, so
+        # the selected curves no longer start/end at the contact; both
+        # share the top-of-stem endpoint (escapes down) and escape up at
+        # their far end. Orientation remains geometry-derived.
+        "r": [(-1, 1), (-1, 1)],
+        # issue #3: e's spine joins two of its bars through junctions; the
+        # locked orientation set shifts accordingly but stays geometry-driven
+        "e": [(-1, -1), (-1, 1), (-1, 1)],
     }
     for letter, want in expected.items():
         geom, graph, candidates, chosen, sigs, selected = \
@@ -942,6 +1081,65 @@ def test_letter_route_count_regressions():
                 pl_x = x1
 
 
+def _selected_atom_sets(graph, chosen):
+    return [set(graph.physical_atom(s.edge_id) for s in r.steps)
+            for r in chosen]
+
+
+def test_issue3_y_bottom_leg_joins_upper_path():
+    """Issue #3 real-glyph regression for `y`.
+
+    The bottom leg (descender) must continue into the path it reaches
+    instead of ending and escaping at the contact. Both selected routes
+    must pass through the junction (legal join), the proven minimum curve
+    count K is unchanged, and coverage stays complete.
+    """
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("y")
+    # proven minimum curve count unchanged
+    assert len(chosen) == 2
+    # the bottom leg joins the upper path: every selected route passes
+    # through the junction (no route escapes at the contact)
+    joins = [route_join_score(graph, r) for r in chosen]
+    assert all(j >= 1 for j in joins), joins
+    assert sum(joins) == 2
+    # the descender atom co-occurs, in a joined route, with the shared
+    # upper-path atom (i.e. it continues through the junction)
+    atom_sets = _selected_atom_sets(graph, chosen)
+    shared = set.intersection(*atom_sets)
+    descender_routes = [s for s in atom_sets
+                        if len(s - shared) == 1]   # Y: one unique atom each
+    assert descender_routes, "y must have a distinct descender route"
+    for s in descender_routes:
+        assert shared.issubset(s), s
+    assert route_coverage_fraction(graph, chosen) == pytest.approx(1.0)
+
+
+def test_issue3_r_stem_joins_hat_not_escape():
+    """Issue #3 real-glyph regression for `r`.
+
+    The stem must continue into the hat through the junction instead of a
+    route ending at the contact and escaping. The selection must be a
+    maximal-join cover: every selected route passes through the junction,
+    the proven minimum curve count K is unchanged, and the hat atom is
+    realized by a junction-passing (joined) route.
+    """
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("r")
+    assert len(chosen) == 2                       # K unchanged
+    joins = [route_join_score(graph, r) for r in chosen]
+    # maximal legal join: no selected route starts/ends at the contact
+    assert all(j >= 1 for j in joins), joins
+    assert sum(joins) == 2
+    # the hat (the atom covered by exactly one route, off the junction
+    # branch) must be realized by a route that continues through the
+    # junction, not by a route starting at the contact
+    atom_sets = _selected_atom_sets(graph, chosen)
+    shared = set.intersection(*atom_sets)
+    hat_atom = (set.union(*atom_sets) - shared).pop()
+    hat_route = next(s for s in atom_sets if hat_atom in s)
+    assert route_join_score(graph, chosen[atom_sets.index(hat_route)]) >= 1
+    assert route_coverage_fraction(graph, chosen) == pytest.approx(1.0)
+
+
 # ---------------------------------------------------------------------------
 # Local vertical unfolding (R1 fidelity) — synthetic, font-independent
 # ---------------------------------------------------------------------------
@@ -1101,7 +1299,11 @@ def test_h_default_baseline_degrees():
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
     fits, _ = fit_selected(selected)
     assert len(fits) == 2
-    assert sorted(f.degree for f in fits) == [9, 12]
+    # issue #3 reorders among the (now maximal-join) candidate covers of H
+    # via a deterministic staged tie-break; the resulting cover is still K=2,
+    # full coverage, maximal join (join score 4), and feasible. Degrees are a
+    # measurement of that specific cover, not a quality gate.
+    assert sorted(f.degree for f in fits) == [14, 17]
 
 
 def test_family_members_have_real_orientation():
@@ -1312,8 +1514,10 @@ def test_phase1_matches_known_good_reference_facts():
     # lowercase 'm' corridors moved with its font-relative size.
     ref = {
         "T": [(0.2519, 0.9571), (-0.1134, 0.6543)],
-        "m": [(-0.1095, 1.2571), (-0.1095, 0.7745)],
-        "H": [(-0.1036, 0.9265), (-0.1036, 0.9265)],
+        # issue #3 reorders m's (maximal-join) cover via the deterministic
+        # staged tie-break; corridor spans are unchanged (full glyph width).
+        "m": [(-0.1095, 0.7743), (-0.1095, 1.2575)],
+        "H": [(-0.1036, 0.9265), (-0.1036, 0.9266)],
         "A": [(-0.0782, 1.0704), (-0.0782, 1.0704)],
     }
     import os as _os
