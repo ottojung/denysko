@@ -21,46 +21,32 @@ jobs:
         with:
           enable-cache: true
       - run: uv sync --locked
-      - name: Measure stable-basis fitting and compact components
+      - name: Inspect compact components and difficult fits
         run: |
           uv run python - <<'PY'
-          from string import ascii_letters
-          import numpy as np
           from src import denysko as d
           from src import fitting as f
+          from src.skeleton import stroke_graph
           from src.topology import glyph_connected_components
-
-          pad = max(f.ESC_OFFSETS) * 1.02
-          original_zmap = f._zmap
-          def stable_zmap(x, xa, xb):
-              a = xa - pad
-              b = xb + pad
-              return (2.0 * np.asarray(x, dtype=float) - a - b) / (b - a)
-          f._zmap = stable_zmap
-
-          max_degree = -1
-          failures = []
-          for ch in ascii_letters:
-              try:
-                  geom, graph, candidates, chosen, sigs, selected = d.build_phase1(ch)
-                  degrees = []
-                  for corr in selected:
-                      fit = f.fit_route(corr, hi=80)
-                      degrees.append(None if fit is None else fit.degree)
-                  if any(x is None for x in degrees):
-                      failures.append((ch, degrees))
-                  else:
-                      max_degree = max(max_degree, *degrees)
-                  print(f"ASCII {ch!r}: routes={len(selected)} degrees={degrees}")
-              except Exception as exc:
-                  failures.append((ch, type(exc).__name__, str(exc)))
-                  print(f"ASCII {ch!r}: ERROR {type(exc).__name__}: {exc}")
-
-          print(f"SUMMARY max_degree={max_degree} failures={failures}")
 
           for ch in ('i', 'j', '.', ':'):
               geom = d.glyph_geometry(ch)
               labels, n_comp, info = glyph_connected_components(geom)
+              sg = stroke_graph(geom.fill)
               graph = d.build_stroke_route_graph(geom)
-              print(f"COMPACT {ch!r}: components={n_comp} info={info} report={graph.atom_report}")
+              print(f"COMPACT {ch!r}: components={n_comp} info={info}")
+              print("  skeleton nodes=", [(n.kind, n.xy, n.radius) for n in sg.nodes])
+              print("  skeleton edges=", [(e.a, e.b, len(e.points)) for e in sg.edges])
+              print("  route report=", graph.atom_report)
+
+          for ch in ('H', 'B', 'T', 'K'):
+              _, _, _, _, _, selected = d.build_phase1(ch)
+              print(f"FIT {ch!r}: routes={len(selected)}")
+              for idx, corr in enumerate(selected):
+                  ori = f.preferred_tail_orientation(corr)
+                  hits = []
+                  for degree in (40, 60, 80, 100, 120, 140):
+                      fit = f.fit_degree(corr, degree, *ori)
+                      hits.append((degree, fit is not None))
+                  print(f"  route {idx}: {hits}")
           PY
