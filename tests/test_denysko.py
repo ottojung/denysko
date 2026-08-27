@@ -92,6 +92,48 @@ def test_parse_line_horner_flat_mix():
     np.testing.assert_allclose(parsed.poly(xs), expected, rtol=1e-9)
 
 
+def test_parse_line_rejects_malformed_arithmetic():
+    # The generic parser must reject unmatched non-whitespace characters
+    # (and other non-polynomial input) instead of silently discarding them.
+    # Each of these fails tokenization or structured parsing and must yield
+    # None from parse_line.
+    malformed = [
+        "y=x^y",            # caret with non-digit exponent is not a token
+        "y=x+2y",           # stray letter
+        "y=x*y",            # multiplication by y (not a token)
+        "y=(x+2",           # unbalanced parenthesis
+        "y=*3",             # dangling operator
+        "y=x 2",            # missing operator between terms
+        "y=x/0",            # division by zero (not a valid polynomial)
+        "y=2.3.4",          # malformed number
+        "y=sin(x)",         # unknown function
+    ]
+    for line in malformed:
+        assert d.parse_line(line) is None, f"expected reject: {line!r}"
+
+    # sanity: well-formed emitted-style expressions still parse (flat form
+    # uses implicit multiplication 2x^2; Horner form uses explicit *).
+    assert d.parse_line("y=2.0x^2-1") is not None
+    assert d.parse_line("y=0.5+((x-2.0)/3.0)*(1.0)") is not None
+
+
+def test_parse_expression_poly_tokenization_rejects_junk():
+    # Direct check that tokenizer rejects characters outside the grammar
+    # and incomplete input, instead of silently discarding them.
+    assert d._parse_expression_poly("x^y") is None
+    assert d._parse_expression_poly("x+y") is None
+    assert d._parse_expression_poly("(x+1") is None     # unbalanced paren
+    assert d._parse_expression_poly("x+") is None        # incomplete expr
+    assert d._parse_expression_poly("x/0") is None      # division by zero
+    assert d._parse_expression_poly("2.3.4") is None    # malformed number
+    assert d._parse_expression_poly("sin(x)") is None    # unknown function
+    # valid expressions parse to coefficient arrays
+    coef = d._parse_expression_poly("0.5+((x-2)/3)*(1+((x-2)/3)*2)")
+    assert coef is not None
+    assert coef.shape == (3,)
+
+
+
 def test_validate_horner_line_matches_chebyshev():
     # validate_horner_line must compare the emitted expression against the
     # canonical Chebyshev data (issue #30's dedicated Horner V4 check).
