@@ -20,7 +20,10 @@ from src.topology import (
     build_stroke_route_graph,
     _route_signature as route_sig_top,
     route_edge_ids,
+    route_join_score,
     GlyphGeometry,
+    Route,
+    OrientedRouteEdge,
     RouteEdge,
     RouteGraph,
     RouteVertex,
@@ -137,6 +140,66 @@ def test_two_disjoint_stripes_two_routes():
     chosen = select_routes_min_cover(graph, routes)
     assert len(chosen) == 2
 
+
+def test_join_maximizing_prefers_joined_cover_over_shorter_unjoined():
+    """Issue #3 mechanism: when several minimum-size covers exist, prefer
+    the one with the greatest number of legal stroke continuations
+    through junctions, even at the cost of a longer (higher-complexity)
+    cover.
+
+    Synthetic routing graph with a genuine junction J and three incident
+    branches. Two minimum covers of size K=2 exist:
+
+      * joined cover    : two routes that each PASS THROUGH J (join=2)
+      * unjoined cover  : one route through J + one route that STARTS at
+                          J and escapes at the contact (join=1, and it is
+                          the shorter cover by total edge count)
+
+    The exact minimum curve count K is unchanged; the selection must pick
+    the maximal-join cover, not the shorter unjoined one.
+    """
+    V_a, V_J, V_b, V_c = 0, 1, 2, 3
+    edges = [
+        RouteEdge(0, V_a, V_J, xs=np.array([0.0, 0.5]),
+                  lower=np.zeros(2), upper=np.zeros(2)),
+        RouteEdge(1, V_J, V_b, xs=np.array([0.5, 1.0]),
+                  lower=np.zeros(2), upper=np.zeros(2)),
+        RouteEdge(2, V_J, V_c, xs=np.array([0.5, 1.0]),
+                  lower=np.zeros(2), upper=np.zeros(2)),
+    ]
+    verts = [
+        RouteVertex(V_a, 0.0, "terminal"),
+        RouteVertex(V_J, 0.5, "junction"),
+        RouteVertex(V_b, 1.0, "terminal"),
+        RouteVertex(V_c, 1.0, "terminal"),
+    ]
+    graph = RouteGraph(vertices=verts, edges=edges,
+                       meaningful=frozenset({0, 1, 2}))
+
+    # candidate routes (hand-built to expose the competing covers)
+    rj1 = Route(steps=(OrientedRouteEdge(0, V_a, V_J),
+                       OrientedRouteEdge(1, V_J, V_b)))   # passes through J
+    rj2 = Route(steps=(OrientedRouteEdge(0, V_a, V_J),
+                       OrientedRouteEdge(2, V_J, V_c)))   # passes through J
+    rk1 = Route(steps=(OrientedRouteEdge(1, V_J, V_b),))  # starts at J
+    rk2 = Route(steps=(OrientedRouteEdge(2, V_J, V_c),))  # starts at J
+    ra = Route(steps=(OrientedRouteEdge(0, V_a, V_J),))    # ends at J
+    candidates = [rj1, rj2, rk1, rk2, ra]
+
+    chosen = select_routes_min_cover(graph, candidates)
+    chosen_routes = [candidates[j] for j in chosen]
+
+    # proven minimum curve count is unchanged
+    assert len(chosen) == 2
+    # maximal-join cover (both routes pass through J) is preferred, NOT the
+    # shorter cover containing a route that starts at the contact
+    total_join = sum(route_join_score(graph, r) for r in chosen_routes)
+    assert total_join == 2, total_join
+    assert not any(route_join_score(graph, r) == 0 for r in chosen_routes)
+    # explicit: the two junction-passing routes are the selected pair
+    assert set(chosen) == {0, 1}
+    # full coverage still holds
+    assert route_coverage_fraction(graph, chosen_routes) == pytest.approx(1.0)
 
 def test_route_corridor_matches_slice_intervals():
     cols = [[(300, 700)] for _ in range(500)]
@@ -417,14 +480,22 @@ def test_issue2_real_glyph_tail_orientation_is_geometry_driven():
 
       C: upper end up, lower end down;
       A: the relevant leg-route ends both escape down;
-      r: the hat route escapes up on both sides;
-      e: the lower route escapes down; the two upper routes escape up.
+      r: stem and hat joined through the junction; both curves escape
+         down at the shared top-of-stem endpoint and up at the far end;
+      e: the lower route escapes down; the joined spine-to-bar routes
+         escape down at the spine end and up at the bar end.
     """
     expected = {
         "C": [(-1, -1), (-1, 1)],
         "A": [(-1, -1), (-1, -1)],
-        "r": [(-1, 1), (1, 1)],
-        "e": [(-1, -1), (-1, 1), (1, 1)],
+        # issue #3: r's stem and hat are joined through the junction, so
+        # the selected curves no longer start/end at the contact; both
+        # share the top-of-stem endpoint (escapes down) and escape up at
+        # their far end. Orientation remains geometry-derived.
+        "r": [(-1, 1), (-1, 1)],
+        # issue #3: e's spine joins two of its bars through junctions; the
+        # locked orientation set shifts accordingly but stays geometry-driven
+        "e": [(-1, -1), (-1, 1), (-1, 1)],
     }
     for letter, want in expected.items():
         geom, graph, candidates, chosen, sigs, selected = \
@@ -830,6 +901,65 @@ def test_letter_route_count_regressions():
                 if pl_x is not None:
                     assert x0 >= pl_x - 1e-6
                 pl_x = x1
+
+
+def _selected_atom_sets(graph, chosen):
+    return [set(graph.physical_atom(s.edge_id) for s in r.steps)
+            for r in chosen]
+
+
+def test_issue3_y_bottom_leg_joins_upper_path():
+    """Issue #3 real-glyph regression for `y`.
+
+    The bottom leg (descender) must continue into the path it reaches
+    instead of ending and escaping at the contact. Both selected routes
+    must pass through the junction (legal join), the proven minimum curve
+    count K is unchanged, and coverage stays complete.
+    """
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("y")
+    # proven minimum curve count unchanged
+    assert len(chosen) == 2
+    # the bottom leg joins the upper path: every selected route passes
+    # through the junction (no route escapes at the contact)
+    joins = [route_join_score(graph, r) for r in chosen]
+    assert all(j >= 1 for j in joins), joins
+    assert sum(joins) == 2
+    # the descender atom co-occurs, in a joined route, with the shared
+    # upper-path atom (i.e. it continues through the junction)
+    atom_sets = _selected_atom_sets(graph, chosen)
+    shared = set.intersection(*atom_sets)
+    descender_routes = [s for s in atom_sets
+                        if len(s - shared) == 1]   # Y: one unique atom each
+    assert descender_routes, "y must have a distinct descender route"
+    for s in descender_routes:
+        assert shared.issubset(s), s
+    assert route_coverage_fraction(graph, chosen) == pytest.approx(1.0)
+
+
+def test_issue3_r_stem_joins_hat_not_escape():
+    """Issue #3 real-glyph regression for `r`.
+
+    The stem must continue into the hat through the junction instead of a
+    route ending at the contact and escaping. The selection must be a
+    maximal-join cover: every selected route passes through the junction,
+    the proven minimum curve count K is unchanged, and the hat atom is
+    realized by a junction-passing (joined) route.
+    """
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("r")
+    assert len(chosen) == 2                       # K unchanged
+    joins = [route_join_score(graph, r) for r in chosen]
+    # maximal legal join: no selected route starts/ends at the contact
+    assert all(j >= 1 for j in joins), joins
+    assert sum(joins) == 2
+    # the hat (the atom covered by exactly one route, off the junction
+    # branch) must be realized by a route that continues through the
+    # junction, not by a route starting at the contact
+    atom_sets = _selected_atom_sets(graph, chosen)
+    shared = set.intersection(*atom_sets)
+    hat_atom = (set.union(*atom_sets) - shared).pop()
+    hat_route = next(s for s in atom_sets if hat_atom in s)
+    assert route_join_score(graph, chosen[atom_sets.index(hat_route)]) >= 1
+    assert route_coverage_fraction(graph, chosen) == pytest.approx(1.0)
 
 
 # ---------------------------------------------------------------------------
