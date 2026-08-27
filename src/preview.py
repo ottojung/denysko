@@ -110,10 +110,12 @@ def render_text_preview(
         ys = evaluate_line(line, xs)
         ax.plot(xs, ys, color="black", linewidth=2.0)
 
-    # Clip only via the fixed y viewport; the common x viewport is not trimmed.
+    # Keep BOTH requested data limits fixed. ``adjustable='datalim'`` would
+    # silently expand one of them to satisfy equal aspect, violating the
+    # preview contract's fixed y viewport. ``box`` changes only the axes box.
     ax.set_xlim(xs_min, xs_max)
     ax.set_ylim(-y_pad, 1.0 + y_pad)
-    ax.set_aspect("equal", adjustable="datalim")
+    ax.set_aspect("equal", adjustable="box")
     ax.axis("off")
     fig.tight_layout()
     fig.savefig(out_path, dpi=140, facecolor="white")
