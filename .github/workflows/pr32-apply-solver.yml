@@ -1,0 +1,212 @@
+name: Apply PR32 solver fix
+
+on:
+  push:
+    branches:
+      - issue-6-cormorant
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: ${{ !contains(github.event.head_commit.message, '[pr32-solver-applied]') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: issue-6-cormorant
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked
+      - name: Apply basis-conditioning fix
+        run: |
+          uv run python - <<'PY'
+          from pathlib import Path
+
+          def replace_once(text, old, new, label):
+              if text.count(old) != 1:
+                  raise SystemExit(f"{label}: expected exactly one match, got {text.count(old)}")
+              return text.replace(old, new, 1)
+
+          p = Path('src/fitting.py')
+          s = p.read_text()
+          old = '''def _zmap(x, xa: float, xb: float):
+              return (2.0 * np.asarray(x, dtype=float) - xa - xb) / (xb - xa)
+          '''
+          new = '''def _zmap(x, xa: float, xb: float):
+              return (2.0 * np.asarray(x, dtype=float) - xa - xb) / (xb - xa)
+
+
+          # Numerical Chebyshev basis domain. Corridor.xa/xb remain the semantic
+          # local stroke interval (issue #28); the basis alone spans every x used
+          # by interior, value-tail, and slope-tail constraints. This keeps all
+          # constrained evaluations inside [-1, 1], avoiding exponential T_n(z)
+          # growth outside that interval and the resulting HiGHS conditioning
+          # failures. An affine basis change does not change the degree-d
+          # polynomial function space or any geometric acceptance criterion.
+          _SLOPE_RAMP_FACTOR = 1.02
+
+
+          def chebyshev_domain(corridor: Corridor) -> tuple[float, float]:
+              pad = ESC_OFFSETS[-1] * _SLOPE_RAMP_FACTOR
+              return (float(corridor.xs[0] - pad),
+                      float(corridor.xs[-1] + pad))
+
+
+          def _corridor_zmap(x, corridor: Corridor):
+              xa, xb = chebyshev_domain(corridor)
+              return _zmap(x, xa, xb)
+
+
+          def _basis_affine(corridor: Corridor):
+              xa, xb = chebyshev_domain(corridor)
+              return np.polynomial.Polynomial(
+                  [-(xa + xb) / (xb - xa), 2.0 / (xb - xa)])
+          '''
+          s = replace_once(s, old, new, 'insert basis helpers')
+          s = s.replace('ESC_OFFSETS[-1] * 1.02',
+                        'ESC_OFFSETS[-1] * _SLOPE_RAMP_FACTOR')
+          s = replace_once(
+              s,
+              '''    z = _zmap(xs_d, corridor.xa, corridor.xb)
+              dzdx = 2.0 / (corridor.xb - corridor.xa)
+          ''',
+              '''    z = _corridor_zmap(xs_d, corridor)
+              basis_xa, basis_xb = chebyshev_domain(corridor)
+              dzdx = 2.0 / (basis_xb - basis_xa)
+          ''',
+              'slope basis')
+          s = s.replace('_zmap(xs_int, corridor.xa, corridor.xb)',
+                        '_corridor_zmap(xs_int, corridor)')
+          s = s.replace('_zmap(xs_e, corridor.xa, corridor.xb)',
+                        '_corridor_zmap(xs_e, corridor)')
+          s = s.replace('_zmap(xq, corridor.xa, corridor.xb)',
+                        '_corridor_zmap(xq, corridor)')
+          s = s.replace('_zmap(xs_p, corridor.xa, corridor.xb)',
+                        '_corridor_zmap(xs_p, corridor)')
+          s = s.replace('_zmap(xs_t, corridor.xa, corridor.xb)',
+                        '_corridor_zmap(xs_t, corridor)')
+          s = s.replace('_zmap(samp_x, corridor.xa, corridor.xb)',
+                        '_corridor_zmap(samp_x, corridor)')
+          s = replace_once(
+              s,
+              '''    affine = np.polynomial.Polynomial(
+                  [
+                      -(corridor.xa + corridor.xb) / (corridor.xb - corridor.xa),
+                      2.0 / (corridor.xb - corridor.xa),
+                  ]
+              )
+          ''',
+              '''    affine = _basis_affine(corridor)
+          ''',
+              'fit_degree affine')
+          s = replace_once(
+              s,
+              '''    xa, xb = corridor.xa, corridor.xb
+
+              def peval(xq):
+          ''',
+              '''    xa, xb = chebyshev_domain(corridor)
+
+              def peval(xq):
+          ''',
+              'tail proof basis')
+          s = replace_once(
+              s,
+              '''    affine = np.polynomial.Polynomial(
+                  [
+                      -(corridor.xa + corridor.xb) / (corridor.xb - corridor.xa),
+                      2.0 / (corridor.xb - corridor.xa),
+                  ]
+              )
+          ''',
+              '''    affine = _basis_affine(corridor)
+          ''',
+              'fit_variant affine')
+          p.write_text(s)
+
+          p = Path('src/denysko.py')
+          s = p.read_text()
+          s = replace_once(
+              s,
+              '''    scale = (corridor.xb - corridor.xa) / 2.0
+              mid = (corridor.xa + corridor.xb) / 2.0
+          ''',
+              '''    basis_xa, basis_xb = fitting.chebyshev_domain(corridor)
+              scale = (basis_xb - basis_xa) / 2.0
+              mid = (basis_xa + basis_xb) / 2.0
+          ''',
+              'horner validation basis')
+          s = replace_once(
+              s,
+              '    from src.fitting import tail_reentry_violation_cheb, _zmap\n',
+              '    from src.fitting import tail_reentry_violation_cheb, _corridor_zmap\n',
+              'family zmap import')
+          s = replace_once(
+              s,
+              '                z = _zmap(corr.xs, corr.xa, corr.xb)\n',
+              '                z = _corridor_zmap(corr.xs, corr)\n',
+              'family span zmap')
+          s = replace_once(
+              s,
+              '''            affine = Poly([-(corr.xa + corr.xb) / (corr.xb - corr.xa),
+                               2.0 / (corr.xb - corr.xa)])
+          ''',
+              '''            basis_xa, basis_xb = fitting.chebyshev_domain(corr)
+              affine = Poly([-(basis_xa + basis_xb) / (basis_xb - basis_xa),
+                             2.0 / (basis_xb - basis_xa)])
+          ''',
+              'family power conversion')
+          s = replace_once(
+              s,
+              '''        corr = fit.corridor
+              mid = (corr.xa + corr.xb) / 2.0
+              sc = (corr.xb - corr.xa) / 2.0
+          ''',
+              '''        corr = fit.corridor
+              basis_xa, basis_xb = fitting.chebyshev_domain(corr)
+              mid = (basis_xa + basis_xb) / 2.0
+              sc = (basis_xb - basis_xa) / 2.0
+          ''',
+              'single fit serialization')
+          s = replace_once(
+              s,
+              '''    mid_local = (fit.corridor.xa + fit.corridor.xb) / 2.0
+              scale = (fit.corridor.xb - fit.corridor.xa) / 2.0
+          ''',
+              '''    basis_xa, basis_xb = fitting.chebyshev_domain(fit.corridor)
+              mid_local = (basis_xa + basis_xb) / 2.0
+              scale = (basis_xb - basis_xa) / 2.0
+          ''',
+              'translated fit serialization')
+          s = replace_once(
+              s,
+              '''    from src.fitting import _zmap
+              local_xs = np.unique(np.concatenate([
+          ''',
+              '''    local_xs = np.unique(np.concatenate([
+          ''',
+              'placed validation import')
+          s = replace_once(
+              s,
+              '    z = _zmap(local_xs, placed.fit.corridor.xa, placed.fit.corridor.xb)\n',
+              '    z = fitting._corridor_zmap(local_xs, placed.fit.corridor)\n',
+              'placed validation zmap')
+          p.write_text(s)
+          PY
+      - name: Commit solver fix
+        run: |
+          git config user.name "Otto Jung"
+          git config user.email "121908118+ottojung@users.noreply.github.com"
+          git add src/fitting.py src/denysko.py
+          git commit -m "Fix Chebyshev conditioning across escape tails
+
+Keep issue #28's local corridor window semantic, but use a separate numerical Chebyshev basis domain spanning every interior and tail constraint. This keeps all constrained z values inside [-1,1], removes high-degree basis blow-up, and uses the same basis consistently for derivative rows, tail proofs, family fits, power conversion, serialization, translation, and validation.
+
+[pr32-solver-applied]"
+          git push origin HEAD:issue-6-cormorant
