@@ -379,8 +379,9 @@ def validate_horner_line(line: str, corridor, coef_cheb: np.ndarray,
     except (ValueError, TypeError, ArithmeticError, IndexError):
         return float("inf")
 
-    scale = (corridor.xb - corridor.xa) / 2.0
-    mid = (corridor.xa + corridor.xb) / 2.0
+    basis_xa, basis_xb = fitting.chebyshev_domain(corridor)
+    scale = (basis_xb - basis_xa) / 2.0
+    mid = (basis_xa + basis_xb) / 2.0
     z = (xs - mid) / scale
     cheb_vals = _ch.chebval(z, np.asarray(coef_cheb, dtype=float))
     return float(np.max(np.abs(parsed_vals - cheb_vals)))
@@ -801,7 +802,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     is measured via chebval, never raw-x expansion.
     """
     from src.fitting import solve_anchor, certify_anchor, CORRIDOR_EPS
-    from src.fitting import tail_reentry_violation_cheb, _zmap
+    from src.fitting import tail_reentry_violation_cheb, _corridor_zmap
     from numpy.polynomial import chebyshev as cheb
 
     cap = degree_cap or INITIAL_FIT_DEGREE
@@ -846,7 +847,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
                         or tail_reentry_violation_cheb(
                             np.asarray(phi), corr, ori) != 0):
                     continue
-                z = _zmap(corr.xs, corr.xa, corr.xb)
+                z = _corridor_zmap(corr.xs, corr)
                 diff = np.abs(cheb.chebval(z, plo)
                               - cheb.chebval(z, phi))
                 if float(np.max(diff)) < FAMILY_MIN_SPAN:
@@ -884,8 +885,9 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
         d_min = base.degree
         if fam is not None:
             plo, phi, D, ori = fam
-            affine = Poly([-(corr.xa + corr.xb) / (corr.xb - corr.xa),
-                           2.0 / (corr.xb - corr.xa)])
+            basis_xa, basis_xb = fitting.chebyshev_domain(corr)
+            affine = Poly([-(basis_xa + basis_xb) / (basis_xb - basis_xa),
+                           2.0 / (basis_xb - basis_xa)])
             Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(affine)
             Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(affine)
             ts = [(k + 1) / (m + 1) for k in range(m)]
@@ -1065,8 +1067,9 @@ def serialize_fit(fit: PathFit) -> str:
         power_z = np.polynomial.chebyshev.cheb2poly(
             np.asarray(fit.coef_cheb, dtype=float))
         corr = fit.corridor
-        mid = (corr.xa + corr.xb) / 2.0
-        sc = (corr.xb - corr.xa) / 2.0
+        basis_xa, basis_xb = fitting.chebyshev_domain(corr)
+        mid = (basis_xa + basis_xb) / 2.0
+        sc = (basis_xb - basis_xa) / 2.0
         return _horner_expression(power_z, mid, sc)
     return format_expression(fit.poly)
 
@@ -1087,8 +1090,9 @@ def serialize_translated_horner_fit(fit: PathFit, dx: float) -> str:
     """
     power_z = np.polynomial.chebyshev.cheb2poly(
         np.asarray(fit.coef_cheb, dtype=float))
-    mid_local = (fit.corridor.xa + fit.corridor.xb) / 2.0
-    scale = (fit.corridor.xb - fit.corridor.xa) / 2.0
+    basis_xa, basis_xb = fitting.chebyshev_domain(fit.corridor)
+    mid_local = (basis_xa + basis_xb) / 2.0
+    scale = (basis_xb - basis_xa) / 2.0
     expr = _horner_expression(power_z, mid_local + dx, scale)
     return expr
 
@@ -1129,13 +1133,12 @@ def validate_placed_serialization(placed: PlacedFit, line: str) -> None:
     Chebyshev values at x-dx on the corridor domain and nodes.
     """
     from numpy.polynomial import chebyshev as cheb
-    from src.fitting import _zmap
     local_xs = np.unique(np.concatenate([
         np.asarray(placed.fit.corridor.xs, dtype=float),
         np.linspace(placed.fit.corridor.xa, placed.fit.corridor.xb, 32),
     ]))
     global_xs = local_xs + placed.dx
-    z = _zmap(local_xs, placed.fit.corridor.xa, placed.fit.corridor.xb)
+    z = fitting._corridor_zmap(local_xs, placed.fit.corridor)
     truth = cheb.chebval(z, placed.fit.coef_cheb)
     # The emitted line is the canonical local curve shifted by dx, so it
     # must reproduce the local truth when evaluated at GLOBAL x. Both flat
