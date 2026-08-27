@@ -71,6 +71,43 @@ def test_malformed_lines_do_not_parse():
     assert d.parse_line("") is None
 
 
+def test_issue22_output_drops_y_prefix():
+    # Issue #22: emitted equations must NOT carry the historical `y=`
+    # prefix (e.g. `a + b*x + c*x^2 ...`).
+    coef = np.array([0.5, -1.25, 3.0])
+    line = d.format_expression(
+        type("C", (), {"poly": np.polynomial.Polynomial(coef)})()
+    )
+    assert not line.startswith("y=")
+    assert line == "0.5-1.25x+3x^2"
+
+    # The public single-letter and text serialization paths also drop it.
+    fits, corrs, _ = d.generate_letter("A", seed=42)
+    for ln in [d.serialize_fit(f) for f in fits]:
+        assert not ln.startswith("y=")
+        assert d.parse_line(ln) is not None
+
+    placed = d.generate_text("Ab", seed=42)
+    for ln in d.serialize_text(placed):
+        assert not ln.startswith("y=")
+        # monomial lines parse back to a polynomial; Horner (nested
+        # arithmetic) lines still evaluate as equations.
+        if "(" in ln:
+            xs = np.linspace(0.0, 2.0, 8)
+            assert np.all(np.isfinite(d.eval_expression(d.expr_body(ln), xs)))
+        else:
+            assert d.parse_line(ln) is not None
+
+
+def test_issue22_legacy_y_prefix_still_parses():
+    # Backward tolerance: historical `y=` artifacts still round-trip.
+    assert d.parse_line("y=0.5-1.25x+3x^2") is not None
+    assert d.serialize(d.parse_line("y=0.5-1.25x+3x^2")) == \
+        "0.5-1.25x+3x^2"
+    assert d.expr_body("y=0.5-1.25x+3x^2") == "0.5-1.25x+3x^2"
+    assert d.expr_body("0.5-1.25x+3x^2") == "0.5-1.25x+3x^2"
+
+
 # ---------------------------------------------------------------------------
 # Synthetic routing-graph topologies
 # ---------------------------------------------------------------------------
@@ -354,7 +391,7 @@ def test_constant_line_v2_passes_v3_fails():
         poly = np.polynomial.Polynomial(coef)
         orientation = (1, -1)
 
-    problems = d.validate_lines(["y=0.5"], _SlabGeom(), [_Fit()], [corr])
+    problems = d.validate_lines(["0.5"], _SlabGeom(), [_Fit()], [corr])
     assert any(p.startswith("V2") is False and p.startswith("V3")
                for p in problems)
 
@@ -586,7 +623,9 @@ def test_punctuation_is_attempted_not_whitelist_rejected(capsys):
     assert d.run([",!", "--seed", "42", "-q"]) == 0
     out = capsys.readouterr().out
     lines = out.splitlines()
-    assert lines and all(line.startswith("y=") for line in lines)
+    assert lines and all(not line.startswith("y=") for line in lines)
+    for line in lines:
+        assert d.parse_line(line) is not None or d.expr_body(line)
 
 
 def test_arbitrary_char_failure_reports_index_and_repr(monkeypatch,
@@ -621,7 +660,7 @@ def test_entry_propagates_exit_code(monkeypatch, capsys):
         entry()
     assert ei.value.code == 0
     out = capsys.readouterr().out
-    assert all(line.startswith("y=") for line in out.splitlines())
+    assert all(not line.startswith("y=") for line in out.splitlines())
 
 
 def test_stale_pinch_branch_terminates():
@@ -1573,7 +1612,7 @@ def test_low_degree_translation_values():
         local_xs = np.linspace(p.fit.corridor.xa, p.fit.corridor.xb, 32)
         z = _zmap(local_xs, p.fit.corridor.xa, p.fit.corridor.xb)
         truth = cheb.chebval(z, p.fit.coef_cheb)
-        actual = d.eval_expression(line[2:], local_xs + p.dx)
+        actual = d.eval_expression(d.expr_body(line), local_xs + p.dx)
         np.testing.assert_allclose(actual, truth, rtol=1e-6, atol=1e-9)
 
 
@@ -1592,7 +1631,7 @@ def test_high_degree_translation_horner_midshift():
     local_xs = np.linspace(p.fit.corridor.xa, p.fit.corridor.xb, 64)
     z = _zmap(local_xs, p.fit.corridor.xa, p.fit.corridor.xb)
     truth = cheb.chebval(z, p.fit.coef_cheb)
-    actual = d.eval_expression(line[2:], local_xs + p.dx)
+    actual = d.eval_expression(d.expr_body(line), local_xs + p.dx)
     np.testing.assert_allclose(actual, truth, rtol=1e-6, atol=1e-8)
 
 

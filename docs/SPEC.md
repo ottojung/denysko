@@ -13,8 +13,10 @@ Phase 3  degree minimization inside the same corridor
 Phase 4  independent validation (corridor adherence + edge coverage)
 ```
 
-Output remains ordinary unbounded polynomials `y=<poly>` with no domain
-restrictions; at most `DEFAULT_MAX_CURVES = 12` curves per letter.
+Output remains ordinary unbounded polynomials with no domain restrictions;
+each emitted line is a bare `<poly>` expression (the historical `y=` prefix
+was dropped, see issue #22), at most `DEFAULT_MAX_CURVES = 12` curves per
+letter.
 
 ---
 

@@ -42,7 +42,7 @@ def emit_equations(text: str, seed: int) -> list[str]:
     return [
         line.strip()
         for line in result.stdout.splitlines()
-        if line.strip().startswith("y=")
+        if line.strip()
     ]
 
 
@@ -77,7 +77,8 @@ def normalize(expr: str) -> str:
 def evaluate_line(line: str, xs: np.ndarray) -> np.ndarray:
     env = {"__builtins__": {}}
     env["x"] = xs
-    return eval(normalize(line[2:]), env)  # noqa: S307
+    body = line[2:] if line.startswith("y=") else line
+    return eval(normalize(body), env)  # noqa: S307
 
 
 def main() -> None:

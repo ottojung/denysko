@@ -113,7 +113,17 @@ def poly_str(coef: np.ndarray) -> str:
 
 def format_expression(curve) -> str:
     poly = getattr(curve, "poly", curve)
-    return f"y={poly_str(np.asarray(poly.coef))}"
+    return poly_str(np.asarray(poly.coef))
+
+
+def expr_body(line: str) -> str:
+    """Return the equation body, stripping an optional ``y=`` prefix.
+
+    The public output format dropped the ``y=`` prefix (issue #22), but
+    the parser stays tolerant of the historical form so old artifacts and
+    tests still round-trip.
+    """
+    return line[2:] if line.startswith("y=") else line
 
 
 def _horner_expression(coef, mid, scale):
@@ -153,7 +163,7 @@ def serialize(fit_or_curve) -> str:
     return format_expression(fit_or_curve)
 
 
-_EXPR_RE = re.compile(r"^y=(.+)$")
+_EXPR_RE = re.compile(r"^(?:y=)?(.+)$")
 _TERM_RE = re.compile(
     r"([+-]?)((?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)?)(?:x(?:\^([0-9]+))?)?"
 )
@@ -877,7 +887,7 @@ def serialize_fit(fit: PathFit) -> str:
         corr = fit.corridor
         mid = (corr.xa + corr.xb) / 2.0
         sc = (corr.xb - corr.xa) / 2.0
-        return "y=" + _horner_expression(power_z, mid, sc)
+        return _horner_expression(power_z, mid, sc)
     return format_expression(fit.poly)
 
 
@@ -900,7 +910,7 @@ def serialize_translated_horner_fit(fit: PathFit, dx: float) -> str:
     mid_local = (fit.corridor.xa + fit.corridor.xb) / 2.0
     scale = (fit.corridor.xb - fit.corridor.xa) / 2.0
     expr = _horner_expression(power_z, mid_local + dx, scale)
-    return expr if expr.startswith("y=") else "y=" + expr
+    return expr
 
 
 def serialize_placed_fit(placed: PlacedFit) -> str:
@@ -923,7 +933,7 @@ def serialize_placed_fit(placed: PlacedFit) -> str:
         truth = np.polynomial.Polynomial(
             np.asarray(fit.poly.coef, dtype=float))(local_xs)
         try:
-            actual = eval_expression(line[2:], global_xs)
+                actual = eval_expression(expr_body(line), global_xs)
         except Exception:
             actual = None
         if actual is not None and np.allclose(actual, truth,
@@ -958,7 +968,7 @@ def validate_placed_serialization(placed: PlacedFit, line: str) -> None:
                 f"translation validation failed for character "
                 f"{placed.char_index} {placed.char!r}")
         return
-    actual = eval_expression(line[2:], global_xs)
+    actual = eval_expression(expr_body(line), global_xs)
     if not np.allclose(actual, truth, rtol=1e-6, atol=1e-9):
         raise GenerationError(
             f"translation validation failed for character "
