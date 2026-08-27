@@ -1462,8 +1462,12 @@ def test_dotted_i_dot_survives_realization():
 
 
 def test_seed_pipeline_deterministic(monkeypatch):
+    # Issue #6: H does not yet yield a feasible fit under Cormorant, so
+    # exercise the font-agnostic determinism contract (the seed pipeline
+    # must be reproducible) on a glyph that generates under the current
+    # font.
     monkeypatch.setattr(_fitting, "USE_LP", True)
-    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
+    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("O")
     fits_a, _ = fit_selected(selected)
     fits_b, _ = fit_selected(selected)
     assert [d.format_expression(f.poly) for f in fits_a] == \
