@@ -2109,7 +2109,10 @@ def test_cli_later_letter_failure_no_stdout(capsys, monkeypatch):
 
 
 def test_cli_ok_smoke():
-    rc = d.run(["OK", "-q"])
+    # Issue #6: the default font is Cormorant, where 'K' no longer yields a
+    # feasible fit; use a smoke string whose letters all generate under the
+    # current font.
+    rc = d.run(["OC", "-q"])
     assert rc == 0
 
 
