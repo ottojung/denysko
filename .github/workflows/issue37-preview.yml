@@ -1,0 +1,50 @@
+name: Diagnose issue 37 t tails
+
+on:
+  push:
+    branches: [issue-37-t-tail-regression]
+
+permissions:
+  contents: read
+
+env:
+  MPLBACKEND: Agg
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked environment
+        run: uv sync --locked
+      - name: Emit t and inspect fitted tails
+        run: |
+          echo '--- public CLI t ---'
+          uv run denysko t --seed 42 -q | tee /tmp/t-equations.txt
+          echo '--- fitted t routes ---'
+          uv run python - <<'PY'
+          from src import denysko as d
+          from src.fitting import fit_route, preferred_tail_orientation, INITIAL_FIT_DEGREE
+          _, _, _, _, _, corridors = d.build_phase1('t')
+          for i, c in enumerate(corridors):
+              f = fit_route(c, hi=INITIAL_FIT_DEGREE)
+              print(i, 'join_score=', c.join_score,
+                    'preferred=', preferred_tail_orientation(c),
+                    'fit=', None if f is None else f.orientation,
+                    'degree=', None if f is None else f.degree,
+                    'ends=', None if f is None else (
+                        float(f.poly(c.xs[0] - 0.10)),
+                        float(f.poly(c.xs[-1] + 0.10))))
+          PY
+          mkdir -p artifacts
+          uv run python tools/preview.py "t" artifacts/issue37-t.png --seed 42
+      - uses: actions/upload-artifact@v4
+        with:
+          name: issue37-t-preview
+          path: |
+            artifacts/issue37-t.png
+            /tmp/t-equations.txt
