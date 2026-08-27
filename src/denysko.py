@@ -504,8 +504,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="denysko",
         description=(
-            "Approximate a DejaVu Sans letter with a small set of "
-            "unbounded polynomial graphs y=f(x), suitable for Desmos."),
+            "Approximate a Cormorant Upright SemiBold letter with a small "
+            "set of unbounded polynomial graphs y=f(x), suitable for "
+            "Desmos."),
         epilog=CLI_USAGE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

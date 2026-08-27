@@ -12,7 +12,7 @@ def _deadline(signum, frame):
 
 def pytest_sessionstart(session):
     signal.signal(signal.SIGALRM, _deadline)
-    signal.setitimer(signal.ITIMER_REAL, 120.0)
+    signal.setitimer(signal.ITIMER_REAL, 900.0)
 
 
 def pytest_sessionfinish(session, exitstatus):

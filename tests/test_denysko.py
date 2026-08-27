@@ -1915,8 +1915,10 @@ def _raw_textpath_bbox(letter: str):
     from matplotlib.font_manager import FontProperties
     from matplotlib.textpath import TextPath
 
+    from src.topology import _font_path
+
     tp = TextPath((0, 0), letter, size=100, prop=FontProperties(
-        fname=matplotlib.get_data_path() + "/fonts/ttf/DejaVuSans.ttf"))
+        fname=_font_path()))
     pts = np.vstack([np.asarray(p, dtype=float) for p in tp.to_polygons()])
     mn, mx = pts.min(axis=0), pts.max(axis=0)
     return mn, mx
@@ -1960,7 +1962,7 @@ def test_no_per_glyph_max_dimension_normalization():
     font scale keeps widths at their font-relative size."""
     from src.topology import glyph_geometry
 
-    # 'm' is wider than tall in DejaVu Sans; under per-glyph
+    # 'm' is wider than tall in Cormorant Upright SemiBold; under per-glyph
     # normalization its height would be forced to ~1.0.
     g = glyph_geometry("m")
     assert (g.ymax - g.ymin) < 0.8

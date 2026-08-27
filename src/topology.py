@@ -1199,10 +1199,20 @@ class Corridor:
     # means "use the nearest-boundary rule" (the default single-component
     # behavior). Forced value is ``(sigma_left, sigma_right)`` each +-1.
     preferred_orientation: tuple | None = None
+    # Glyph-tracing body x-range: the projection of the actual route
+    # polyline. The escape tails extend beyond this (in x) and are
+    # governed by V3, so corridor-glyph containment is only enforced
+    # within [body_xa, body_xb]. Defaults to the full corridor domain.
+    body_xa: float = None
+    body_xb: float = None
 
     def __post_init__(self):
         if self.realized is None:
             self.realized = {}
+        if self.body_xa is None:
+            self.body_xa = self.xa
+        if self.body_xb is None:
+            self.body_xb = self.xb
 
     def lower_at(self, x):
         return np.interp(x, self.xs, self.lower)
@@ -1337,6 +1347,13 @@ def build_route_corridor(graph: RouteGraph, route: Route,
 
     step = SIZE / GRID
     route_pts = route_polyline(graph, route)
+
+    # Glyph-tracing body x-range = projection of the actual route
+    # polyline. Escape tails (beyond this range, in x) are intentionally
+    # outside the glyph and are governed by V3, so corridor-glyph
+    # containment is only enforced within [body_xa, body_xb].
+    body_xa = float(route_pts[:, 0].min())
+    body_xb = float(route_pts[:, 0].max())
 
     seg = np.hypot(*np.diff(route_pts, axis=0).T)
     s_arc = np.concatenate([[0.0], np.cumsum(seg)])
@@ -1763,6 +1780,8 @@ def build_route_corridor(graph: RouteGraph, route: Route,
         ylo_local=float(lower.min()),
         yhi_local=float(upper.max()),
         realized=realized,
+        body_xa=body_xa,
+        body_xb=body_xb,
     )
 
 

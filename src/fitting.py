@@ -34,10 +34,19 @@ from src.topology import (
     CORRIDOR_EPS,
 )
 
-INITIAL_FIT_DEGREE = 24   # measured: deg-20 rings ~0.34 inside tight
-                          # tubes on wide windows; 24 halves it
+# Canonical fitting budget. Cormorant (calligraphic, taller/thinner vertical
+# strokes) needs higher-degree polynomials than the previous sans-serif face
+# for some capitals; the minimum feasible degree is re-measured per corridor and
+# is a measurement, not a quality gate, so a larger cap only lets harder glyphs
+# fit without changing any validated output for letters that already fit low.
+# B's heaviest corridor requires ~degree 120, so the cap is set safely above it.
+INITIAL_FIT_DEGREE = 140
 FIT_GRID = 128            # constraint samples across the whole window
 DENSE_GRID = 900          # validation samples (denser than fitting)
+# Stage-1 feasibility probe uses the canonical FIT_GRID resolution so a
+# probe-feasible degree is genuinely feasible (fit_degree is then attempted
+# only for the true minimal feasible degree). A subset that is infeasible
+# still proves the full set infeasible, so no feasible corridor is skipped.
 POCS_SWEEPS = 240
 FEAS_TOL = 1e-6
 FAMILY_HALF_WIDTH_FLOOR = 0.005   # ~2.5 raster steps at normalized scale
@@ -52,7 +61,13 @@ USE_LP = True   # unit tests may disable for speed (pure POCS)
 # Stage-1 skip rule (sound): the probe solves a strict SUBSET of the
 # full constraint rows, so probe-infeasible => truly infeasible; only
 # then is the degree/orientation skipped without a false negative.
-STAGE1_SKIP_VIOL = 0.005
+# The threshold is the same tolerance fit_degree enforces on the full
+# dense set (CORRIDOR_EPS): any degree whose probe violation already
+# exceeds it is provably infeasible, and tightening the probe to this
+# value avoids handing genuinely-infeasible degrees to the (heavier)
+# full fit. The probe is on a subset, so a probe violation above the
+# threshold can never hide a feasible full-set fit -> no false negatives.
+STAGE1_SKIP_VIOL = CORRIDOR_EPS
 ORIENTATIONS = ((1, 1), (1, -1), (-1, 1), (-1, -1))  # compatibility/reference
 
 
@@ -379,6 +394,19 @@ def fit_route(corridor: Corridor, hi: int = INITIAL_FIT_DEGREE) -> PathFit | Non
         _, viol = _project_feasible(A, lo, hi_b, c0)
         if not np.isfinite(viol) or viol > STAGE1_SKIP_VIOL:
             continue   # sound: subset infeasible => full infeasible
+        # Confirm on the SAME dense grid fit_degree will use before
+        # paying for the heavy full fit: the coarse probe can
+        # over-report feasibility between samples, and a sparse recheck
+        # still misses inter-sample ringing for high-degree polynomials.
+        # A dense recheck using fit_degree's own resolution + slope rows
+        # + tolerance means only the genuinely feasible degree (and true
+        # ties) reaches fit_degree.
+        A_d, lo_d, hi_d = _constraint_set(
+            corridor, d, *ori, slope_rows=True,
+            n_int=DENSE_GRID, n_esc=200)
+        _, viol_d = _project_feasible(A_d, lo_d, hi_d, c0)
+        if not np.isfinite(viol_d) or viol_d > STAGE1_SKIP_VIOL:
+            continue
         fit = fit_degree(corridor, d, ori[0], ori[1])
         if fit is None:
             continue
