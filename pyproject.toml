@@ -3,6 +3,7 @@ name = "denysko"
 version = "0.1.0"
 description = "Single-letter to Desmos polynomial converter"
 readme = "docs/SPEC.md"
+license = "AGPL-3.0-or-later"
 requires-python = ">=3.11"
 dependencies = [
     "numpy",
