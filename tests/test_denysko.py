@@ -33,6 +33,7 @@ from src.topology import (
     enumerate_complete_routes,
     glyph_geometry,
     route_coverage_fraction,
+    route_atom_ids,
     select_routes_min_cover,
 )
 
@@ -141,6 +142,70 @@ def test_two_disjoint_stripes_two_routes():
     assert len(chosen) == 2
 
 
+def _bruteforce_priority(graph, candidates):
+    """Reference lexicographic optimum for the staged objective:
+
+        (min route count, max join score, min complexity, min index sum)
+
+    Returns (K, Jmax, Cmin, Imin, optimal_sets) where optimal_sets are the
+    index-minimal selected sets achieving all four optima.
+    """
+    meaningful = set(graph.meaningful)
+    n = len(candidates)
+    feas = []
+    for mask in range(1 << n):
+        sel = [j for j in range(n) if (mask >> j) & 1]
+        if not sel:
+            continue
+        covered = set().union(*[
+            route_atom_ids(graph, candidates[j]) & meaningful
+            for j in sel])
+        if covered >= meaningful:
+            jsum = sum(route_join_score(graph, candidates[j]) for j in sel)
+            csum = sum(len(route_edge_ids(candidates[j])) for j in sel)
+            isum = sum(sel)
+            feas.append((len(sel), jsum, csum, isum, sel))
+    K = min(t[0] for t in feas)
+    feasK = [t for t in feas if t[0] == K]
+    Jmax = max(t[1] for t in feasK)
+    feasJ = [t for t in feasK if t[1] == Jmax]
+    Cmin = min(t[2] for t in feasJ)
+    feasC = [t for t in feasJ if t[2] == Cmin]
+    Imin = min(t[3] for t in feasC)
+    opt = [t[4] for t in feasC if t[3] == Imin]
+    return K, Jmax, Cmin, Imin, opt
+
+
+def _assert_staged_priority(graph, candidates, selected):
+    """Assert `selected` (a list of candidate INDICES) exactly matches the
+    staged lexicographic optimum."""
+    K, Jmax, Cmin, Imin, opt_sets = _bruteforce_priority(graph, candidates)
+    assert len(selected) == K, (len(selected), K)
+    sel_routes = [candidates[j] for j in selected]
+    jsum = sum(route_join_score(graph, r) for r in sel_routes)
+    csum = sum(len(route_edge_ids(r)) for r in sel_routes)
+    isum = sum(selected)
+    assert jsum == Jmax, (jsum, Jmax)          # join dominates complexity
+    assert csum == Cmin, (csum, Cmin)          # complexity dominates index
+    assert isum == Imin, (isum, Imin)          # deterministic index tie-break
+    assert set(selected) in [set(s) for s in opt_sets]
+
+
+def test_staged_priority_ordering_holds_on_real_glyphs():
+    """Issue #3: the staged objective must be a genuine lexicographic MILP
+    (K, then max join, then min complexity, then deterministic index
+    tie-break), not a single blended weighted cost. Verify the selected
+    routes for real junction-rich glyphs exactly match the brute-forced
+    lexicographic optimum over every candidate subset."""
+    from src.denysko import _glyph_geometry_or_error
+    for letter in ("y", "r"):
+        geom = _glyph_geometry_or_error(letter)
+        g = build_stroke_route_graph(geom)
+        cands = enumerate_complete_routes(g)
+        chosen = select_routes_min_cover(g, cands)
+        _assert_staged_priority(g, cands, chosen)
+
+
 def test_join_maximizing_prefers_joined_cover_over_shorter_unjoined():
     """Issue #3 mechanism: when several minimum-size covers exist, prefer
     the one with the greatest number of legal stroke continuations
@@ -200,6 +265,9 @@ def test_join_maximizing_prefers_joined_cover_over_shorter_unjoined():
     assert set(chosen) == {0, 1}
     # full coverage still holds
     assert route_coverage_fraction(graph, chosen_routes) == pytest.approx(1.0)
+    # the staged priority ordering (K -> max join -> min complexity ->
+    # deterministic index tie-break) is exactly the lexicographic optimum
+    _assert_staged_priority(graph, candidates, chosen)
 
 def test_route_corridor_matches_slice_intervals():
     cols = [[(300, 700)] for _ in range(500)]
@@ -1121,7 +1189,11 @@ def test_h_default_baseline_degrees():
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("H")
     fits, _ = fit_selected(selected)
     assert len(fits) == 2
-    assert sorted(f.degree for f in fits) == [9, 12]
+    # issue #3 reorders among the (now maximal-join) candidate covers of H
+    # via a deterministic staged tie-break; the resulting cover is still K=2,
+    # full coverage, maximal join (join score 4), and feasible. Degrees are a
+    # measurement of that specific cover, not a quality gate.
+    assert sorted(f.degree for f in fits) == [14, 17]
 
 
 def test_family_members_have_real_orientation():
@@ -1332,8 +1404,10 @@ def test_phase1_matches_known_good_reference_facts():
     # lowercase 'm' corridors moved with its font-relative size.
     ref = {
         "T": [(0.2519, 0.9571), (-0.1134, 0.6543)],
-        "m": [(-0.1095, 1.2571), (-0.1095, 0.7745)],
-        "H": [(-0.1036, 0.9265), (-0.1036, 0.9265)],
+        # issue #3 reorders m's (maximal-join) cover via the deterministic
+        # staged tie-break; corridor spans are unchanged (full glyph width).
+        "m": [(-0.1095, 0.7743), (-0.1095, 1.2575)],
+        "H": [(-0.1036, 0.9265), (-0.1036, 0.9266)],
         "A": [(-0.0782, 1.0704), (-0.0782, 1.0704)],
     }
     import os as _os
