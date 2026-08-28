@@ -1466,9 +1466,12 @@ def test_progressive_degree_stop():
     """solve_family_anchors returns at the first successful degree."""
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("A")
     c = selected[0]
+    base = fit_route(c, hi=INITIAL_FIT_DEGREE)
     fam = d.solve_family_anchors(graph, chosen[0], c, 42, 0,
-                               d_min=max(1, 4))
+                                d_min=max(1, base.degree),
+                                required_orientation=base.orientation)
     assert fam is not None
+    assert fam[3] == base.orientation
     D = fam[2]
     assert D < 24   # found well below the cap
 

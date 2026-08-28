@@ -789,16 +789,22 @@ def _family_directions(corr, seed, path_index):
 
 
 def solve_family_anchors(graph, route, corr, seed, path_index,
-                          d_min, degree_cap=None,
-                          required_orientation=None):
+                          d_min, required_orientation, degree_cap=None):
     """Find the LOWEST-degree certified convex family for this path.
 
     Progressive search: try degrees d_min..INITIAL_FIT_DEGREE in
     increasing order; return immediately upon finding a usable family.
-    For each degree, tries all four tail orientations and a small set
-    of deterministic objective directions. Anchor tails are proved in
-    normalized z coordinates (scale-equivariant V3); anchor separation
-    is measured via chebval, never raw-x expansion.
+    Anchor tails are proved in normalized z coordinates (scale-equivariant
+    V3); anchor separation is measured via chebval, never raw-x expansion.
+
+    ``required_orientation`` is MANDATORY. It must be exactly one
+    geometry-selected tail orientation (the orientation of the path's base
+    fit, which already folds in any issue #4 component preference). The
+    family search is NOT allowed to try the other three orientations: dense
+    family generation must never rediscover topology. The family solver
+    therefore receives a single fixed orientation and only ever returns a
+    family in that orientation; callers that do not already hold a base fit
+    must compute one (fit_route) before calling.
     """
     from src.fitting import solve_anchor, certify_anchor, CORRIDOR_EPS
     from src.fitting import tail_reentry_violation_cheb, _zmap
@@ -807,28 +813,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     cap = degree_cap or INITIAL_FIT_DEGREE
     directions = _family_directions(corr, seed, path_index)
 
-    # issue #4: the component-level escape preference (set on the corridor
-    # during Phase 1) must win over any orientation the family search
-    # would otherwise pick for fit ease. When a component preference
-    # exists the fitter must NOT override it merely because another
-    # orientation admits a simpler/cheaper family: only the preferred
-    # orientation is attempted, and if no family exists in it the caller
-    # fails loudly rather than silently flipping topology.
-    #
-    # issue #37: dense family generation must NOT rediscover topology. The
-    # base fit (fit_route) already fixed each path's orientation from
-    # geometry (or from the component preference above), so the family
-    # search is constrained to that exact orientation. An explicit
-    # required_orientation (the base fit's orientation) always wins; only
-    # when none is supplied do we fall back to the legacy all-orientations
-    # search for callers that do not already hold a base fit.
-    pref = getattr(corr, "preferred_orientation", None)
-    if required_orientation is not None:
-        orientations = [tuple(int(s) for s in required_orientation)]
-    elif pref is not None:
-        orientations = [tuple(int(s) for s in pref)]
-    else:
-        orientations = ((1, -1), (-1, 1), (1, 1), (-1, -1))
+    orientations = [tuple(int(s) for s in required_orientation)]
 
     for D in range(d_min, cap + 1):
         for ori in orientations:

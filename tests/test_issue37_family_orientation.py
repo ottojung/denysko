@@ -92,16 +92,19 @@ def test_issue37_t_min_curves_family_keeps_base_orientation():
 
 
 def test_solve_family_anchors_honors_required_orientation():
-    """Mechanism regression: when an explicit required_orientation is passed,
-    solve_family_anchors must only ever return a family in that orientation
-    (never rediscover one of the other three)."""
+    """Mechanism regression: the family solver receives exactly one
+    geometry-selected orientation and must only ever return a family in
+    that orientation (never rediscover one of the other three). It takes
+    the actual base fit's degree and orientation, not a value derived from
+    orientation signs."""
     geom, graph, candidates, chosen, signatures, selected = \
         d.build_phase1("t")
     c = selected[1]  # base orientation (-1, -1)
-    base = fit_route(c, hi=INITIAL_FIT_DEGREE).orientation
+    base_fit = fit_route(c, hi=INITIAL_FIT_DEGREE)
+    base = base_fit.orientation
     assert base == (-1, -1)
     fam = d.solve_family_anchors(
-        graph, chosen[1], c, 42, 1, max(1, base[0] + base[1] + 2),
+        graph, chosen[1], c, 42, 1, max(1, base_fit.degree),
         required_orientation=base)
     assert fam is not None
     assert fam[3] == base
