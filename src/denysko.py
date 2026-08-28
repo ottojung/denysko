@@ -789,7 +789,8 @@ def _family_directions(corr, seed, path_index):
 
 
 def solve_family_anchors(graph, route, corr, seed, path_index,
-                         d_min, degree_cap=None):
+                          d_min, degree_cap=None,
+                          required_orientation=None):
     """Find the LOWEST-degree certified convex family for this path.
 
     Progressive search: try degrees d_min..INITIAL_FIT_DEGREE in
@@ -813,8 +814,18 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     # orientation admits a simpler/cheaper family: only the preferred
     # orientation is attempted, and if no family exists in it the caller
     # fails loudly rather than silently flipping topology.
+    #
+    # issue #37: dense family generation must NOT rediscover topology. The
+    # base fit (fit_route) already fixed each path's orientation from
+    # geometry (or from the component preference above), so the family
+    # search is constrained to that exact orientation. An explicit
+    # required_orientation (the base fit's orientation) always wins; only
+    # when none is supplied do we fall back to the legacy all-orientations
+    # search for callers that do not already hold a base fit.
     pref = getattr(corr, "preferred_orientation", None)
-    if pref is not None:
+    if required_orientation is not None:
+        orientations = [tuple(int(s) for s in required_orientation)]
+    elif pref is not None:
         orientations = [tuple(int(s) for s in pref)]
     else:
         orientations = ((1, -1), (-1, 1), (1, 1), (-1, -1))
@@ -873,7 +884,8 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
         fam = None
         if m > 1:
             fam = solve_family_anchors(graph, route, corr, seed, j,
-                                       max(1, base.degree))
+                                       max(1, base.degree),
+                                       required_orientation=base.orientation)
         if fam is None and m > 1:
             raise GenerationError(
                 f"generation failed: path {j} supports only its "
