@@ -149,6 +149,18 @@ def _basis_affine(corridor: Corridor):
     return np.polynomial.Polynomial(
         [-(xa + xb) / (xb - xa), 2.0 / (xb - xa)])
 
+def _canonical_zmap(x, corridor: Corridor):
+    return _zmap(x, float(corridor.xa), float(corridor.xb))
+
+def _solver_to_canonical(corridor: Corridor, coef: np.ndarray) -> np.ndarray:
+    """Re-express a solver-basis Chebyshev series on the corridor domain."""
+    series = cheb.Chebyshev(
+        np.asarray(coef, dtype=float), domain=chebyshev_domain(corridor))
+    return np.asarray(
+        series.convert(domain=[float(corridor.xa), float(corridor.xb)]).coef,
+        dtype=float,
+    )
+
 
 def _escape_bound(sigma: int, offset: float, corridor: Corridor):
     """Outward ramp bound at `offset` units beyond the route endpoint.
@@ -405,7 +417,7 @@ def fit_degree(corridor: Corridor, degree: int,
     return PathFit(
         corridor=corridor,
         degree=degree,
-        coef_cheb=coef,
+        coef_cheb=_solver_to_canonical(corridor, coef),
         poly=poly,
         dense_max_violation=dv,
         orientation=(int(sig_l), int(sig_r)),
@@ -560,7 +572,7 @@ def tail_reentry_violation_cheb(coef_cheb, corridor, orientation,
     if esc_offset is None:
         esc_offset = ESC_OFFSETS[-1]
     cc = np.asarray(coef_cheb, dtype=float)
-    xa, xb = chebyshev_domain(corridor)
+    xa, xb = float(corridor.xa), float(corridor.xb)
 
     def peval(xq):
         return cheb.chebval(_zmap(xq, xa, xb), cc)
@@ -684,7 +696,7 @@ def fit_variant(corridor: Corridor, degree: int, target: np.ndarray,
     return PathFit(
         corridor=corridor,
         degree=degree,
-        coef_cheb=coef,
+        coef_cheb=_solver_to_canonical(corridor, coef),
         poly=poly,
         dense_max_violation=dv_p,
         orientation=(int(sig_l), int(sig_r)),
@@ -727,7 +739,7 @@ def solve_anchor(corridor: Corridor, degree: int, sig_l: int, sig_r: int,
     dv = _dense_violation(corridor, coef, sig_l, sig_r)
     if not np.isfinite(dv) or dv > CORRIDOR_EPS:
         return None
-    return coef
+    return _solver_to_canonical(corridor, coef)
 
 
 
@@ -741,5 +753,17 @@ def certify_anchor(corridor: Corridor, coef_cheb: np.ndarray,
     returned violation must be <= CORRIDOR_EPS (the allowance lives in
     the caller's comparison only, never twice).
     """
-    return _dense_violation(corridor, coef_cheb, sig_l, sig_r,
-                            allow=0.0)
+    def _eval_canonical(xq):
+        return cheb.chebval(_canonical_zmap(xq, corridor), coef_cheb)
+
+    viol = 0.0
+    xs = np.union1d(np.linspace(corridor.xs[0], corridor.xs[-1], DENSE_GRID),
+                    corridor.xs)
+    vals = _eval_canonical(xs)
+    viol = max(viol, float(np.maximum(corridor.lower_at(xs) - vals,
+                                      vals - corridor.upper_at(xs)).max()))
+    for sigma, side in ((sig_l, "L"), (sig_r, "R")):
+        xs_e, lo_e, hi_e = _side_rows(corridor, sigma, side, max(60, DENSE_GRID // 4))
+        v_e = _eval_canonical(xs_e)
+        viol = max(viol, float(max(np.max(lo_e - v_e), np.max(v_e - hi_e), 0.0)))
+    return viol

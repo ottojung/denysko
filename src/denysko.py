@@ -379,7 +379,7 @@ def validate_horner_line(line: str, corridor, coef_cheb: np.ndarray,
     except (ValueError, TypeError, ArithmeticError, IndexError):
         return float("inf")
 
-    basis_xa, basis_xb = fitting.chebyshev_domain(corridor)
+    basis_xa, basis_xb = float(corridor.xa), float(corridor.xb)
     scale = (basis_xb - basis_xa) / 2.0
     mid = (basis_xa + basis_xb) / 2.0
     z = (xs - mid) / scale
@@ -885,7 +885,7 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
         d_min = base.degree
         if fam is not None:
             plo, phi, D, ori = fam
-            basis_xa, basis_xb = fitting.chebyshev_domain(corr)
+            basis_xa, basis_xb = float(corr.xa), float(corr.xb)
             affine = Poly([-(basis_xa + basis_xb) / (basis_xb - basis_xa),
                            2.0 / (basis_xb - basis_xa)])
             Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(affine)
@@ -1090,7 +1090,7 @@ def serialize_translated_horner_fit(fit: PathFit, dx: float) -> str:
     """
     power_z = np.polynomial.chebyshev.cheb2poly(
         np.asarray(fit.coef_cheb, dtype=float))
-    basis_xa, basis_xb = fitting.chebyshev_domain(fit.corridor)
+    basis_xa, basis_xb = float(fit.corridor.xa), float(fit.corridor.xb)
     mid_local = (basis_xa + basis_xb) / 2.0
     scale = (basis_xb - basis_xa) / 2.0
     expr = _horner_expression(power_z, mid_local + dx, scale)
@@ -1138,7 +1138,7 @@ def validate_placed_serialization(placed: PlacedFit, line: str) -> None:
         np.linspace(placed.fit.corridor.xa, placed.fit.corridor.xb, 32),
     ]))
     global_xs = local_xs + placed.dx
-    z = fitting._corridor_zmap(local_xs, placed.fit.corridor)
+    z = fitting._zmap(local_xs, placed.fit.corridor.xa, placed.fit.corridor.xb)
     truth = cheb.chebval(z, placed.fit.coef_cheb)
     # The emitted line is the canonical local curve shifted by dx, so it
     # must reproduce the local truth when evaluated at GLOBAL x. Both flat
