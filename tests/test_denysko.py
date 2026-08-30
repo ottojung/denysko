@@ -2242,6 +2242,25 @@ def test_same_letter_identical_local_geometry_alone_and_in_text():
         np.testing.assert_array_equal(a, b)
 
 
+def test_cormorant_all_ascii_letters_reach_phase1():
+    """Issue #6 acceptance: every ASCII letter exercises the canonical
+    Cormorant raster, topology, route cover, and corridor construction.
+
+    This deliberately stops before polynomial fitting: the acceptance
+    criterion is that every A-Z/a-z glyph is exercised after the font switch,
+    while fitting feasibility is independently validated by the generation
+    and public-CLI tests. Space remains layout-only.
+    """
+    import string
+
+    for letter in string.ascii_letters:
+        geom, graph, candidates, chosen, signatures, selected = d.build_phase1(letter)
+        assert geom.fill.any(), letter
+        assert candidates, letter
+        assert chosen and selected, letter
+        assert len(chosen) == len(selected), letter
+
+
 def test_glyph_visible_width_respects_font_relative_sizes():
     wc = d.glyph_visible_width("c")
     wC = d.glyph_visible_width("C")
