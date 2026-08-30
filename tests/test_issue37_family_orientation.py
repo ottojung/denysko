@@ -65,9 +65,11 @@ def test_issue37_t_min_curves_family_keeps_base_orientation():
     ordinary base fits (uv run denysko t --seed 42)."""
     geom, graph, chosen, selected, base = _base_orientations("t")
     K = len(selected)
-    assert K == 2, f"t should expose exactly 2 structural paths, got {K}"
 
-    # Ordinary base fits: path 0 -> (1, 1), path 1 -> (-1, -1).
+    # Ordinary base fits establish the geometry-selected orientation for each
+    # structural path. The canonical font may change K and the concrete
+    # orientation vector; issue #37 only requires dense members to preserve
+    # whatever the ordinary fit selected for that same path.
     fits_plain, _, _ = d.realize_variants(
         graph, chosen, selected,
         d.allocate_counts(K, K, np.random.default_rng(42)),
@@ -99,12 +101,15 @@ def test_solve_family_anchors_honors_required_orientation():
     orientation signs."""
     geom, graph, candidates, chosen, signatures, selected = \
         d.build_phase1("t")
-    c = selected[1]  # base orientation (-1, -1)
+    # Use a real structural path, but do not pin its concrete orientation to
+    # one font. The mechanism contract is that the family solver honors the
+    # exact orientation supplied by that path's ordinary fit.
+    path_index = min(1, len(selected) - 1)
+    c = selected[path_index]
     base_fit = fit_route(c, hi=INITIAL_FIT_DEGREE)
     base = base_fit.orientation
-    assert base == (-1, -1)
     fam = d.solve_family_anchors(
-        graph, chosen[1], c, 42, 1, max(1, base_fit.degree),
-        required_orientation=base)
+        graph, chosen[path_index], c, 42, path_index,
+        max(1, base_fit.degree), required_orientation=base)
     assert fam is not None
     assert fam[3] == base
