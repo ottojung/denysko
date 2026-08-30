@@ -818,15 +818,22 @@ def _family_directions(corr, seed, path_index):
 
 
 def solve_family_anchors(graph, route, corr, seed, path_index,
-                         d_min, degree_cap=None):
+                          d_min, required_orientation, degree_cap=None):
     """Find the LOWEST-degree certified convex family for this path.
 
     Progressive search: try degrees d_min..INITIAL_FIT_DEGREE in
     increasing order; return immediately upon finding a usable family.
-    For each degree, tries all four tail orientations and a small set
-    of deterministic objective directions. Anchor tails are proved in
-    normalized z coordinates (scale-equivariant V3); anchor separation
-    is measured via chebval, never raw-x expansion.
+    Anchor tails are proved in normalized z coordinates (scale-equivariant
+    V3); anchor separation is measured via chebval, never raw-x expansion.
+
+    ``required_orientation`` is MANDATORY. It must be exactly one
+    geometry-selected tail orientation (the orientation of the path's base
+    fit, which already folds in any issue #4 component preference). The
+    family search is NOT allowed to try the other three orientations: dense
+    family generation must never rediscover topology. The family solver
+    therefore receives a single fixed orientation and only ever returns a
+    family in that orientation; callers that do not already hold a base fit
+    must compute one (fit_route) before calling.
     """
     from src.fitting import solve_anchor, certify_anchor, CORRIDOR_EPS
     from src.fitting import tail_reentry_violation_cheb, _corridor_zmap
@@ -835,18 +842,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     cap = degree_cap or INITIAL_FIT_DEGREE
     directions = _family_directions(corr, seed, path_index)
 
-    # issue #4: the component-level escape preference (set on the corridor
-    # during Phase 1) must win over any orientation the family search
-    # would otherwise pick for fit ease. When a component preference
-    # exists the fitter must NOT override it merely because another
-    # orientation admits a simpler/cheaper family: only the preferred
-    # orientation is attempted, and if no family exists in it the caller
-    # fails loudly rather than silently flipping topology.
-    pref = getattr(corr, "preferred_orientation", None)
-    if pref is not None:
-        orientations = [tuple(int(s) for s in pref)]
-    else:
-        orientations = ((1, -1), (-1, 1), (1, 1), (-1, -1))
+    orientations = [tuple(int(s) for s in required_orientation)]
 
     for D in range(d_min, cap + 1):
         for ori in orientations:
@@ -902,7 +898,8 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
         fam = None
         if m > 1:
             fam = solve_family_anchors(graph, route, corr, seed, j,
-                                       max(1, base.degree))
+                                       max(1, base.degree),
+                                       required_orientation=base.orientation)
         if fam is None and m > 1:
             raise GenerationError(
                 f"generation failed: path {j} supports only its "
