@@ -57,7 +57,7 @@ def skeletonize(mask: np.ndarray) -> np.ndarray:
         core = img[1:-1, 1:-1].astype(bool)
         for phase in (0, 1):
             ps = [_shift(img, dr, dc) for dr, dc in _OFFS]
-            b = np.stack(ps).sum(axis=0)
+            b = ps[0] + ps[1] + ps[2] + ps[3] + ps[4] + ps[5] + ps[6] + ps[7]
             trans = np.zeros_like(b)
             for i in range(8):
                 trans += ((ps[i] == 0)
