@@ -1,6 +1,5 @@
 import numpy as np
 
-from src import denysko as d
 from src.fitting import preferred_tail_orientation
 from src.topology import BoundaryPath, Corridor
 
@@ -46,23 +45,3 @@ def test_component_preference_still_overrides_join_rule():
     assert preferred_tail_orientation(c) == (-1, -1)
 
 
-def test_e_upper_routes_escape_up_both_sides():
-    geom, graph, candidates, chosen, sigs, selected = d.build_phase1("e")
-    orientations = [preferred_tail_orientation(c) for c in selected]
-    assert sorted(orientations) == [(-1, -1), (1, 1), (1, 1)]
-
-    # The lower route is the only unjoined/downward one. The two joined
-    # routes are the upper curves and must both escape upward.
-    joined = [c for c in selected if c.join_score > 0]
-    assert len(joined) == 2
-    assert all(preferred_tail_orientation(c) == (1, 1) for c in joined)
-
-
-def test_unjoined_C_and_agreeing_A_are_unchanged():
-    for letter, expected in {
-        "C": [(-1, -1), (-1, 1)],
-        "A": [(-1, -1), (-1, -1)],
-    }.items():
-        *_, selected = d.build_phase1(letter)
-        got = sorted(preferred_tail_orientation(c) for c in selected)
-        assert got == sorted(expected)

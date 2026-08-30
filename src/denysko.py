@@ -150,6 +150,33 @@ def _horner_expression(coef, mid, scale):
     return expr
 
 
+def _chebyshev_expression(coef_cheb, mid, scale):
+    """Serialize a Chebyshev series directly as an arithmetic polynomial.
+
+    Each T_k is emitted in factored root form so high-degree curves never
+    pass through the ill-conditioned Chebyshev-to-power conversion merely
+    for serialization. The result remains an ordinary globally unbounded
+    polynomial in x using only the public arithmetic grammar.
+    """
+    coef = np.asarray(coef_cheb, dtype=float)
+    if len(coef) == 0:
+        return "0"
+
+    z = f"((x-{fmt_num(mid)})/{fmt_num(scale)})"
+    terms = [fmt_num(coef[0])]
+    for k in range(1, len(coef)):
+        c = float(coef[k])
+        if c == 0.0:
+            continue
+        weighted = c * (2.0 ** (k - 1))
+        factors = []
+        for j in range(1, k + 1):
+            root = np.cos((2 * j - 1) * np.pi / (2 * k))
+            factors.append(f"({z}-({fmt_num(root)}))")
+        terms.append(f"({fmt_num(weighted)})*" + "*".join(factors))
+    return "+".join(terms)
+
+
 def _needs_horner(degree: int, coef_cheb_power_x=None) -> bool:
     """True when raw x-power serialization would be numerically unstable.
 
@@ -379,8 +406,9 @@ def validate_horner_line(line: str, corridor, coef_cheb: np.ndarray,
     except (ValueError, TypeError, ArithmeticError, IndexError):
         return float("inf")
 
-    scale = (corridor.xb - corridor.xa) / 2.0
-    mid = (corridor.xa + corridor.xb) / 2.0
+    basis_xa, basis_xb = float(corridor.xa), float(corridor.xb)
+    scale = (basis_xb - basis_xa) / 2.0
+    mid = (basis_xa + basis_xb) / 2.0
     z = (xs - mid) / scale
     cheb_vals = _ch.chebval(z, np.asarray(coef_cheb, dtype=float))
     return float(np.max(np.abs(parsed_vals - cheb_vals)))
@@ -683,8 +711,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="denysko",
         description=(
-            "Approximate a DejaVu Sans letter with a small set of "
-            "unbounded polynomial graphs y=f(x), suitable for Desmos."),
+            "Approximate a Cormorant Upright SemiBold letter with a small "
+            "set of unbounded polynomial graphs y=f(x), suitable for "
+            "Desmos."),
         epilog=CLI_USAGE_EPILOG,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -807,7 +836,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     must compute one (fit_route) before calling.
     """
     from src.fitting import solve_anchor, certify_anchor, CORRIDOR_EPS
-    from src.fitting import tail_reentry_violation_cheb, _zmap
+    from src.fitting import tail_reentry_violation_cheb, _canonical_zmap
     from numpy.polynomial import chebyshev as cheb
 
     cap = degree_cap or INITIAL_FIT_DEGREE
@@ -841,7 +870,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
                         or tail_reentry_violation_cheb(
                             np.asarray(phi), corr, ori) != 0):
                     continue
-                z = _zmap(corr.xs, corr.xa, corr.xb)
+                z = _canonical_zmap(corr.xs, corr)
                 diff = np.abs(cheb.chebval(z, plo)
                               - cheb.chebval(z, phi))
                 if float(np.max(diff)) < FAMILY_MIN_SPAN:
@@ -880,8 +909,9 @@ def realize_variants(graph, chosen, selected, counts, seed, geom,
         d_min = base.degree
         if fam is not None:
             plo, phi, D, ori = fam
-            affine = Poly([-(corr.xa + corr.xb) / (corr.xb - corr.xa),
-                           2.0 / (corr.xb - corr.xa)])
+            basis_xa, basis_xb = float(corr.xa), float(corr.xb)
+            affine = Poly([-(basis_xa + basis_xb) / (basis_xb - basis_xa),
+                           2.0 / (basis_xb - basis_xa)])
             Plo = Poly(np.polynomial.chebyshev.cheb2poly(plo))(affine)
             Phi = Poly(np.polynomial.chebyshev.cheb2poly(phi))(affine)
             ts = [(k + 1) / (m + 1) for k in range(m)]
@@ -1058,12 +1088,11 @@ def serialize_fit(fit: PathFit) -> str:
     """Serialize one fit exactly as the single-letter CLI always has."""
     deg = fit.degree
     if _needs_horner(deg):
-        power_z = np.polynomial.chebyshev.cheb2poly(
-            np.asarray(fit.coef_cheb, dtype=float))
         corr = fit.corridor
-        mid = (corr.xa + corr.xb) / 2.0
-        sc = (corr.xb - corr.xa) / 2.0
-        return _horner_expression(power_z, mid, sc)
+        basis_xa, basis_xb = float(corr.xa), float(corr.xb)
+        mid = (basis_xa + basis_xb) / 2.0
+        sc = (basis_xb - basis_xa) / 2.0
+        return _chebyshev_expression(fit.coef_cheb, mid, sc)
     return format_expression(fit.poly)
 
 
@@ -1076,16 +1105,15 @@ def serialize_translated_raw_fit(fit: PathFit, dx: float) -> str:
 
 
 def serialize_translated_horner_fit(fit: PathFit, dx: float) -> str:
-    """Translate a high-degree Horner fit by shifting its midpoint.
+    """Translate a high-degree Chebyshev fit by shifting its midpoint.
 
     Same Chebyshev coefficients, same scale, mid_global = mid_local+dx:
     z = (x_global - (mid_local + dx))/scale.
     """
-    power_z = np.polynomial.chebyshev.cheb2poly(
-        np.asarray(fit.coef_cheb, dtype=float))
-    mid_local = (fit.corridor.xa + fit.corridor.xb) / 2.0
-    scale = (fit.corridor.xb - fit.corridor.xa) / 2.0
-    expr = _horner_expression(power_z, mid_local + dx, scale)
+    basis_xa, basis_xb = float(fit.corridor.xa), float(fit.corridor.xb)
+    mid_local = (basis_xa + basis_xb) / 2.0
+    scale = (basis_xb - basis_xa) / 2.0
+    expr = _chebyshev_expression(fit.coef_cheb, mid_local + dx, scale)
     return expr
 
 
@@ -1125,13 +1153,12 @@ def validate_placed_serialization(placed: PlacedFit, line: str) -> None:
     Chebyshev values at x-dx on the corridor domain and nodes.
     """
     from numpy.polynomial import chebyshev as cheb
-    from src.fitting import _zmap
     local_xs = np.unique(np.concatenate([
         np.asarray(placed.fit.corridor.xs, dtype=float),
         np.linspace(placed.fit.corridor.xa, placed.fit.corridor.xb, 32),
     ]))
     global_xs = local_xs + placed.dx
-    z = _zmap(local_xs, placed.fit.corridor.xa, placed.fit.corridor.xb)
+    z = fitting._zmap(local_xs, placed.fit.corridor.xa, placed.fit.corridor.xb)
     truth = cheb.chebval(z, placed.fit.coef_cheb)
     # The emitted line is the canonical local curve shifted by dx, so it
     # must reproduce the local truth when evaluated at GLOBAL x. Both flat

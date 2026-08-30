@@ -22,17 +22,20 @@ letter.
 
 ## 1. Mission
 
-Given exactly one ASCII Latin letter (A-Z or a-z; case selects the actual DejaVuSans glyph - lowercase is never an uppercase alias), emit a small set of `y = f(x)` polynomials that,
-pasted into Desmos, render a recognizable outline of the letter. One letter in → one
-letter drawn.
+Given exactly one ASCII Latin letter (A-Z or a-z; case selects the actual
+CormorantUpright-SemiBold glyph - lowercase is never an uppercase alias), emit a small
+set of `y = f(x)` polynomials that, pasted into Desmos, render a recognizable outline
+of the letter. One letter in → one letter drawn.
 
 ## 2. Canonical glyph geometry
 
-Unchanged rules: bundled DejaVuSans at size 100, aspect preserved, filled-bbox lower-
-left at `(0,0)`, max dimension 100, y-up. Counters/holes are real boundary geometry:
-the rasterized fill uses even-odd semantics across rings, so hole edges contribute
-boundary samples, and ordered contours come from the font's flattened outlines under
-the identical normalization.
+Unchanged rules: the vendored, SHA-pinned `CormorantUpright-SemiBold.ttf` (SIL OFL
+1.1) at size 100, aspect preserved, filled-bbox lower-left at `(0,0)`, max dimension
+100, y-up. Counters/holes are real boundary geometry: the rasterized fill uses even-odd
+semantics across rings, so hole edges contribute boundary samples, and ordered
+contours come from the font's flattened outlines under the identical normalization.
+The canonical font is repository-owned and pinned by SHA (see `fonts/SOURCES.md`), so
+the raster is byte-identical on every machine; see issue #6.
 
 ## 3. Phase 1 — fill-mask routing graph
 

@@ -34,10 +34,19 @@ from src.topology import (
     CORRIDOR_EPS,
 )
 
-INITIAL_FIT_DEGREE = 24   # measured: deg-20 rings ~0.34 inside tight
-                          # tubes on wide windows; 24 halves it
+# Canonical fitting budget. Cormorant (calligraphic, taller/thinner vertical
+# strokes) needs higher-degree polynomials than the previous sans-serif face
+# for some capitals; the minimum feasible degree is re-measured per corridor and
+# is a measurement, not a quality gate, so a larger cap only lets harder glyphs
+# fit without changing any validated output for letters that already fit low.
+# B's heaviest corridor requires ~degree 120, so the cap is set safely above it.
+INITIAL_FIT_DEGREE = 140
 FIT_GRID = 128            # constraint samples across the whole window
 DENSE_GRID = 900          # validation samples (denser than fitting)
+# Stage-1 feasibility probe uses the canonical FIT_GRID resolution so a
+# probe-feasible degree is genuinely feasible (fit_degree is then attempted
+# only for the true minimal feasible degree). A subset that is infeasible
+# still proves the full set infeasible, so no feasible corridor is skipped.
 POCS_SWEEPS = 240
 FEAS_TOL = 1e-6
 FAMILY_HALF_WIDTH_FLOOR = 0.005   # ~2.5 raster steps at normalized scale
@@ -114,6 +123,45 @@ def _zmap(x, xa: float, xb: float):
     return (2.0 * np.asarray(x, dtype=float) - xa - xb) / (xb - xa)
 
 
+# Numerical Chebyshev basis domain. Corridor.xa/xb remain the semantic
+# local stroke interval (issue #28); the basis alone spans every x used
+# by interior, value-tail, and slope-tail constraints. This keeps all
+# constrained evaluations inside [-1, 1], avoiding exponential T_n(z)
+# growth outside that interval and the resulting HiGHS conditioning
+# failures. An affine basis change does not change the degree-d
+# polynomial function space or any geometric acceptance criterion.
+_SLOPE_RAMP_FACTOR = 1.02
+
+
+def chebyshev_domain(corridor: Corridor) -> tuple[float, float]:
+    pad = ESC_OFFSETS[-1] * _SLOPE_RAMP_FACTOR
+    return (float(corridor.xs[0] - pad),
+            float(corridor.xs[-1] + pad))
+
+
+def _corridor_zmap(x, corridor: Corridor):
+    xa, xb = chebyshev_domain(corridor)
+    return _zmap(x, xa, xb)
+
+
+def _basis_affine(corridor: Corridor):
+    xa, xb = chebyshev_domain(corridor)
+    return np.polynomial.Polynomial(
+        [-(xa + xb) / (xb - xa), 2.0 / (xb - xa)])
+
+def _canonical_zmap(x, corridor: Corridor):
+    return _zmap(x, float(corridor.xa), float(corridor.xb))
+
+def _solver_to_canonical(corridor: Corridor, coef: np.ndarray) -> np.ndarray:
+    """Re-express a solver-basis Chebyshev series on the corridor domain."""
+    series = cheb.Chebyshev(
+        np.asarray(coef, dtype=float), domain=chebyshev_domain(corridor))
+    return np.asarray(
+        series.convert(domain=[float(corridor.xa), float(corridor.xb)]).coef,
+        dtype=float,
+    )
+
+
 def _escape_bound(sigma: int, offset: float, corridor: Corridor):
     """Outward ramp bound at `offset` units beyond the route endpoint.
 
@@ -148,10 +196,11 @@ def _side_slope_rows(corridor: Corridor, degree: int,
     Returns (A_rows, lo, hi) in the SAME Chebyshev-z variable order."""
     x_end = corridor.xs[0] if side == "L" else corridor.xs[-1]
     sgn = -1.0 if side == "L" else 1.0
-    offs = np.linspace(ESC_OFFSETS[0] * 0.5, ESC_OFFSETS[-1] * 1.02, n_pts)
+    offs = np.linspace(ESC_OFFSETS[0] * 0.5, ESC_OFFSETS[-1] * _SLOPE_RAMP_FACTOR, n_pts)
     xs_d = x_end + sgn * offs
-    z = _zmap(xs_d, corridor.xa, corridor.xb)
-    dzdx = 2.0 / (corridor.xb - corridor.xa)
+    z = _corridor_zmap(xs_d, corridor)
+    basis_xa, basis_xb = chebyshev_domain(corridor)
+    dzdx = 2.0 / (basis_xb - basis_xa)
     A = np.zeros((len(z), degree + 1))
     for k in range(1, degree + 1):
         dcoef = cheb.chebder(np.eye(degree + 1)[k])
@@ -184,13 +233,13 @@ def _constraint_set(corridor: Corridor, degree: int,
     lo_i = corridor.lower_at(xs_int)
     hi_i = corridor.upper_at(xs_int)
 
-    blocks = [(cheb.chebvander(_zmap(xs_int, corridor.xa, corridor.xb),
+    blocks = [(cheb.chebvander(_corridor_zmap(xs_int, corridor),
                                degree), lo_i, hi_i)]
     if n_esc > 0:
         for sigma, side in ((sig_l, "L"), (sig_r, "R")):
             xs_e, lo_e, hi_e = _side_rows(corridor, sigma, side, n_esc)
             blocks.append((
-                cheb.chebvander(_zmap(xs_e, corridor.xa, corridor.xb),
+                cheb.chebvander(_corridor_zmap(xs_e, corridor),
                                 degree), lo_e, hi_e))
             if slope_rows:
                 blocks.append(
@@ -284,7 +333,7 @@ def _dense_violation(corridor: Corridor, coef: np.ndarray,
     def _eval(xq):
         if power_coef is not None:
             return np.polynomial.polynomial.polyval(xq, power_coef)
-        return cheb.chebval(_zmap(xq, corridor.xa, corridor.xb), coef)
+        return cheb.chebval(_corridor_zmap(xq, corridor), coef)
 
     vals = _eval(xs)
     lo = corridor.lower_at(xs) - allow
@@ -307,7 +356,7 @@ def _weighted_init(corridor: Corridor, degree: int):
     and the LP only needs small corrections."""
     xs_p = corridor.path.points[:, 0]
     ys_p = corridor.path.points[:, 1]
-    z = _zmap(xs_p, corridor.xa, corridor.xb)
+    z = _corridor_zmap(xs_p, corridor)
     A = cheb.chebvander(z, degree)
     coef, *_ = np.linalg.lstsq(A, ys_p, rcond=None)
     return coef
@@ -329,7 +378,10 @@ def fit_degree(corridor: Corridor, degree: int,
 
     A, lo, hi = _constraint_set(corridor, degree, sig_l, sig_r)
     coef, viol = _project_feasible(A, lo, hi, c0)
-    if not np.isfinite(viol) or viol > 1e5:
+    # This LP minimizes the worst violation over mandatory constraints.
+    # If its optimum already exceeds the accepted corridor tolerance, any
+    # denser superset is necessarily infeasible to that same tolerance.
+    if not np.isfinite(viol) or viol > CORRIDOR_EPS:
         return None
 
     # Polish + verify on progressively denser ramp sampling until the
@@ -341,7 +393,10 @@ def fit_degree(corridor: Corridor, degree: int,
         A_d, lo_d, hi_d = _constraint_set(corridor, degree, sig_l, sig_r,
                                           n_int=n_int_d, n_esc=n_esc_d)
         coef, dviol = _project_feasible(A_d, lo_d, hi_d, coef)
-        if not np.isfinite(dviol) or dviol > 1e5:
+        # The next polish set is a superset of this one, so once the
+        # optimum is outside tolerance there is nothing denser sampling
+        # can recover for this degree.
+        if not np.isfinite(dviol) or dviol > CORRIDOR_EPS:
             return None
         dv = _dense_violation(corridor, coef, sig_l, sig_r)
         if dv <= CORRIDOR_EPS:
@@ -350,12 +405,7 @@ def fit_degree(corridor: Corridor, degree: int,
         return None
     power_z = cheb.cheb2poly(coef)
     zpoly = np.polynomial.Polynomial(power_z)
-    affine = np.polynomial.Polynomial(
-        [
-            -(corridor.xa + corridor.xb) / (corridor.xb - corridor.xa),
-            2.0 / (corridor.xb - corridor.xa),
-        ]
-    )
+    affine = _basis_affine(corridor)
     poly = zpoly(affine)
     if not np.all(np.isfinite(poly.coef)):
         return None
@@ -373,7 +423,7 @@ def fit_degree(corridor: Corridor, degree: int,
     return PathFit(
         corridor=corridor,
         degree=degree,
-        coef_cheb=coef,
+        coef_cheb=_solver_to_canonical(corridor, coef),
         poly=poly,
         dense_max_violation=dv,
         orientation=(int(sig_l), int(sig_r)),
@@ -528,7 +578,7 @@ def tail_reentry_violation_cheb(coef_cheb, corridor, orientation,
     if esc_offset is None:
         esc_offset = ESC_OFFSETS[-1]
     cc = np.asarray(coef_cheb, dtype=float)
-    xa, xb = corridor.xa, corridor.xb
+    xa, xb = float(corridor.xa), float(corridor.xb)
 
     def peval(xq):
         return cheb.chebval(_zmap(xq, xa, xb), cc)
@@ -600,7 +650,7 @@ def fit_variant(corridor: Corridor, degree: int, target: np.ndarray,
     hi = np.where(fin, hi + CORRIDOR_EPS, hi)
 
     xs_t = np.asarray(corridor.xs, dtype=float)
-    A_t = cheb.chebvander(_zmap(xs_t, corridor.xa, corridor.xb), degree)
+    A_t = cheb.chebvander(_corridor_zmap(xs_t, corridor), degree)
     t = np.asarray(target, dtype=float)
 
     n = A.shape[1]
@@ -645,19 +695,14 @@ def fit_variant(corridor: Corridor, degree: int, target: np.ndarray,
 
     power_z = cheb.cheb2poly(coef)
     zpoly = np.polynomial.Polynomial(power_z)
-    affine = np.polynomial.Polynomial(
-        [
-            -(corridor.xa + corridor.xb) / (corridor.xb - corridor.xa),
-            2.0 / (corridor.xb - corridor.xa),
-        ]
-    )
+    affine = _basis_affine(corridor)
     poly = zpoly(affine)
     if not np.all(np.isfinite(poly.coef)):
         return None
     return PathFit(
         corridor=corridor,
         degree=degree,
-        coef_cheb=coef,
+        coef_cheb=_solver_to_canonical(corridor, coef),
         poly=poly,
         dense_max_violation=dv_p,
         orientation=(int(sig_l), int(sig_r)),
@@ -674,7 +719,7 @@ def solve_anchor(corridor: Corridor, degree: int, sig_l: int, sig_r: int,
 
     samp_x = corridor.xs
     half = np.maximum((corridor.upper - corridor.lower) / 2.0, FAMILY_HALF_WIDTH_FLOOR)
-    A_f = cheb.chebvander(_zmap(samp_x, corridor.xa, corridor.xb), degree)
+    A_f = cheb.chebvander(_corridor_zmap(samp_x, corridor), degree)
     w_scaled = weights / half
     cost = A_f.T @ ((-w_scaled) if maximize else w_scaled)
 
@@ -700,7 +745,7 @@ def solve_anchor(corridor: Corridor, degree: int, sig_l: int, sig_r: int,
     dv = _dense_violation(corridor, coef, sig_l, sig_r)
     if not np.isfinite(dv) or dv > CORRIDOR_EPS:
         return None
-    return coef
+    return _solver_to_canonical(corridor, coef)
 
 
 
@@ -714,5 +759,17 @@ def certify_anchor(corridor: Corridor, coef_cheb: np.ndarray,
     returned violation must be <= CORRIDOR_EPS (the allowance lives in
     the caller's comparison only, never twice).
     """
-    return _dense_violation(corridor, coef_cheb, sig_l, sig_r,
-                            allow=0.0)
+    def _eval_canonical(xq):
+        return cheb.chebval(_canonical_zmap(xq, corridor), coef_cheb)
+
+    viol = 0.0
+    xs = np.union1d(np.linspace(corridor.xs[0], corridor.xs[-1], DENSE_GRID),
+                    corridor.xs)
+    vals = _eval_canonical(xs)
+    viol = max(viol, float(np.maximum(corridor.lower_at(xs) - vals,
+                                      vals - corridor.upper_at(xs)).max()))
+    for sigma, side in ((sig_l, "L"), (sig_r, "R")):
+        xs_e, lo_e, hi_e = _side_rows(corridor, sigma, side, max(60, DENSE_GRID // 4))
+        v_e = _eval_canonical(xs_e)
+        viol = max(viol, float(max(np.max(lo_e - v_e), np.max(v_e - hi_e), 0.0)))
+    return viol
