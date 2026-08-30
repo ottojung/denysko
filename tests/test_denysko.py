@@ -787,16 +787,10 @@ def test_issue4_i_disconnected_components_escape_away():
     preference and the fitter must never flip it to a geometry-easier
     orientation.
 
-    Issue #6 switched the default font to Cormorant. Cormorant's tittle
-    (the dot) is a tiny disconnected component that currently collapses
-    to a sub-skeleton pixel and is dropped from routing, so the cross-
-    component escape-away is not yet exercised on a real glyph under this
-    font - that is a tracked Cormorant rendering gap, not a weakening of
-    the issue #4 contract. The dedicated synthetic
-    ``test_issue4_component_preference_bottom_top_middle`` still locks the
-    component-preference mechanism; here we keep the genuine, font-agnostic
-    invariant that no selected route flips its geometry-derived escape
-    direction."""
+    Issue #6 uses Cormorant, whose compact tittle has a zero-dimensional
+    medial axis. The compact-component fallback must preserve that filled
+    component as a real route, so the cross-component escape-away contract
+    is exercised on the actual glyph."""
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("i")
     labels, n_comp, comp_info = glyph_connected_components(geom)
     assert n_comp >= 2
@@ -811,11 +805,8 @@ def test_issue4_i_disconnected_components_escape_away():
 def test_issue4_j_inspect_disconnected_components():
     """Issue #4: same contract for `j` (stem+descender and dot). The
     selected routes map to the covered connected component(s) and must
-    never flip their geometry-derived escape direction. As with `i`,
-    Cormorant currently drops the tittle from routing, so the cross-
-    component escape-away is not yet exercised on a real glyph; the
-    mechanism itself remains locked by the synthetic component-preference
-    unit test."""
+    never flip their geometry-derived escape direction. The compact tittle
+    must survive routing just as it does for `i`."""
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("j")
     labels, n_comp, comp_info = glyph_connected_components(geom)
     assert n_comp >= 2
@@ -1463,13 +1454,6 @@ def test_lowercase_uses_actual_lowercase_glyph():
     assert glyph_geometry("g").fill.any()
 
 
-@pytest.mark.xfail(
-    reason="Cormorant tittle/dot collapses to a sub-skeleton pixel and is "
-           "dropped from routing (issue #6 rendering gap); the dot does not "
-           "survive realization yet. Genuine bug, not a weakened expectation "
-           "- kept as a tracked regression rather than normalized.",
-    strict=False,
-)
 def test_dotted_i_dot_survives_realization():
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("i")
     rep = graph.atom_report
@@ -1486,10 +1470,6 @@ def test_dotted_i_dot_survives_realization():
 
 
 def test_seed_pipeline_deterministic(monkeypatch):
-    # Issue #6: H does not yet yield a feasible fit under Cormorant, so
-    # exercise the font-agnostic determinism contract (the seed pipeline
-    # must be reproducible) on a glyph that generates under the current
-    # font.
     monkeypatch.setattr(_fitting, "USE_LP", True)
     geom, graph, candidates, chosen, sigs, selected = d.build_phase1("O")
     fits_a, _ = fit_selected(selected)

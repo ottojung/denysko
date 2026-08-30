@@ -148,8 +148,40 @@ def stroke_graph(mask: np.ndarray, min_spur: int = 6,
     from scipy import ndimage  # lazy
 
     skel = skeletonize(mask)
-    end_mask, junc_mask, lab, _ = _pixel_stats(skel)
     radius = ndimage.distance_transform_edt(mask)
+
+    # A compact filled component can have a perfectly legitimate
+    # zero-dimensional medial axis: thinning a round dot may leave one
+    # pixel (or, for an even/symmetric component, no pixel at all).  Such
+    # a component is still real glyph geometry, but an edge-based stroke
+    # graph cannot route it.  Give only these otherwise-unroutable fill
+    # components a deterministic interior chord through a maximally-inside
+    # row.  This is a topology fallback, not glyph-specific dilation: normal
+    # components with a usable skeleton are left byte-for-byte unchanged.
+    fill_lab, fill_n = ndimage.label(mask, structure=np.ones((3, 3)))
+    for cid in range(1, int(fill_n) + 1):
+        rr, cc = np.nonzero(fill_lab == cid)
+        if len(rr) == 0 or int(np.count_nonzero(skel[rr, cc])) >= 2:
+            continue
+        k = int(np.argmax(radius[rr, cc]))
+        r0, c_mid = int(rr[k]), int(cc[k])
+        row = fill_lab[r0, :] == cid
+        lo = c_mid
+        while lo > 0 and row[lo - 1]:
+            lo -= 1
+        hi = c_mid
+        while hi + 1 < row.size and row[hi + 1]:
+            hi += 1
+        width = hi - lo + 1
+        if width < 3:
+            continue
+        inset = max(1, width // 5)
+        a, b = lo + inset, hi - inset
+        if b - a < 2:
+            a, b = lo, hi
+        skel[r0, a:b + 1] = True
+
+    end_mask, junc_mask, lab, _ = _pixel_stats(skel)
 
     nodes: dict[int, StrokeNode] = {}
     node_id = np.full(skel.shape, -1, dtype=int)

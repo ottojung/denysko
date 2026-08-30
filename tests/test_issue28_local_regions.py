@@ -65,16 +65,13 @@ def test_corridor_chebyshev_domain_is_constraint_region():
 
 @pytest.mark.parametrize("ch", [",", ";", "!"])
 def test_punctuation_curves_preserve_local_vertical_regions(ch):
-    """Punctuation features (, ; and the dot of !) occupy only their
-    own local vertical interval, not the whole glyph. Each emitted curve
-    stays inside its corridor's local band over the corridor x-window and
-    still passes V2 (corridor adherence) and V3 (permanent tail escape).
+    """Punctuation features occupy only their own local vertical interval.
 
-    Issue #6: under Cormorant the period ('.') and colon (':') are tiny
-    disconnected dots that collapse to sub-skeleton pixels and are dropped
-    from routing (K=0, no routes) - the same systemic tittle-dropout gap
-    tracked elsewhere - so they are excluded here; the local-vertical-
-    region mechanism is exercised on the punctuation that generates."""
+    Each emitted curve stays inside its corridor's local band and still
+    passes V2 and V3. Compact zero-dimensional medial-axis components are
+    covered separately by a cheap routing regression so the default suite
+    does not duplicate expensive fitting work.
+    """
     from src.fitting import tail_reentry_violation_cheb
 
     geom, graph, cands, chosen, sigs, sel = d.build_phase1(ch)
