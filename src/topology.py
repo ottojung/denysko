@@ -630,7 +630,7 @@ def corridor_glyph_violation(corridor: Corridor, geom: GlyphGeometry,
     step = SIZE / GRID
     worst = 0.0
     for i in range(len(xs)):
-        col = int(min(max(round(xs[i] / step), 0),
+        col = int(min(max(np.floor(xs[i] / step), 0),
                       geom.fill.shape[1] - 1))
         colm = geom.fill[:, col]
         runs, r0 = [], None
@@ -669,7 +669,7 @@ def poly_glyph_violation(coef, corridor: Corridor, geom: GlyphGeometry,
     step = SIZE / GRID
     worst = 0.0
     for xi, yi in zip(xs, vals):
-        col = int(min(max(round(xi / step), 0), geom.fill.shape[1] - 1))
+        col = int(min(max(np.floor(xi / step), 0), geom.fill.shape[1] - 1))
         # contiguous runs only: counters/holes are NOT filled
         runs, r0 = [], None
         colm = geom.fill[:, col]
@@ -1485,7 +1485,17 @@ def build_route_corridor(graph: RouteGraph, route: Route,
                     or (lam[k, 0] - STROKE_MIN_HALF,
                         lam[k, 0] + STROKE_MIN_HALF)
                     for k in range(i, j + 1)]
-            lo_r, hi_r = min(wins, key=lambda w: w[1] - w[0])
+            # A vertical group must unfold inside x-space that is filled
+            # for every landmark row in the group.  Choosing merely the
+            # narrowest individual row-run can place other landmarks into
+            # empty space near junctions; use the common intersection.
+            lo_r = max(w[0] for w in wins)
+            hi_r = min(w[1] for w in wins)
+            if hi_r - lo_r <= 2 * UNFOLD_EDGE_INSET:
+                for k in range(i, j + 1):
+                    _place_raw_point(k)
+                i = j + 1
+                continue
             # vertical-regime gate: the containing row run must be
             # commensurate with the local stroke width; otherwise this
             # is raster staircase noise inside a wider structure and

@@ -1253,6 +1253,30 @@ def test_corridor_containment_checks_full_interval_not_midpoint():
     assert corridor_glyph_violation(sneaky, _Geom()) > 0.025
 
 
+def test_corridor_containment_uses_half_open_raster_cells():
+    from src.topology import Corridor, corridor_glyph_violation
+
+    step = 1.0 / 512
+
+    class _Geom:
+        fill = np.zeros((512, 512), dtype=bool)
+        fill[100:200, 0] = True
+        fill[300:400, 1] = True
+
+    # x is still inside column 0's half-open cell [0, step), even when it
+    # lies closer to column 1's center.  Rounding x/step would incorrectly
+    # inspect column 1 and report that this valid band leaves the glyph.
+    xs = np.asarray([0.75 * step, 0.999 * step])
+    corridor = Corridor(
+        path=None, xa=float(xs[0]), xb=float(xs[-1]), xs=xs,
+        lower=np.full(len(xs), 0.22), upper=np.full(len(xs), 0.30),
+        ylo=0.0, yhi=1.0,
+    )
+    assert corridor_glyph_violation(
+        corridor, _Geom(), grid=25, raster_tol=0.0
+    ) == pytest.approx(0.0, abs=1e-12)
+
+
 def test_letter_route_count_regressions():
     # Issue #6 switched the default font to Cormorant; the absolute
     # selected-route counts for A/B/C/H/O are no longer pinned to DejaVu's
@@ -1761,6 +1785,23 @@ def test_t_and_m_generation_succeed():
 # ---------------------------------------------------------------------------
 # Issue #7: staircase diagonals captured by vertical-unfold crawl (Z/z)
 # ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("letter", ["F", "d", "p", "t"])
+def test_cormorant_vertical_groups_keep_corridors_in_fill(letter):
+    """Regression for vertical-unfold groups crossing changing row widths.
+
+    The unfold x-window must be shared by every landmark row in the group;
+    using one row's narrowest run made F/d/p/t corridors leave the glyph.
+    """
+    geom = glyph_geometry(letter)
+    graph = build_stroke_route_graph(geom)
+    cands = enumerate_complete_routes(graph)
+    sel = select_routes_min_cover(graph, cands)
+    assert sel
+    for j in sel:
+        c = build_route_corridor(graph, cands[j], geom)
+        assert d_topology.corridor_glyph_violation(c, geom) <= 0.08
 
 
 @pytest.mark.parametrize("letter", ["W", "Z", "z"])
