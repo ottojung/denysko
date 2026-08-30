@@ -378,7 +378,10 @@ def fit_degree(corridor: Corridor, degree: int,
 
     A, lo, hi = _constraint_set(corridor, degree, sig_l, sig_r)
     coef, viol = _project_feasible(A, lo, hi, c0)
-    if not np.isfinite(viol) or viol > 1e5:
+    # This LP minimizes the worst violation over mandatory constraints.
+    # If its optimum already exceeds the accepted corridor tolerance, any
+    # denser superset is necessarily infeasible to that same tolerance.
+    if not np.isfinite(viol) or viol > CORRIDOR_EPS:
         return None
 
     # Polish + verify on progressively denser ramp sampling until the
@@ -390,7 +393,10 @@ def fit_degree(corridor: Corridor, degree: int,
         A_d, lo_d, hi_d = _constraint_set(corridor, degree, sig_l, sig_r,
                                           n_int=n_int_d, n_esc=n_esc_d)
         coef, dviol = _project_feasible(A_d, lo_d, hi_d, coef)
-        if not np.isfinite(dviol) or dviol > 1e5:
+        # The next polish set is a superset of this one, so once the
+        # optimum is outside tolerance there is nothing denser sampling
+        # can recover for this degree.
+        if not np.isfinite(dviol) or dviol > CORRIDOR_EPS:
             return None
         dv = _dense_violation(corridor, coef, sig_l, sig_r)
         if dv <= CORRIDOR_EPS:

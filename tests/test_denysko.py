@@ -616,6 +616,34 @@ def test_production_lp_smoke(monkeypatch):
     assert fit.orientation in ORIENTATIONS
 
 
+def test_fit_degree_stops_after_full_lp_proves_out_of_tolerance(monkeypatch):
+    c = _linear_corridor()
+    calls = []
+
+    def fake_project(A, lo, hi, c0, sweeps=None):
+        calls.append(A.shape)
+        return np.zeros(A.shape[1]), _fitting.CORRIDOR_EPS + 1e-6
+
+    monkeypatch.setattr(_fitting, '_project_feasible', fake_project)
+    assert fit_degree(c, 4, 1, 1) is None
+    assert len(calls) == 1
+
+
+def test_fit_degree_keeps_polishing_at_tolerance(monkeypatch):
+    c = _linear_corridor()
+    calls = []
+
+    def fake_project(A, lo, hi, c0, sweeps=None):
+        calls.append(A.shape)
+        return np.zeros(A.shape[1]), _fitting.CORRIDOR_EPS
+
+    monkeypatch.setattr(_fitting, '_project_feasible', fake_project)
+    monkeypatch.setattr(_fitting, '_dense_violation', lambda *args, **kwargs: 0.0)
+    fit = fit_degree(c, 4, 1, 1)
+    assert fit is not None
+    assert len(calls) == 2
+
+
 def test_impossible_low_degree_corridor_fails():
     xs = np.linspace(10.0, 60.0, 50)
     mid = 40.0 + 12.0 * np.sin(np.linspace(0, 3 * np.pi, len(xs)))
