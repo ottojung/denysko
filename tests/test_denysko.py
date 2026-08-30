@@ -2218,3 +2218,18 @@ def test_glyph_visible_width_respects_font_relative_sizes():
     wc = d.glyph_visible_width("c")
     wC = d.glyph_visible_width("C")
     assert 0 < wc < wC <= 1.0 + 1e-9
+
+
+def test_direct_chebyshev_serialization_high_degree_stability():
+    """High-degree serialization must preserve Chebyshev evaluation directly."""
+    coef = np.linspace(-0.75, 0.9, 31)
+    mid = 2.25
+    scale = 0.625
+    xs = np.linspace(mid - scale, mid + scale, 257)
+    z = (xs - mid) / scale
+
+    line = d._chebyshev_expression(coef, mid, scale)
+    actual = d.eval_expression(line, xs)
+    expected = np.polynomial.chebyshev.chebval(z, coef)
+
+    assert np.max(np.abs(actual - expected)) < 1e-10
