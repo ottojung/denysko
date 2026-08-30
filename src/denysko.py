@@ -836,7 +836,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
     must compute one (fit_route) before calling.
     """
     from src.fitting import solve_anchor, certify_anchor, CORRIDOR_EPS
-    from src.fitting import tail_reentry_violation_cheb, _corridor_zmap
+    from src.fitting import tail_reentry_violation_cheb, _canonical_zmap
     from numpy.polynomial import chebyshev as cheb
 
     cap = degree_cap or INITIAL_FIT_DEGREE
@@ -870,7 +870,7 @@ def solve_family_anchors(graph, route, corr, seed, path_index,
                         or tail_reentry_violation_cheb(
                             np.asarray(phi), corr, ori) != 0):
                     continue
-                z = _corridor_zmap(corr.xs, corr)
+                z = _canonical_zmap(corr.xs, corr)
                 diff = np.abs(cheb.chebval(z, plo)
                               - cheb.chebval(z, phi))
                 if float(np.max(diff)) < FAMILY_MIN_SPAN:

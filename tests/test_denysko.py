@@ -2299,3 +2299,51 @@ def test_glyph_geometry_cache_preserves_caller_isolation():
     original = bool(second.fill[0, 0])
     first.fill[0, 0] = not original
     assert bool(second.fill[0, 0]) == original
+
+
+def test_skeletonize_counts_dense_neighbors_numerically():
+    """Zhang-Suen neighbor count must be 0..8, not boolean OR."""
+    from src.skeleton import skeletonize
+
+    mask = np.ones((5, 5), dtype=bool)
+    skel = skeletonize(mask)
+    assert int(skel.sum()) == 1
+    assert skel[2, 2]
+
+
+def test_family_span_is_measured_in_canonical_chebyshev_domain(monkeypatch):
+    """Canonical anchor coefficients must be compared on canonical z."""
+    from types import SimpleNamespace
+    from numpy.polynomial import chebyshev as cheb
+
+    corr = SimpleNamespace(xs=np.array([0.0, 1.0]), xa=0.0, xb=1.0)
+    amp = d.FAMILY_MIN_SPAN * 1.1
+    plo = np.array([0.0, 0.0])
+    phi = np.array([0.0, amp])
+
+    solver_z = _fitting._corridor_zmap(corr.xs, corr)
+    canonical_z = _fitting._canonical_zmap(corr.xs, corr)
+    assert float(np.max(np.abs(cheb.chebval(solver_z, phi)))) < d.FAMILY_MIN_SPAN
+    assert float(np.max(np.abs(cheb.chebval(canonical_z, phi)))) > d.FAMILY_MIN_SPAN
+
+    monkeypatch.setattr(
+        d, "_family_directions",
+        lambda *args: [("test", np.ones_like(corr.xs)),],
+    )
+    monkeypatch.setattr(
+        _fitting, "solve_anchor",
+        lambda corridor, degree, sig_l, sig_r, weights, maximize: (
+            phi.copy() if maximize else plo.copy()
+        ),
+    )
+    monkeypatch.setattr(_fitting, "certify_anchor", lambda *args: 0.0)
+    monkeypatch.setattr(
+        _fitting, "tail_reentry_violation_cheb", lambda *args: 0.0
+    )
+
+    fam = d.solve_family_anchors(
+        None, None, corr, 42, 0, d_min=1,
+        required_orientation=(1, 1), degree_cap=1,
+    )
+    assert fam is not None
+    assert fam[2] == 1
