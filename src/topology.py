@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from functools import lru_cache
 
 import matplotlib
 import numpy as np
@@ -214,7 +215,8 @@ class GlyphGeometry:
     ymax: float
 
 
-def glyph_geometry(letter: str) -> GlyphGeometry:
+@lru_cache(maxsize=None)
+def _cached_glyph_geometry(letter: str) -> GlyphGeometry:
     contours = _normalized_polygons(letter)
     fill, _step = _canonical_fill(contours)
     points = _mask_boundary_cloud(fill, _step)
@@ -234,6 +236,21 @@ def glyph_geometry(letter: str) -> GlyphGeometry:
         ymax=float((ys.max() + 1) * step),
     )
 
+
+
+def glyph_geometry(letter: str) -> GlyphGeometry:
+    """Return cached canonical geometry without sharing mutable arrays."""
+    geom = _cached_glyph_geometry(letter)
+    return GlyphGeometry(
+        letter=geom.letter,
+        contours=[c.copy() for c in geom.contours],
+        points=geom.points.copy(),
+        fill=geom.fill.copy(),
+        xmin=geom.xmin,
+        xmax=geom.xmax,
+        ymin=geom.ymin,
+        ymax=geom.ymax,
+    )
 
 # ---------------------------------------------------------------------------
 # Vertical-slice routing graph over the filled mask

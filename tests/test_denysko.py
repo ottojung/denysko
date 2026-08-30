@@ -2280,3 +2280,19 @@ def test_direct_chebyshev_serialization_high_degree_stability():
     expected = np.polynomial.chebyshev.chebval(z, coef)
 
     assert np.max(np.abs(actual - expected)) < 1e-10
+
+
+def test_glyph_geometry_cache_preserves_caller_isolation():
+    """Repeated glyph requests may share cached construction, not buffers."""
+    from src.topology import glyph_geometry
+
+    first = glyph_geometry("A")
+    second = glyph_geometry("A")
+    assert first is not second
+    assert first.fill is not second.fill
+    assert first.points is not second.points
+    assert all(a is not b for a, b in zip(first.contours, second.contours))
+
+    original = bool(second.fill[0, 0])
+    first.fill[0, 0] = not original
+    assert bool(second.fill[0, 0]) == original
