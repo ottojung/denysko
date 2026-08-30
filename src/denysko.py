@@ -1067,7 +1067,7 @@ def serialize_fit(fit: PathFit) -> str:
         power_z = np.polynomial.chebyshev.cheb2poly(
             np.asarray(fit.coef_cheb, dtype=float))
         corr = fit.corridor
-        basis_xa, basis_xb = fitting.chebyshev_domain(corr)
+        basis_xa, basis_xb = float(corr.xa), float(corr.xb)
         mid = (basis_xa + basis_xb) / 2.0
         sc = (basis_xb - basis_xa) / 2.0
         return _horner_expression(power_z, mid, sc)
